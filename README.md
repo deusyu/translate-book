@@ -4,7 +4,7 @@ English | [中文](README.zh-CN.md)
 
 Claude Code skill that translates entire books (PDF/DOCX/EPUB) into any language using parallel subagents.
 
-> Inspired by [claude_translater](https://github.com/wizlijun/claude_translater), which translates books via shell scripts calling the Claude CLI. This project takes a different approach — it's built as a Claude Code Skill that orchestrates parallel subagents for translation, with manifest-based validation, resumable runs, and multi-format output. The architecture is fundamentally different, so this is an independent project rather than a fork.
+> Inspired by [claude_translater](https://github.com/wizlijun/claude_translater). The original project uses shell scripts as its entry point, coordinating the Claude CLI with multiple step scripts to perform chunked translation. This project restructures the workflow as a Claude Code Skill, using subagents to translate chunks in parallel, with manifest-driven integrity checks, resumable runs, and multi-format output unified into a single pipeline. As the project structure and implementation differ significantly from the original, this is an independent project rather than a fork.
 
 ---
 

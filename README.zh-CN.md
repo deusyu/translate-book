@@ -4,7 +4,7 @@
 
 Claude Code Skill，使用并行 subagent 将整本书（PDF/DOCX/EPUB）翻译成任意语言。
 
-> 本项目受 [claude_translater](https://github.com/wizlijun/claude_translater) 启发。原项目通过 shell 脚本调用 Claude CLI 逐段翻译；本项目重新设计为 Claude Code Skill，利用 subagent 并行翻译，并增加了 manifest 校验、续跑、多格式输出等能力。由于架构和实现完全不同，未采用 fork 方式，而是独立开发。
+> 本项目受 [claude_translater](https://github.com/wizlijun/claude_translater) 启发。原项目以 shell 脚本为入口，配合 Claude CLI 和多个步骤脚本完成分块翻译；本项目则将流程重构为 Claude Code Skill，使用 subagent 按 chunk 并行翻译，并引入 manifest 驱动的完整性校验，将续跑和多格式输出整合为更统一的流水线。由于项目结构和实现方式均与原项目不同，本项目为独立实现，而非 fork。
 
 ---
 
