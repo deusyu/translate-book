@@ -789,12 +789,60 @@ def generate_formats(temp_dir, lang_attr):
 # Main
 # =============================================================================
 
+def cleanup_intermediate_files(temp_dir):
+    """Remove intermediate files, keeping only final outputs and metadata."""
+    print("\n=== Cleaning up intermediate files ===")
+
+    # Files to always keep
+    keep_files = {
+        'config.txt', 'manifest.json', 'output.md',
+        'book.html', 'book_doc.html', 'book.docx', 'book.epub', 'book.pdf',
+    }
+
+    removed = []
+
+    # Remove output.html (intermediate pandoc output)
+    output_html = os.path.join(temp_dir, 'output.html')
+    if os.path.exists(output_html):
+        os.remove(output_html)
+        removed.append('output.html')
+
+    # Remove input.html and input.md (conversion intermediates)
+    for name in ['input.html', 'input.md']:
+        path = os.path.join(temp_dir, name)
+        if os.path.exists(path):
+            os.remove(path)
+            removed.append(name)
+
+    # Remove chunk*.md and output_chunk*.md
+    for pattern in ['chunk*.md', 'output_chunk*.md']:
+        for path in glob.glob(os.path.join(temp_dir, pattern)):
+            basename = os.path.basename(path)
+            if basename not in keep_files:
+                os.remove(path)
+                removed.append(basename)
+
+    if removed:
+        chunk_count = sum(1 for f in removed if 'chunk' in f)
+        other = [f for f in removed if 'chunk' not in f]
+        parts = []
+        if chunk_count:
+            parts.append(f"{chunk_count} chunk files")
+        if other:
+            parts.append(', '.join(other))
+        print(f"  Removed: {', '.join(parts)}")
+    else:
+        print("  No intermediate files to clean up")
+
+
 def main():
     parser = argparse.ArgumentParser(description='Merge translated pages and build final outputs')
     parser.add_argument('--temp-dir', required=True, help='Temp directory path')
     parser.add_argument('--title', default=None, help='Translated book title (override config)')
     parser.add_argument('--author', default=None, help='Author name (override config)')
     parser.add_argument('--lang', default=None, help='Output language code (override config)')
+    parser.add_argument('--cleanup', action='store_true',
+                        help='Remove intermediate files (chunks, input.html/md, output.html) after successful build')
 
     args = parser.parse_args()
     temp_dir = args.temp_dir
@@ -841,6 +889,10 @@ def main():
         if os.path.exists(filepath):
             size = os.path.getsize(filepath)
             print(f"  {ext}: {size:,} bytes")
+
+    # Cleanup intermediate files if requested
+    if args.cleanup:
+        cleanup_intermediate_files(temp_dir)
 
 
 if __name__ == "__main__":
