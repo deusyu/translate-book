@@ -16,6 +16,7 @@ import argparse
 from pathlib import Path
 
 from manifest import validate_for_merge
+from convert import find_calibre_convert
 
 # Try to import BeautifulSoup for TOC generation
 try:
@@ -690,6 +691,98 @@ def add_toc(temp_dir):
 
 
 # =============================================================================
+# Cover image extraction and embedding
+# =============================================================================
+
+def extract_cover_from_epub(epub_path, output_dir):
+    """Extract cover image from an EPUB file using OPF metadata.
+
+    Returns the path to the extracted cover image, or None if not found.
+    """
+    import zipfile
+
+    if not os.path.exists(epub_path):
+        print(f"Cover source not found: {epub_path}")
+        return None
+
+    try:
+        with zipfile.ZipFile(epub_path, 'r') as z:
+            # Find OPF file
+            opf_content = None
+            opf_name = None
+            for name in z.namelist():
+                if name.endswith('.opf'):
+                    opf_content = z.read(name).decode('utf-8')
+                    opf_name = name
+                    break
+
+            if not opf_content or not opf_name:
+                print("No OPF file found in EPUB")
+                return None
+
+            # Find cover-image id in OPF
+            m = re.search(r'id="cover-image"[^/]*href="([^"]+)"', opf_content)
+            if not m:
+                m = re.search(r'href="([^"]+)"[^/]*id="cover-image"', opf_content)
+
+            if not m:
+                print("No cover-image metadata found in OPF")
+                return None
+
+            cover_href = m.group(1)
+            opf_dir = os.path.dirname(opf_name)
+            cover_path = os.path.join(opf_dir, cover_href) if opf_dir else cover_href
+
+            # Extract cover image
+            os.makedirs(output_dir, exist_ok=True)
+            z.extract(cover_path, output_dir)
+            extracted_path = os.path.join(output_dir, cover_path)
+
+            if os.path.exists(extracted_path):
+                print(f"Extracted cover: {extracted_path} ({os.path.getsize(extracted_path):,} bytes)")
+                return extracted_path
+            else:
+                print(f"Cover extraction failed: {cover_path}")
+                return None
+
+    except Exception as e:
+        print(f"Error extracting cover: {e}")
+        return None
+
+
+def embed_cover_in_epub(epub_path, cover_image_path):
+    """Re-embed cover image in EPUB via Calibre.
+
+    Pandoc wraps cover images in SVG, which macOS Quick Look doesn't render.
+    Calibre re-embeds the cover as a standard <img>, fixing Quick Look thumbnails.
+    """
+    if not os.path.exists(cover_image_path):
+        print(f"Cover image not found: {cover_image_path}")
+        return False
+
+    calibre_path = find_calibre_convert()
+    if not calibre_path:
+        print("Calibre not found — skipping cover embedding")
+        return False
+
+    try:
+        tmp_output = epub_path + '.tmp'
+        cmd = [calibre_path, epub_path, tmp_output, '--cover', cover_image_path]
+        result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+
+        if os.path.exists(tmp_output):
+            os.replace(tmp_output, epub_path)
+            print(f"Cover embedded in EPUB ({os.path.getsize(epub_path):,} bytes)")
+            return True
+        else:
+            print("Calibre cover embedding produced no output")
+            return False
+    except subprocess.CalledProcessError as e:
+        print(f"Cover embedding failed: {e.stderr[-300:]}" if e.stderr else "Cover embedding failed")
+        return False
+
+
+# =============================================================================
 # Step 7: Generate DOCX/EPUB/PDF with error transparency
 # =============================================================================
 
@@ -800,6 +893,8 @@ def main():
     parser.add_argument('--author', default=None, help='Author name (override config)')
     parser.add_argument('--lang', default=None, help='Output language code (override config)')
     parser.add_argument('--cleanup', action='store_true', help='Remove intermediate artifacts after successful build')
+    parser.add_argument('--cover', default=None, help='Cover image path to embed in EPUB')
+    parser.add_argument('--cover-from', default=None, help='Extract cover from original EPUB file')
 
     args = parser.parse_args()
     temp_dir = args.temp_dir
@@ -836,6 +931,25 @@ def main():
 
     # Step 7: Generate formats
     all_formats_ok = generate_formats(temp_dir, lang_cfg['lang_attr'])
+
+    # Step 8: Embed cover image in EPUB
+    epub_path = os.path.join(temp_dir, 'book.epub')
+    if os.path.exists(epub_path):
+        cover_image = args.cover  # explicit path
+
+        if not cover_image and args.cover_from:
+            # Extract from original EPUB
+            print("\n=== Extracting cover from original EPUB ===")
+            cover_image = extract_cover_from_epub(
+                args.cover_from,
+                os.path.join(temp_dir, 'cover_extract')
+            )
+
+        if cover_image:
+            print("\n=== Embedding cover image ===")
+            embed_cover_in_epub(epub_path, cover_image)
+        else:
+            print("\nNo cover image provided — EPUB has no cover")
 
     print("\n=== Build Complete ===")
     print(f"All outputs saved to: {temp_dir}")
