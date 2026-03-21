@@ -149,7 +149,7 @@ def extract_htmlz(htmlz_file, temp_dir):
 def setup_temp_directory(input_file, html_file, images_dir):
     """Setup temp directory with HTML and images"""
     try:
-        base_name = os.path.splitext(os.path.basename(input_file))[0]
+        base_name = os.path.splitext(input_file)[0]
         temp_dir = f"{base_name}_temp"
         os.makedirs(temp_dir, exist_ok=True)
 
@@ -212,14 +212,18 @@ def convert_html_to_markdown(html_file, md_file):
 
 def clean_calibre_markers(content):
     """Clean up Calibre-specific markers from markdown content"""
-    content = re.sub(r'\{\.calibre[^}]*\}', '', content)
-    content = re.sub(r'\(#calibre_link-\d+\)', '', content)
-
-    # Clean heading calibre attribute blocks: {#calibre_link-N .calibreN}
+    # Remove ALL Pandoc/Calibre attribute blocks: {#id .class key="val" ...}
+    content = re.sub(r'\s*\{[^}]*\.calibre[^}]*\}', '', content)
     content = re.sub(r'\s*\{#calibre_link-\d+[^}]*\}', '', content)
+    content = re.sub(r'\(#calibre_link-\d+\)', '', content)
 
     # Clean [**text**] format to **text**
     content = re.sub(r'\[\*\*([^*]+)\*\*\]', r'**\1**', content)
+
+    # Remove escaped bracket wrapping from paragraphs: \[text\] -> text
+    # Calibre wraps content in <span>/<div> which Pandoc converts to \[...\]
+    content = content.replace('\\[', '')
+    content = content.replace('\\]', '')
 
     lines = content.split('\n')
     cleaned_lines = []
@@ -232,6 +236,25 @@ def clean_calibre_markers(content):
             continue
         if stripped_line.endswith('.ct}') or stripped_line.endswith('.cn}'):
             continue
+        # Remove empty headings (# with no text after)
+        if re.match(r'^#{1,6}\s*$', stripped_line):
+            continue
+        # Clean heading text: remove wrapping [ ] and * from titles
+        # e.g. ## [*Some Title*] -> ## Some Title
+        if re.match(r'^#{1,6}\s', stripped_line):
+            heading_match = re.match(r'^(#{1,6})\s+(.*)', line)
+            if heading_match:
+                level = heading_match.group(1)
+                text = heading_match.group(2)
+                # Remove [*text*] or [ *text* ] wrapping
+                text = re.sub(r'^\[\s*\*?\s*', '', text)
+                text = re.sub(r'\s*\*?\s*\]\s*$', '', text)
+                # Remove remaining standalone [ ] or *
+                text = text.strip('[]* ')
+                if text:
+                    line = f'{level} {text}'
+                else:
+                    continue  # skip if heading becomes empty after cleanup
         cleaned_lines.append(line)
 
     content = '\n'.join(cleaned_lines)
@@ -590,7 +613,7 @@ def main():
     htmlz_file = f"{os.path.splitext(input_file)[0]}.htmlz"
 
     try:
-        base_name = os.path.splitext(os.path.basename(input_file))[0]
+        base_name = os.path.splitext(input_file)[0]
         temp_dir = f"{base_name}_temp"
         input_html_path = os.path.join(temp_dir, "input.html")
 

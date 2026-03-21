@@ -693,9 +693,9 @@ def add_toc(temp_dir):
 # Step 7: Generate DOCX/EPUB/PDF with error transparency
 # =============================================================================
 
-def generate_format(html_file, temp_dir, output_ext, lang_attr):
+def generate_format(html_file, temp_dir, output_ext, lang_attr, book_name="book"):
     """Generate a specific format using calibre_html_publish.py"""
-    output_file = os.path.join(temp_dir, f"book{output_ext}")
+    output_file = os.path.join(temp_dir, f"{book_name}{output_ext}")
 
     if os.path.exists(output_file):
         output_mtime = os.path.getmtime(output_file)
@@ -754,7 +754,7 @@ def generate_format(html_file, temp_dir, output_ext, lang_attr):
         return None
 
 
-def generate_formats(temp_dir, lang_attr):
+def generate_formats(temp_dir, lang_attr, book_name="book"):
     """Generate DOCX, EPUB, and PDF with result summary"""
     print("=== Generating output formats ===")
 
@@ -769,7 +769,7 @@ def generate_formats(temp_dir, lang_attr):
 
     results = {}
     for ext in ['.docx', '.epub', '.pdf']:
-        result = generate_format(html_file, temp_dir, ext, lang_attr)
+        result = generate_format(html_file, temp_dir, ext, lang_attr, book_name)
         if result:
             file_size = os.path.getsize(result)
             results[ext] = ('OK', f"{file_size:,} bytes")
@@ -834,18 +834,26 @@ def main():
     # Step 6: Add TOC
     add_toc(temp_dir)
 
+    # Derive safe filename from title (remove 書名號 and unsafe chars)
+    book_name = title.strip('《》')
+    # Keep only safe filename characters
+    book_name = re.sub(r'[<>:"/\\|?*]', '', book_name)
+    book_name = book_name.strip()
+    if not book_name:
+        book_name = "book"
+
     # Step 7: Generate formats
-    all_formats_ok = generate_formats(temp_dir, lang_cfg['lang_attr'])
+    all_formats_ok = generate_formats(temp_dir, lang_cfg['lang_attr'], book_name)
 
     print("\n=== Build Complete ===")
     print(f"All outputs saved to: {temp_dir}")
 
     # List generated files
-    for ext in ['book.html', 'book_doc.html', 'book.docx', 'book.epub', 'book.pdf']:
-        filepath = os.path.join(temp_dir, ext)
+    for ext in ['.html', '_doc.html', '.docx', '.epub', '.pdf']:
+        filepath = os.path.join(temp_dir, f"{book_name}{ext}")
         if os.path.exists(filepath):
             size = os.path.getsize(filepath)
-            print(f"  {ext}: {size:,} bytes")
+            print(f"  {book_name}{ext}: {size:,} bytes")
 
     # Cleanup intermediate artifacts if requested (skip if any format failed)
     if args.cleanup:
