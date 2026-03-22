@@ -211,12 +211,41 @@ def convert_html_to_markdown(html_file, md_file):
 
 
 def clean_calibre_markers(content):
-    """Clean up Calibre-specific markers from markdown content"""
-    content = re.sub(r'\{\.calibre[^}]*\}', '', content)
+    """Clean up Calibre-specific markers from markdown content.
+
+    Each rule targets a specific Calibre/Pandoc artifact pattern.
+
+    Attribute blocks:
+      before: Some text{.calibre5}       after: Some text
+      before: [link](#calibre_link-42)   after: [link]
+      before: ## Title {#calibre_link-0 .calibre3}  after: ## Title
+
+    Escaped bracket wrapping (Calibre <span>/<div> converted by Pandoc):
+      before: \\[Some paragraph text.\\]  after: Some paragraph text.
+      Note: only removes \\[ at line start and \\] at line end to avoid
+      breaking LaTeX display math \\[...\\] mid-line.
+
+    Bold bracket wrapping:
+      before: [**Chapter One**]          after: **Chapter One**
+
+    Heading cleanup:
+      before: ## [*Some Title*]          after: ## Some Title
+      before: ##                         (removed — empty heading)
+
+    Line-level filters:
+      before: ::: {.calibreN}           (removed — Pandoc div wrapper)
+      before:   42                       (removed — stray page number)
+      before: something.ct}             (removed — broken Calibre tag)
+    """
+    # Remove ALL Pandoc/Calibre attribute blocks: {#id .class key="val" ...}
+    content = re.sub(r'\s*\{[^}]*\.calibre[^}]*\}', '', content)
+    content = re.sub(r'\s*\{#calibre_link-\d+[^}]*\}', '', content)
     content = re.sub(r'\(#calibre_link-\d+\)', '', content)
 
-    # Clean heading calibre attribute blocks: {#calibre_link-N .calibreN}
-    content = re.sub(r'\s*\{#calibre_link-\d+[^}]*\}', '', content)
+    # Remove escaped bracket wrapping — only at line boundaries to preserve
+    # LaTeX display math \[...\] that may appear mid-line
+    content = re.sub(r'(?m)^\\?\\\[', '', content)
+    content = re.sub(r'(?m)\\?\\\]$', '', content)
 
     # Clean [**text**] format to **text**
     content = re.sub(r'\[\*\*([^*]+)\*\*\]', r'**\1**', content)
@@ -232,6 +261,19 @@ def clean_calibre_markers(content):
             continue
         if stripped_line.endswith('.ct}') or stripped_line.endswith('.cn}'):
             continue
+        # Remove empty headings (# with no text after)
+        if re.match(r'^#{1,6}\s*$', stripped_line):
+            continue
+        # Clean heading text: ## [*Some Title*] -> ## Some Title
+        if re.match(r'^#{1,6}\s', stripped_line):
+            heading_match = re.match(r'^(#{1,6})\s+(.*)', line)
+            if heading_match:
+                level = heading_match.group(1)
+                text = heading_match.group(2)
+                # Remove [*text*] wrapping pattern specifically
+                m = re.match(r'^\[\s*\*(.+?)\*\s*\]$', text)
+                if m:
+                    line = f'{level} {m.group(1).strip()}'
         cleaned_lines.append(line)
 
     content = '\n'.join(cleaned_lines)
