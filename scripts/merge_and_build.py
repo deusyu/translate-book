@@ -452,7 +452,7 @@ def process_html_separators(html_file):
         print(f"Error processing separators: {e}")
 
 
-def convert_md_to_html(temp_dir, title, lang_cfg, author=None):
+def convert_md_to_html(temp_dir, title, lang_cfg, author=None, book_name="book"):
     """Convert output.md to HTML with templates"""
     print("=== Converting markdown to HTML ===")
 
@@ -461,12 +461,12 @@ def convert_md_to_html(temp_dir, title, lang_cfg, author=None):
         print("Error: output.md not found.")
         return False
 
-    book_doc_file = os.path.join(temp_dir, 'book_doc.html')
+    book_doc_file = os.path.join(temp_dir, f'{book_name}_doc.html')
 
-    # Skip HTML generation if book_doc.html exists and is newer than output.md
+    # Skip HTML generation if doc HTML exists and is newer than output.md
     if os.path.exists(book_doc_file):
         if os.path.getmtime(book_doc_file) > os.path.getmtime(md_file):
-            print("Skipping HTML generation - book_doc.html is up to date")
+            print(f"Skipping HTML generation - {book_name}_doc.html is up to date")
             return True
         else:
             print("Re-generating HTML - output.md is newer")
@@ -501,17 +501,17 @@ def convert_md_to_html(temp_dir, title, lang_cfg, author=None):
     body_match = re.search(r'<body[^>]*>(.*?)</body>', html_content, re.DOTALL | re.IGNORECASE)
     body_content = body_match.group(1).strip() if body_match else html_content
 
-    # Generate book_doc.html with ebook template
+    # Generate doc HTML with ebook template (for Calibre conversion)
     template_ebook = os.path.join(SCRIPT_DIR, 'template_ebook.html')
-    book_doc_file = os.path.join(temp_dir, 'book_doc.html')
+    book_doc_file = os.path.join(temp_dir, f'{book_name}_doc.html')
     apply_template_to_html(body_content, template_ebook, book_doc_file, title, lang_cfg, author)
 
-    # Generate book.html with web template
+    # Generate web HTML with web template
     template_web = os.path.join(SCRIPT_DIR, 'template.html')
-    book_file = os.path.join(temp_dir, 'book.html')
+    book_file = os.path.join(temp_dir, f'{book_name}.html')
     apply_template_to_html(body_content, template_web, book_file, title, lang_cfg, author)
 
-    print(f"Generated: output.html, book_doc.html, book.html")
+    print(f"Generated: output.html, {book_name}_doc.html, {book_name}.html")
     return True
 
 
@@ -674,13 +674,13 @@ def insert_toc_with_regex(html_file):
         return False
 
 
-def add_toc(temp_dir):
-    """Add TOC to book.html"""
+def add_toc(temp_dir, book_name="book"):
+    """Add TOC to web HTML"""
     print("=== Adding Table of Contents ===")
 
-    book_file = os.path.join(temp_dir, 'book.html')
+    book_file = os.path.join(temp_dir, f'{book_name}.html')
     if not os.path.exists(book_file):
-        print("Warning: book.html not found, skipping TOC")
+        print(f"Warning: {book_name}.html not found, skipping TOC")
         return False
 
     if BS4_AVAILABLE:
@@ -693,9 +693,9 @@ def add_toc(temp_dir):
 # Step 7: Generate DOCX/EPUB/PDF with error transparency
 # =============================================================================
 
-def generate_format(html_file, temp_dir, output_ext, lang_attr):
+def generate_format(html_file, temp_dir, output_ext, lang_attr, book_name="book"):
     """Generate a specific format using calibre_html_publish.py"""
-    output_file = os.path.join(temp_dir, f"book{output_ext}")
+    output_file = os.path.join(temp_dir, f"{book_name}{output_ext}")
 
     if os.path.exists(output_file):
         output_mtime = os.path.getmtime(output_file)
@@ -754,11 +754,11 @@ def generate_format(html_file, temp_dir, output_ext, lang_attr):
         return None
 
 
-def generate_formats(temp_dir, lang_attr):
+def generate_formats(temp_dir, lang_attr, book_name="book"):
     """Generate DOCX, EPUB, and PDF with result summary"""
     print("=== Generating output formats ===")
 
-    html_file = os.path.join(temp_dir, "book_doc.html")
+    html_file = os.path.join(temp_dir, f"{book_name}_doc.html")
     if not os.path.exists(html_file):
         html_files = glob.glob(os.path.join(temp_dir, "*.html"))
         if html_files:
@@ -769,7 +769,7 @@ def generate_formats(temp_dir, lang_attr):
 
     results = {}
     for ext in ['.docx', '.epub', '.pdf']:
-        result = generate_format(html_file, temp_dir, ext, lang_attr)
+        result = generate_format(html_file, temp_dir, ext, lang_attr, book_name)
         if result:
             file_size = os.path.getsize(result)
             results[ext] = ('OK', f"{file_size:,} bytes")
@@ -827,25 +827,32 @@ def main():
     if not merge_markdown_files(temp_dir):
         sys.exit(1)
 
+    # Derive safe filename from title (remove 書名號 and unsafe chars)
+    book_name = title.strip('\u300a\u300b')
+    book_name = re.sub(r'[<>:"/\\|?*]', '', book_name)
+    book_name = book_name.strip()
+    if not book_name:
+        book_name = "book"
+
     # Step 5: Convert to HTML
-    if not convert_md_to_html(temp_dir, title, lang_cfg, author):
+    if not convert_md_to_html(temp_dir, title, lang_cfg, author, book_name):
         sys.exit(1)
 
     # Step 6: Add TOC
-    add_toc(temp_dir)
+    add_toc(temp_dir, book_name)
 
     # Step 7: Generate formats
-    all_formats_ok = generate_formats(temp_dir, lang_cfg['lang_attr'])
+    all_formats_ok = generate_formats(temp_dir, lang_cfg['lang_attr'], book_name)
 
     print("\n=== Build Complete ===")
     print(f"All outputs saved to: {temp_dir}")
 
     # List generated files
-    for ext in ['book.html', 'book_doc.html', 'book.docx', 'book.epub', 'book.pdf']:
-        filepath = os.path.join(temp_dir, ext)
+    for ext in ['.html', '_doc.html', '.docx', '.epub', '.pdf']:
+        filepath = os.path.join(temp_dir, f"{book_name}{ext}")
         if os.path.exists(filepath):
             size = os.path.getsize(filepath)
-            print(f"  {ext}: {size:,} bytes")
+            print(f"  {book_name}{ext}: {size:,} bytes")
 
     # Cleanup intermediate artifacts if requested (skip if any format failed)
     if args.cleanup:
