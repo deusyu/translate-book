@@ -16,7 +16,6 @@ import argparse
 from pathlib import Path
 
 from manifest import validate_for_merge
-from convert import find_calibre_convert
 
 # Try to import BeautifulSoup for TOC generation
 try:
@@ -700,6 +699,7 @@ def extract_cover_from_epub(epub_path, output_dir):
     Returns the path to the extracted cover image, or None if not found.
     """
     import zipfile
+    import xml.etree.ElementTree as ET
 
     if not os.path.exists(epub_path):
         print(f"Cover source not found: {epub_path}")
@@ -712,7 +712,7 @@ def extract_cover_from_epub(epub_path, output_dir):
             opf_name = None
             for name in z.namelist():
                 if name.endswith('.opf'):
-                    opf_content = z.read(name).decode('utf-8')
+                    opf_content = z.read(name)
                     opf_name = name
                     break
 
@@ -720,16 +720,32 @@ def extract_cover_from_epub(epub_path, output_dir):
                 print("No OPF file found in EPUB")
                 return None
 
-            # Find cover-image id in OPF
-            m = re.search(r'id="cover-image"[^/]*href="([^"]+)"', opf_content)
-            if not m:
-                m = re.search(r'href="([^"]+)"[^/]*id="cover-image"', opf_content)
+            # Parse OPF XML to find cover image
+            root = ET.fromstring(opf_content)
+            ns = {'opf': 'http://www.idpf.org/2007/opf'}
 
-            if not m:
+            # Look for <item id="cover-image" ...> in <manifest>
+            cover_href = None
+            for item in root.findall('.//opf:manifest/opf:item', ns):
+                if item.get('id') == 'cover-image':
+                    cover_href = item.get('href')
+                    break
+
+            # Fallback: look for <meta name="cover" content="..."> then find that item
+            if not cover_href:
+                for meta in root.findall('.//opf:metadata/opf:meta', ns):
+                    if meta.get('name') == 'cover':
+                        cover_id = meta.get('content')
+                        for item in root.findall('.//opf:manifest/opf:item', ns):
+                            if item.get('id') == cover_id:
+                                cover_href = item.get('href')
+                                break
+                        break
+
+            if not cover_href:
                 print("No cover-image metadata found in OPF")
                 return None
 
-            cover_href = m.group(1)
             opf_dir = os.path.dirname(opf_name)
             cover_path = os.path.join(opf_dir, cover_href) if opf_dir else cover_href
 
@@ -750,43 +766,12 @@ def extract_cover_from_epub(epub_path, output_dir):
         return None
 
 
-def embed_cover_in_epub(epub_path, cover_image_path):
-    """Re-embed cover image in EPUB via Calibre.
-
-    Pandoc wraps cover images in SVG, which macOS Quick Look doesn't render.
-    Calibre re-embeds the cover as a standard <img>, fixing Quick Look thumbnails.
-    """
-    if not os.path.exists(cover_image_path):
-        print(f"Cover image not found: {cover_image_path}")
-        return False
-
-    calibre_path = find_calibre_convert()
-    if not calibre_path:
-        print("Calibre not found — skipping cover embedding")
-        return False
-
-    try:
-        tmp_output = epub_path + '.tmp'
-        cmd = [calibre_path, epub_path, tmp_output, '--cover', cover_image_path]
-        result = subprocess.run(cmd, check=True, capture_output=True, text=True)
-
-        if os.path.exists(tmp_output):
-            os.replace(tmp_output, epub_path)
-            print(f"Cover embedded in EPUB ({os.path.getsize(epub_path):,} bytes)")
-            return True
-        else:
-            print("Calibre cover embedding produced no output")
-            return False
-    except subprocess.CalledProcessError as e:
-        print(f"Cover embedding failed: {e.stderr[-300:]}" if e.stderr else "Cover embedding failed")
-        return False
-
 
 # =============================================================================
 # Step 7: Generate DOCX/EPUB/PDF with error transparency
 # =============================================================================
 
-def generate_format(html_file, temp_dir, output_ext, lang_attr):
+def generate_format(html_file, temp_dir, output_ext, lang_attr, cover=None):
     """Generate a specific format using calibre_html_publish.py"""
     output_file = os.path.join(temp_dir, f"book{output_ext}")
 
@@ -825,6 +810,8 @@ def generate_format(html_file, temp_dir, output_ext, lang_attr):
 
     try:
         cmd = ["python3", publish_script, html_file, "-o", output_file, "--lang", lang_attr]
+        if cover:
+            cmd.extend(["--cover", cover])
         result = subprocess.run(cmd, check=True, capture_output=True, text=True)
 
         if os.path.exists(output_file):
@@ -847,7 +834,7 @@ def generate_format(html_file, temp_dir, output_ext, lang_attr):
         return None
 
 
-def generate_formats(temp_dir, lang_attr):
+def generate_formats(temp_dir, lang_attr, cover=None):
     """Generate DOCX, EPUB, and PDF with result summary"""
     print("=== Generating output formats ===")
 
@@ -862,7 +849,9 @@ def generate_formats(temp_dir, lang_attr):
 
     results = {}
     for ext in ['.docx', '.epub', '.pdf']:
-        result = generate_format(html_file, temp_dir, ext, lang_attr)
+        # Pass cover only for EPUB format
+        fmt_cover = cover if ext == '.epub' else None
+        result = generate_format(html_file, temp_dir, ext, lang_attr, fmt_cover)
         if result:
             file_size = os.path.getsize(result)
             results[ext] = ('OK', f"{file_size:,} bytes")
@@ -929,27 +918,17 @@ def main():
     # Step 6: Add TOC
     add_toc(temp_dir)
 
-    # Step 7: Generate formats
-    all_formats_ok = generate_formats(temp_dir, lang_cfg['lang_attr'])
+    # Resolve cover image before generating formats
+    cover_image = args.cover  # explicit path
+    if not cover_image and args.cover_from:
+        print("\n=== Extracting cover from original EPUB ===")
+        cover_image = extract_cover_from_epub(
+            args.cover_from,
+            os.path.join(temp_dir, 'cover_extract')
+        )
 
-    # Step 8: Embed cover image in EPUB
-    epub_path = os.path.join(temp_dir, 'book.epub')
-    if os.path.exists(epub_path):
-        cover_image = args.cover  # explicit path
-
-        if not cover_image and args.cover_from:
-            # Extract from original EPUB
-            print("\n=== Extracting cover from original EPUB ===")
-            cover_image = extract_cover_from_epub(
-                args.cover_from,
-                os.path.join(temp_dir, 'cover_extract')
-            )
-
-        if cover_image:
-            print("\n=== Embedding cover image ===")
-            embed_cover_in_epub(epub_path, cover_image)
-        else:
-            print("\nNo cover image provided — EPUB has no cover")
+    # Step 7: Generate formats (cover is passed to EPUB via Calibre --cover)
+    all_formats_ok = generate_formats(temp_dir, lang_cfg['lang_attr'], cover_image)
 
     print("\n=== Build Complete ===")
     print(f"All outputs saved to: {temp_dir}")
