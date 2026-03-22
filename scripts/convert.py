@@ -149,7 +149,7 @@ def extract_htmlz(htmlz_file, temp_dir):
 def setup_temp_directory(input_file, html_file, images_dir):
     """Setup temp directory with HTML and images"""
     try:
-        base_name = os.path.splitext(os.path.basename(input_file))[0]
+        base_name = os.path.splitext(input_file)[0]
         temp_dir = f"{base_name}_temp"
         os.makedirs(temp_dir, exist_ok=True)
 
@@ -590,7 +590,7 @@ def main():
     htmlz_file = f"{os.path.splitext(input_file)[0]}.htmlz"
 
     try:
-        base_name = os.path.splitext(os.path.basename(input_file))[0]
+        base_name = os.path.splitext(input_file)[0]
         temp_dir = f"{base_name}_temp"
         input_html_path = os.path.join(temp_dir, "input.html")
 
