@@ -791,7 +791,12 @@ def generate_format(html_file, temp_dir, output_ext, lang_attr, cover=None):
                     images_newer = True
                     break
 
-        if not html_newer and not images_newer:
+        # Check if cover image is newer or newly added
+        cover_newer = False
+        if cover and os.path.isfile(cover):
+            cover_newer = os.path.getmtime(cover) > output_mtime
+
+        if not html_newer and not images_newer and not cover_newer:
             file_size = os.path.getsize(output_file)
             print(f"Skipping {output_ext} - already exists and up to date ({file_size:,} bytes)")
             return output_file
@@ -801,6 +806,8 @@ def generate_format(html_file, temp_dir, output_ext, lang_attr, cover=None):
                 reasons.append("source HTML changed")
             if images_newer:
                 reasons.append("image assets changed")
+            if cover_newer:
+                reasons.append("cover image changed")
             print(f"Rebuilding {output_ext} - {', '.join(reasons)}")
 
     publish_script = os.path.join(SCRIPT_DIR, "calibre_html_publish.py")
