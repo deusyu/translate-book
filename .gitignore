@@ -1,6 +1,11 @@
 # Translation temp directories
 *_temp/
 
+# Full-pipeline test artifacts
+tests/.artifacts/*
+!tests/.artifacts/.gitkeep
+!tests/.artifacts/README.md
+
 # OS files
 .DS_Store
 

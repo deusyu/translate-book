@@ -101,6 +101,22 @@ All files are in `{book_name}_temp/`:
 | `book.epub` | E-book |
 | `book.pdf` | Print-ready PDF |
 
+## Repository Test Assets
+
+- Checked-in baseline inputs live under `tests/baselines/<book-id>/`.
+- Generated full-pipeline outputs live under `tests/.artifacts/` and should not be committed.
+- Because `scripts/convert.py` writes `{book_name}_temp/` under the current working directory, run repository baseline tests from inside `tests/.artifacts/` to keep generated files out of the repo root.
+
+### Full-Pipeline Baseline Example
+
+```bash
+mkdir -p tests/.artifacts
+cd tests/.artifacts
+python3 ../../scripts/convert.py ../baselines/standard-alice/standard-alice.epub --olang zh
+# then run translation via the skill
+python3 ../../scripts/merge_and_build.py --temp-dir standard-alice_temp --title "test"
+```
+
 ## Pipeline Details
 
 ### Step 1: Convert
@@ -180,6 +196,8 @@ Then: merge → Pandoc HTML → inject TOC → Calibre generates DOCX, EPUB, PDF
 | `scripts/calibre_html_publish.py` | Calibre wrapper for format conversion |
 | `scripts/template.html` | Web HTML template with floating TOC |
 | `scripts/template_ebook.html` | Ebook HTML template |
+| `tests/baselines/` | Checked-in baseline book inputs for full-pipeline testing |
+| `tests/.artifacts/` | Ignored full-pipeline test outputs |
 
 ## Troubleshooting
 

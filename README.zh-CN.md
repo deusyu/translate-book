@@ -101,6 +101,22 @@ Skill 自动处理完整流程 — 转换、拆分、并行翻译、校验、合
 | `book.epub` | 电子书 |
 | `book.pdf` | 可打印 PDF |
 
+## 仓库测试资产
+
+- 需要纳入仓库的基准书输入，统一放在 `tests/baselines/<book-id>/`。
+- 完整流水线跑出来的产物统一放在 `tests/.artifacts/`，不提交到版本库。
+- 由于 `scripts/convert.py` 会把 `{book_name}_temp/` 写到**当前工作目录**下，仓库内的 baseline 测试应从 `tests/.artifacts/` 目录里启动，这样生成文件不会散落到仓库根目录。
+
+### 完整基准测试示例
+
+```bash
+mkdir -p tests/.artifacts
+cd tests/.artifacts
+python3 ../../scripts/convert.py ../baselines/standard-alice/standard-alice.epub --olang zh
+# 然后通过 skill 完成翻译
+python3 ../../scripts/merge_and_build.py --temp-dir standard-alice_temp --title "test"
+```
+
 ## 流程详解
 
 ### 第一步：转换
@@ -180,6 +196,8 @@ python3 scripts/merge_and_build.py --temp-dir book_temp --title "《译后书名
 | `scripts/calibre_html_publish.py` | Calibre 格式转换封装 |
 | `scripts/template.html` | 网页 HTML 模板，含浮动目录 |
 | `scripts/template_ebook.html` | 电子书 HTML 模板 |
+| `tests/baselines/` | 纳入仓库的完整链路 baseline 输入 |
+| `tests/.artifacts/` | 被忽略的完整链路测试产物 |
 
 ## 常见问题
 

@@ -18,12 +18,24 @@ translate-book is a Codex Skill that translates books (PDF/DOCX/EPUB) into any l
 
 ## Testing changes
 
-Test with a small PDF to verify the full pipeline:
+Use a small file for quick checks, or the checked-in baseline book for the repository's full-pipeline test.
+
+Quick smoke test:
 
 ```bash
 python3 scripts/convert.py /path/to/small.pdf --olang zh
 # then run translation via the skill
 python3 scripts/merge_and_build.py --temp-dir <name>_temp --title "test"
+```
+
+Full baseline test:
+
+```bash
+mkdir -p tests/.artifacts
+cd tests/.artifacts
+python3 ../../scripts/convert.py ../baselines/standard-alice/standard-alice.epub --olang zh
+# then run translation via the skill
+python3 ../../scripts/merge_and_build.py --temp-dir standard-alice_temp --title "test"
 ```
 
 Verify: all output_chunk*.md files exist, manifest validation passes, output formats generate.
@@ -34,6 +46,7 @@ Verify: all output_chunk*.md files exist, manifest validation passes, output for
 - SKILL.md frontmatter must stay single-line per field (OpenClaw parser requirement)
 - Script paths in SKILL.md use `{baseDir}` not hardcoded paths
 - Subagent instructions in SKILL.md must be platform-neutral (work on Codex, OpenClaw, Codex)
+- Checked-in baseline inputs live under `tests/baselines/<book-id>/`; generated full-pipeline outputs live under `tests/.artifacts/`
 - README changes must be synced to both README.md and README.zh-CN.md
 - Publish to both GitHub (`git push`) and ClawHub (`clawhub publish ./ --version <semver>`) on release
 
