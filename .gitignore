@@ -18,5 +18,6 @@ __pycache__/
 
 # Local AI agent / tooling configs and caches
 .agents/
-.claude/
+.claude/*
+!.claude/commands/
 _bmad/

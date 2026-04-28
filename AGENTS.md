@@ -48,7 +48,7 @@ Verify: all output_chunk*.md files exist, manifest validation passes, output for
 - Subagent instructions in SKILL.md must be platform-neutral (work on Codex, OpenClaw, Codex)
 - Checked-in baseline inputs live under `tests/baselines/<book-id>/`; generated full-pipeline outputs live under `tests/.artifacts/`
 - README changes must be synced to both README.md and README.zh-CN.md
-- Publish to both GitHub (`git push`) and ClawHub (`clawhub publish ./ --version <semver>`) on release
+- Releases follow `.claude/commands/release.md` — three commands in order: `git push origin main`, `git tag vX.Y.Z && git push --tags`, `clawhub publish ./ --version X.Y.Z`. Do not skip the git tag; it's the only version anchor in the repo
 
 ## Do not
 
