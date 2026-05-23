@@ -75,7 +75,7 @@ class GenerateFormatTests(unittest.TestCase):
 
     @unittest.skipUnless(
         "cover" in inspect.signature(merge_and_build.generate_format).parameters,
-        "cover support not merged yet",
+        "cover parameter unavailable",
     )
     def test_rebuilds_epub_when_cover_is_explicitly_requested(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -136,7 +136,7 @@ class CleanupIntermediateFilesTests(unittest.TestCase):
 class MissingCoverPathTests(unittest.TestCase):
     @unittest.skipUnless(
         "cover" in inspect.signature(merge_and_build.generate_format).parameters,
-        "cover support not merged yet",
+        "cover parameter unavailable",
     )
     def test_main_rejects_missing_cover_path(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -162,6 +162,38 @@ class MissingCoverPathTests(unittest.TestCase):
 
             self.assertNotEqual(exc.exception.code, 0)
             generate_formats_mock.assert_not_called()
+
+
+class ExportAliasTests(unittest.TestCase):
+    def _write(self, path, content="x"):
+        Path(path).write_text(content, encoding="utf-8")
+
+    def test_export_named_aliases_copies_canonical_outputs(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            for name in ["book.html", "book_doc.html", "book.docx", "book.epub", "book.pdf"]:
+                self._write(Path(temp_dir) / name, name)
+
+            copied = merge_and_build.export_named_aliases(temp_dir, "Translated Book")
+
+            self.assertEqual(
+                set(copied),
+                {
+                    "Translated Book.html",
+                    "Translated Book_doc.html",
+                    "Translated Book.docx",
+                    "Translated Book.epub",
+                    "Translated Book.pdf",
+                },
+            )
+            self.assertEqual(
+                (Path(temp_dir) / "Translated Book.epub").read_text(encoding="utf-8"),
+                "book.epub",
+            )
+            self.assertTrue((Path(temp_dir) / "book.epub").exists())
+
+    def test_export_name_rejects_paths(self):
+        with self.assertRaises(ValueError):
+            merge_and_build.export_named_aliases("/tmp", "../bad")
 
 
 class ImageValidationTests(unittest.TestCase):

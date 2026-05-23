@@ -211,7 +211,7 @@ def get_output_format(output_file):
     }
     return format_map.get(ext)
 
-def convert_html_with_calibre(html_file, output_file, format_type, timeout=600, lang="zh-CN"):
+def convert_html_with_calibre(html_file, output_file, format_type, timeout=600, lang="zh-CN", cover=None):
     """Convert HTML to specified format using Calibre with timeout protection"""
     
     calibre_path = find_calibre_convert()
@@ -247,6 +247,8 @@ def convert_html_with_calibre(html_file, output_file, format_type, timeout=600, 
         cmd.extend([
             "--epub-version", "3"
         ])
+        if cover:
+            cmd.extend(["--cover", cover])
     elif format_type == 'pdf':
         pdf_font = _get_pdf_font_for_lang(lang)
         cmd.extend([
@@ -303,6 +305,8 @@ def main():
                        help='Conversion timeout in seconds (default: 600)')
     parser.add_argument('--lang', default='zh-CN',
                        help='Language code for output metadata (default: zh-CN)')
+    parser.add_argument('--cover', default=None,
+                       help='Cover image path for EPUB output')
     
     args = parser.parse_args()
     
@@ -319,6 +323,14 @@ def main():
     if not format_type:
         print(f"Error: Unsupported output format. Use .docx, .epub, or .pdf")
         sys.exit(1)
+
+    if args.cover:
+        if format_type != 'epub':
+            print("Error: --cover is only supported for EPUB output")
+            sys.exit(1)
+        if not os.path.isfile(args.cover):
+            print(f"Error: Cover image not found: {args.cover}")
+            sys.exit(1)
     
     # Always use the exact output path provided - 07_generate_formats.py already handles base_temp logic
     final_output = os.path.abspath(output_file)
@@ -350,7 +362,7 @@ def main():
         work_html = prepare_html_for_conversion(input_html, temp_dir, args.lang)
         
         # Convert to specified format
-        if convert_html_with_calibre(work_html, final_output, format_type, args.timeout, args.lang):
+        if convert_html_with_calibre(work_html, final_output, format_type, args.timeout, args.lang, cover=args.cover):
             print("\n" + "="*50)
             print(f"✅ Conversion completed successfully!")
             print(f"📁 File: {final_output}")

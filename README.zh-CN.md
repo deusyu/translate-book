@@ -35,9 +35,11 @@ Calibre ebook-convert → HTMLZ → HTML → Markdown
 ## 功能特性
 
 - **并行 subagent** — 每批 8 个并发翻译器，各自独立上下文
-- **可续跑** — chunk 级续跑，重新运行时自动跳过已翻译的 chunk（元数据或模板变更建议全新运行）
+- **可续跑 + 精确重译** — chunk 级续跑，并用 `run_state.json` 追踪受术语表影响的重译范围
+- **邻居上下文** — 每个 chunk 可读取相邻 chunk 的短只读摘录，用于代词和实体判断
 - **Manifest 校验** — SHA-256 hash 追踪，防止过时或损坏的输出被合并
 - **多格式输出** — HTML（含浮动目录）、DOCX、EPUB、PDF
+- **可选输出控制** — 显式 EPUB 封面、自定义 temp root、面向用户的导出别名
 - **多语言** — zh、en、ja、ko、fr、de、es（可扩展）
 - **多格式输入** — PDF/DOCX/EPUB，Calibre 负责格式转换
 
@@ -140,6 +142,8 @@ python3 scripts/convert.py /path/to/book.pdf --olang zh
 
 Calibre 将输入文件转为 HTMLZ，解压后转为 Markdown，再拆分为 chunk（每个约 6000 字符）。`manifest.json` 记录每个源 chunk 的 SHA-256 hash，用于后续校验。
 
+默认工作目录是当前目录下的 `{book_name}_temp/`。如果要换父目录，可使用 `--temp-root /path/to/work`；叶子目录名仍保持 `{book_name}_temp/`。
+
 ### 第一步半：术语表（保证全书译名一致）
 
 每个 chunk 由独立的 fresh-context subagent 翻译 — 这意味着同一个专有名词在 100 个 chunk 之间可能出现多种译法。为此，skill 在翻译前会先构建术语表：
@@ -166,9 +170,7 @@ Calibre 将输入文件转为 HTMLZ，解压后转为 Markdown，再拆分为 ch
 
 已有的 v1 `glossary.json` 会在首次加载时自动升级为 v2。v2 禁止同一个表面词（原文或别名）同时归属于两个不同术语；如果 v1 文件存在同名（polysemous）的重复 source，升级会终止并给出消歧提示 — 手工修复后重新加载即可。
 
-可在两次运行之间编辑 `glossary.json` 修正译法。已存在的 `glossary.json` 不会被覆盖 — 删除它才会重建。
-
-> **关于增量重跑**：当前版本中，翻译完部分 chunk 之后再编辑 `glossary.json`，已翻译的 chunk **不会** 自动失效 — 它们仍保留旧译法。基于术语表变更的精确重跑会在下一个 commit 加入。在那之前，需要手动删除受影响的 `output_chunk*.md`（或整个 temp 目录）才能应用新的译法。
+可在两次运行之间编辑 `glossary.json` 修正译法。已存在的 `glossary.json` 不会被覆盖 — 删除它才会重建。`scripts/run_state.py` 会记录每个 chunk 用到的术语表状态，因此后续术语表变化只会重译受影响的 chunk（前提是该 chunk 已写入 run_state）。
 
 ### 第二步：翻译（并行 subagent）
 
@@ -176,15 +178,25 @@ Skill 分批启动 subagent（默认 8 路并发）。每个 subagent：
 
 1. 读取一个源 chunk（如 `chunk0042.md`）
 2. 翻译为目标语言
-3. 将结果写入 `output_chunk0042.md`
+3. 使用该 chunk 的术语表和相邻 chunk 的短只读上下文
+4. 将结果写入 `output_chunk0042.md`
+5. 写入 `output_chunk0042.meta.json`，供术语表反馈合并
 
-如果运行中断，重新运行会跳过已有合法输出的 chunk。翻译失败的 chunk 会自动重试一次。
+启动 subagent 前，`scripts/run_state.py plan <temp_dir>` 会判断哪些 chunk 需要翻译、哪些已有输出只需记录状态、哪些无需处理。只有在接管旧 temp 目录且明确希望现有输出按当前术语表重译时，才使用 `--retranslate-untracked`。如果运行中断，重新运行会跳过已有合法输出且状态仍有效的 chunk。翻译失败的 chunk 会自动重试一次。
 
 ### 第三步：合并与构建
 
 ```bash
 python3 scripts/merge_and_build.py --temp-dir book_temp --title "《译后书名》"
 ```
+
+可选输出参数：
+
+```bash
+python3 scripts/merge_and_build.py --temp-dir book_temp --title "《译后书名》" --cover cover.jpg --export-name "译后书名"
+```
+
+`--cover` 会把显式封面图传给 EPUB 的 Calibre 步骤。`--export-name` 会额外生成如 `译后书名.epub` 的别名副本，同时保留内部 canonical 的 `book.*` 产物。
 
 合并前校验：
 - 每个源 chunk 都有对应的输出文件（1:1 匹配）
@@ -203,8 +215,10 @@ python3 scripts/merge_and_build.py --temp-dir book_temp --title "《译后书名
 | `scripts/convert.py` | PDF/DOCX/EPUB → Markdown chunks（经 Calibre HTMLZ） |
 | `scripts/manifest.py` | Chunk manifest：SHA-256 追踪与合并校验 |
 | `scripts/glossary.py` | 术语表管理：为每个 chunk 生成专属术语对照表，保证全书译名一致 |
+| `scripts/chunk_context.py` | 为 subagent prompt 提供上一/下一 chunk 的只读摘录 |
 | `scripts/meta.py` | 子 agent 单 chunk 观察文件 schema（`output_chunkNNNN.meta.json`） |
 | `scripts/merge_meta.py` | 批次边界合并：子 agent 观察 → canonical 术语表 |
+| `scripts/run_state.py` | 精确重译规划器和 `run_state.json` 记录器 |
 | `scripts/merge_and_build.py` | 合并 chunks → HTML → DOCX/EPUB/PDF |
 | `scripts/calibre_html_publish.py` | Calibre 格式转换封装 |
 | `scripts/template.html` | 网页 HTML 模板，含浮动目录 |
@@ -241,28 +255,28 @@ python3 scripts/merge_and_build.py --temp-dir book_temp --title "《译后书名
 
 闭合读写回路。术语表 v2 新增 `id`、`aliases`、`gender`、`confidence`、`evidence_refs`、`notes`（v1 文件首次加载时自动升级；术语表现在是 3 列，`aliases` 参与选词链路）。子 agent 在输出译文的同时生成 `output_chunkNNNN.meta.json`。新增 `scripts/merge_meta.py`（`prepare-merge` / `apply-merge` / `status`）按批次执行保守合并：跨术语 surface form 唯一性、坏 meta 隔离（warn + skip + count）、`evidence_chunks` 与 `used_term_sources` 双路 confidence 升级、FIFO 上限 5。详见 SKILL.md Step 4 / Step 4.5 / Step 5。
 
-### Phase 2 — 代词的邻居上下文（未开始,独立于 Phase 1）
+### Phase 2 — 代词的邻居上下文（已发布）
 
-为每个子 agent prompt 注入 `prev_excerpt`（上一个 chunk 末尾约 300 字）和 `next_excerpt`（下一个 chunk 开头约 300 字）,仅作只读上下文参考。不新增状态文件,纯 prompt 装配变更。
+`scripts/chunk_context.py` 为每个子 agent prompt 注入 `prev_excerpt`（上一个 chunk 末尾约 300 字）和 `next_excerpt`（下一个 chunk 开头约 300 字），仅作只读上下文参考。不新增状态文件。
 
-### Phase 3 — 精确重译（未开始,依赖 Phase 1）
+### Phase 3 — 精确重译（已发布）
 
-Phase 1 的批次反馈只能向前优化。精确重译闭合向后的回路:新增 `scripts/run_state.py` 和 `run_state.json` schema；按 chunk 跟踪 `glossary_version_used`、`entity_ids_used`、`output_hash`；五条决策规则判断本次哪些 chunk 需要重译。
+Phase 1 的批次反馈只能向前优化。精确重译通过 `scripts/run_state.py` 和 `run_state.json` 闭合向后的回路：按 chunk 跟踪 `glossary_version_used`、`entity_ids_used`、`output_hash`、源 hash、以及选中实体的 hash；五条规划规则覆盖缺失/空输出、manifest 源文件漂移、未记录输出、记录后的源文件漂移、以及术语选择/术语 hash 变化。
 
 ### Phase 4 — 冷启动预热（实验性,依赖 Phase 1 的实际数据）
 
 Phase 1 让术语表按批次增长,因此第一批看到的术语表最小,drift 风险最高。可能的方案:顺序冷启动、可变并发、或跳过预热。决策权属于实际跑过完整书的人。
 
-> 各阶段的具体 schema 和文件布局是示意性的,会在 Phase 1 接触真实数据后调整。Phase 4 取决于实际数据；如果 Phase 1 已经"够好",Phase 3 可能重新调整范围或被放弃。
+> Phase 4 仍取决于真实书籍运行数据。已发布的 schema 后续如果暴露问题，也应通过兼容性迁移继续演进。
 
-### 平行线路 — Pipeline / UX backlog（未开始,独立于 issue #7）
+### 平行线路 — Pipeline / UX backlog（部分已发布,独立于 issue #7）
 
-最近几轮 PR 讨论也暴露出一些有价值的工作流改进,但它们都不属于“一次性小补丁”：会触及仓库契约（产物命名、temp-dir 行为、清理语义、或 EPUB 兼容性边界）。因此这些内容会被收敛为 maintainer 自己维护的 roadmap 项,而不是直接从当前 PR 合入:
+最近几轮 PR 讨论也暴露出一些有价值的工作流改进,但它们都不属于“一次性小补丁”：会触及仓库契约（产物命名、temp-dir 行为、清理语义、或 EPUB 兼容性边界）。当前状态：
 
-- **显式 EPUB 封面支持**。增加 `--cover <image>`,并在 HTML -> EPUB 的 Calibre 步骤透传。`--cover-from <epub>` / EPUB 封面自动提取先不纳入当前范围,等项目准备好承担不同 EPUB 包布局的解析兼容性后再考虑。(context: closed #3)
-- **可配置的 temp 工作目录位置**。当前默认的 cwd-local `{book_name}_temp/` 约定保持不变以兼容现有流程。如果后续要调整,更适合新增显式 `--temp-root` / `--work-dir` 一类参数,而不是静默改变默认位置。(context: closed #4)
-- **更安全的 Calibre/Pandoc 噪声清理**。继续在回归测试保护下逐步增加清理规则,同时保留当前页码检测语义,避免误删真实数字内容或显示公式的定界符。(context: closed #5)
-- **可选的面向用户导出文件名**。流水线内部的 canonical 产物仍保持 `book.html`、`book_doc.html`、`book.docx`、`book.epub`、`book.pdf`。如果后续支持按译后标题命名,更合理的方向可能是额外导出一份 alias/copy,而不是静默替换内部产物契约。(context: closed #6)
+- **显式 EPUB 封面支持（已发布）**。`merge_and_build.py --cover <image>` 会在 HTML -> EPUB 的 Calibre 步骤透传封面图。`--cover-from <epub>` / EPUB 封面自动提取仍不纳入当前范围,等项目准备好承担不同 EPUB 包布局的解析兼容性后再考虑。(context: closed #3)
+- **可配置的 temp 工作目录位置（已发布）**。`convert.py --temp-root <dir>` 保留默认 cwd-local `{book_name}_temp/` 行为，只有显式传参时才改变父目录。(context: closed #4)
+- **更安全的 Calibre/Pandoc 噪声清理（部分已发布）**。页码和 Calibre marker 清理已有回归测试保护，保留年份、章节编号和非单调独立数字。后续清理规则继续在测试下增量增加。(context: closed #5)
+- **可选的面向用户导出文件名（已发布）**。`merge_and_build.py --export-name <stem>` 生成 alias/copy，同时流水线内部 canonical 产物仍保持 `book.html`、`book_doc.html`、`book.docx`、`book.epub`、`book.pdf`。(context: closed #6)
 
 ## Star History
 

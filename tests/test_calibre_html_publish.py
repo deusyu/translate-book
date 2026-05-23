@@ -56,7 +56,7 @@ class ConvertHtmlWithCalibreTests(unittest.TestCase):
 
     @unittest.skipUnless(
         "cover" in inspect.signature(calibre_html_publish.convert_html_with_calibre).parameters,
-        "cover support not merged yet",
+        "cover parameter unavailable",
     )
     def test_includes_cover_argument_when_requested(self):
         with tempfile.TemporaryDirectory() as temp_dir:

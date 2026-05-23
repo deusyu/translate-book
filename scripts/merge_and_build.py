@@ -863,9 +863,13 @@ def add_toc(temp_dir):
 # Step 7: Generate DOCX/EPUB/PDF with error transparency
 # =============================================================================
 
-def generate_format(html_file, temp_dir, output_ext, lang_attr):
+def generate_format(html_file, temp_dir, output_ext, lang_attr, cover=None):
     """Generate a specific format using calibre_html_publish.py"""
     output_file = os.path.join(temp_dir, f"book{output_ext}")
+    cover = cover if output_ext == '.epub' else None
+    if cover and not os.path.isfile(cover):
+        print(f"Cover image not found: {cover}")
+        return None
 
     if os.path.exists(output_file):
         output_mtime = os.path.getmtime(output_file)
@@ -883,7 +887,9 @@ def generate_format(html_file, temp_dir, output_ext, lang_attr):
                     images_newer = True
                     break
 
-        if not html_newer and not images_newer:
+        cover_newer = bool(cover and os.path.getmtime(cover) > output_mtime)
+
+        if not html_newer and not images_newer and not cover_newer:
             file_size = os.path.getsize(output_file)
             print(f"Skipping {output_ext} - already exists and up to date ({file_size:,} bytes)")
             return output_file
@@ -893,6 +899,8 @@ def generate_format(html_file, temp_dir, output_ext, lang_attr):
                 reasons.append("source HTML changed")
             if images_newer:
                 reasons.append("image assets changed")
+            if cover_newer:
+                reasons.append("cover image changed")
             print(f"Rebuilding {output_ext} - {', '.join(reasons)}")
 
     publish_script = os.path.join(SCRIPT_DIR, "calibre_html_publish.py")
@@ -902,6 +910,8 @@ def generate_format(html_file, temp_dir, output_ext, lang_attr):
 
     try:
         cmd = ["python3", publish_script, html_file, "-o", output_file, "--lang", lang_attr]
+        if cover:
+            cmd.extend(["--cover", cover])
         result = subprocess.run(cmd, check=True, capture_output=True, text=True)
 
         if os.path.exists(output_file):
@@ -924,7 +934,7 @@ def generate_format(html_file, temp_dir, output_ext, lang_attr):
         return None
 
 
-def generate_formats(temp_dir, lang_attr):
+def generate_formats(temp_dir, lang_attr, cover=None):
     """Generate DOCX, EPUB, and PDF with result summary"""
     print("=== Generating output formats ===")
 
@@ -939,7 +949,7 @@ def generate_formats(temp_dir, lang_attr):
 
     results = {}
     for ext in ['.docx', '.epub', '.pdf']:
-        result = generate_format(html_file, temp_dir, ext, lang_attr)
+        result = generate_format(html_file, temp_dir, ext, lang_attr, cover=cover)
         if result:
             file_size = os.path.getsize(result)
             results[ext] = ('OK', f"{file_size:,} bytes")
@@ -959,6 +969,43 @@ def generate_formats(temp_dir, lang_attr):
     return not has_failures
 
 
+def _validate_export_name(name):
+    """Validate an export filename stem. Keep aliases inside temp_dir."""
+    if not name or not name.strip():
+        raise ValueError("--export-name must not be empty")
+    if '\x00' in name or '/' in name or '\\' in name:
+        raise ValueError("--export-name must be a filename stem, not a path")
+    return name.strip()
+
+
+def export_named_aliases(temp_dir, export_name):
+    """Copy canonical outputs to optional user-facing filenames.
+
+    Canonical artifacts remain untouched. The alias names use export_name as a
+    filename stem, with book_doc.html receiving a _doc suffix to avoid colliding
+    with the web HTML alias.
+    """
+    stem = _validate_export_name(export_name)
+    mappings = {
+        "book.html": f"{stem}.html",
+        "book_doc.html": f"{stem}_doc.html",
+        "book.docx": f"{stem}.docx",
+        "book.epub": f"{stem}.epub",
+        "book.pdf": f"{stem}.pdf",
+    }
+    copied = []
+    for src_name, dst_name in mappings.items():
+        src = os.path.join(temp_dir, src_name)
+        if not os.path.exists(src):
+            continue
+        dst = os.path.join(temp_dir, dst_name)
+        if os.path.abspath(src) == os.path.abspath(dst):
+            continue
+        shutil.copy2(src, dst)
+        copied.append(dst_name)
+    return copied
+
+
 # =============================================================================
 # Main
 # =============================================================================
@@ -969,6 +1016,8 @@ def main():
     parser.add_argument('--title', default=None, help='Translated book title (override config)')
     parser.add_argument('--author', default=None, help='Author name (override config)')
     parser.add_argument('--lang', default=None, help='Output language code (override config)')
+    parser.add_argument('--cover', default=None, help='Cover image path for EPUB output')
+    parser.add_argument('--export-name', default=None, help='Optional filename stem for exported alias copies')
     parser.add_argument('--cleanup', action='store_true', help='Remove intermediate artifacts after successful build')
 
     args = parser.parse_args()
@@ -977,6 +1026,21 @@ def main():
     if not os.path.isdir(temp_dir):
         print(f"Error: Temp directory not found: {temp_dir}")
         sys.exit(1)
+
+    cover = args.cover
+    if cover:
+        if not os.path.isfile(cover):
+            print(f"Error: Cover image not found: {cover}")
+            sys.exit(1)
+        cover = os.path.abspath(cover)
+
+    export_name = None
+    if args.export_name:
+        try:
+            export_name = _validate_export_name(args.export_name)
+        except ValueError as e:
+            print(f"Error: {e}")
+            sys.exit(1)
 
     # Load config as base, CLI args override
     config = load_config(temp_dir)
@@ -1005,7 +1069,17 @@ def main():
     add_toc(temp_dir)
 
     # Step 7: Generate formats
-    all_formats_ok = generate_formats(temp_dir, lang_cfg['lang_attr'])
+    all_formats_ok = generate_formats(temp_dir, lang_cfg['lang_attr'], cover=cover)
+
+    if export_name:
+        if all_formats_ok:
+            aliases = export_named_aliases(temp_dir, export_name)
+            if aliases:
+                print("\nExport aliases:")
+                for name in aliases:
+                    print(f"  {name}")
+        else:
+            print("\nSkipping export aliases — some formats failed.")
 
     print("\n=== Build Complete ===")
     print(f"All outputs saved to: {temp_dir}")

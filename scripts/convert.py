@@ -147,11 +147,23 @@ def extract_htmlz(htmlz_file, temp_dir):
         return None, None
 
 
-def setup_temp_directory(input_file, html_file, images_dir):
+def build_temp_dir(input_file, temp_root=None):
+    """Return the working directory path for an input file.
+
+    Default is the historical cwd-local {book_name}_temp/. When temp_root is
+    provided, only the root changes; the leaf directory name stays compatible.
+    """
+    base_name = os.path.splitext(os.path.basename(input_file))[0]
+    leaf = f"{base_name}_temp"
+    if temp_root:
+        return os.path.join(temp_root, leaf)
+    return leaf
+
+
+def setup_temp_directory(input_file, html_file, images_dir, temp_root=None):
     """Setup temp directory with HTML and images"""
     try:
-        base_name = os.path.splitext(os.path.basename(input_file))[0]
-        temp_dir = f"{base_name}_temp"
+        temp_dir = build_temp_dir(input_file, temp_root)
         os.makedirs(temp_dir, exist_ok=True)
 
         input_html = os.path.join(temp_dir, "input.html")
@@ -708,6 +720,11 @@ def main():
     parser.add_argument("--olang", default="zh", help="Output language (default: zh)")
     parser.add_argument("--chunk-size", type=int, default=6000, help="Target chunk size in characters (default: 6000)")
     parser.add_argument(
+        "--temp-root",
+        default=None,
+        help="Directory under which {book_name}_temp/ will be created (default: current working directory)",
+    )
+    parser.add_argument(
         "--strip-page-numbers",
         action="store_true",
         help="Aggressively delete every standalone-digit line (legacy behavior). "
@@ -729,6 +746,8 @@ def main():
     print("=== File Conversion via Calibre HTMLZ ===")
     print(f"Input file: {input_file}")
     print(f"Target chunk size: {args.chunk_size} characters")
+    if args.temp_root:
+        print(f"Temp root: {args.temp_root}")
 
     calibre_path = find_calibre_convert()
     if not calibre_path:
@@ -739,8 +758,7 @@ def main():
     htmlz_file = f"{os.path.splitext(input_file)[0]}.htmlz"
 
     try:
-        base_name = os.path.splitext(os.path.basename(input_file))[0]
-        temp_dir = f"{base_name}_temp"
+        temp_dir = build_temp_dir(input_file, args.temp_root)
         input_html_path = os.path.join(temp_dir, "input.html")
 
         if os.path.exists(input_html_path):
@@ -795,7 +813,7 @@ def main():
 
             metadata = extract_metadata_from_htmlz(extract_dir)
 
-            temp_dir = setup_temp_directory(input_file, html_file, images_dir)
+            temp_dir = setup_temp_directory(input_file, html_file, images_dir, temp_root=args.temp_root)
             if not temp_dir:
                 sys.exit(1)
 

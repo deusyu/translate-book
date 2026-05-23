@@ -262,6 +262,38 @@ class CleanCalibreMarkersTests(unittest.TestCase):
         self.assertIn("Introduction text follows.", cleaned)
 
 
+class TempRootTests(unittest.TestCase):
+    def test_build_temp_dir_preserves_cwd_local_default(self):
+        self.assertEqual(convert.build_temp_dir("/books/Alice.epub"), "Alice_temp")
+
+    def test_build_temp_dir_uses_explicit_root(self):
+        self.assertEqual(
+            convert.build_temp_dir("/books/Alice.epub", "/tmp/work"),
+            os.path.join("/tmp/work", "Alice_temp"),
+        )
+
+    def test_setup_temp_directory_uses_explicit_root(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "work"
+            html_file = Path(temp_dir) / "input.html"
+            images_dir = Path(temp_dir) / "images"
+            image_file = images_dir / "cover.jpg"
+            html_file.write_text("<html></html>", encoding="utf-8")
+            images_dir.mkdir()
+            image_file.write_text("image", encoding="utf-8")
+
+            created = convert.setup_temp_directory(
+                "/books/Alice.epub",
+                str(html_file),
+                str(images_dir),
+                temp_root=str(root),
+            )
+
+            self.assertEqual(created, str(root / "Alice_temp"))
+            self.assertTrue((root / "Alice_temp" / "input.html").exists())
+            self.assertTrue((root / "Alice_temp" / "images" / "cover.jpg").exists())
+
+
 class StripPageNumbersCacheConflictTests(unittest.TestCase):
     def test_no_blockers_when_flag_off(self):
         with tempfile.TemporaryDirectory() as tmp:
