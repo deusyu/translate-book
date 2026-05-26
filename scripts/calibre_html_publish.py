@@ -261,15 +261,20 @@ def convert_html_with_calibre(html_file, output_file, format_type, timeout=600, 
         ])
     
     try:
-        # Set up timeout signal
-        signal.signal(signal.SIGALRM, timeout_handler)
-        signal.alarm(timeout)
+        # Set up timeout signal (POSIX only). signal.SIGALRM/alarm do not exist on
+        # Windows; the subprocess.run(..., timeout=timeout) call below already enforces
+        # the timeout cross-platform via subprocess.TimeoutExpired, so guarding here keeps
+        # Windows working without losing the POSIX belt-and-suspenders behavior.
+        if hasattr(signal, "SIGALRM"):
+            signal.signal(signal.SIGALRM, timeout_handler)
+            signal.alarm(timeout)
         
         print(f"Starting conversion (timeout: {timeout}s)...")
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
         
-        # Cancel timeout
-        signal.alarm(0)
+        # Cancel timeout (POSIX only)
+        if hasattr(signal, "SIGALRM"):
+            signal.alarm(0)
         
         if result.returncode == 0:
             if os.path.exists(output_file):
@@ -293,8 +298,9 @@ def convert_html_with_calibre(html_file, output_file, format_type, timeout=600, 
         print(f"✗ Conversion error: {e}")
         return False
     finally:
-        # Ensure timeout is cancelled
-        signal.alarm(0)
+        # Ensure timeout is cancelled (POSIX only)
+        if hasattr(signal, "SIGALRM"):
+            signal.alarm(0)
 
 def main():
     """Main function"""

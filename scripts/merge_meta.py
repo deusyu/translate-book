@@ -478,7 +478,11 @@ def cmd_prepare_merge(temp_dir):
 def cmd_apply_merge(temp_dir):
     """Read decisions JSON from stdin and apply to the glossary."""
     try:
-        decisions_doc = json.load(sys.stdin)
+        # Read stdin as utf-8-sig so an optional leading UTF-8 BOM is tolerated. On
+        # Windows, PowerShell pipelines (and some shell wrappers) prepend a BOM to a
+        # child process's stdin; plain json.load(sys.stdin) then fails with
+        # "Unexpected UTF-8 BOM". utf-8-sig strips it and is a no-op on clean/POSIX input.
+        decisions_doc = json.loads(sys.stdin.buffer.read().decode("utf-8-sig"))
     except json.JSONDecodeError as e:
         sys.stderr.write(f"error: decisions JSON on stdin is not valid: {e}\n")
         sys.exit(2)
