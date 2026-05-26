@@ -112,20 +112,37 @@ def validate_for_merge(temp_dir):
             errors.append(f"Missing output: {chunk['output_file']} (chunk {chunk['id']})")
             continue
 
-        # Check non-empty
+        # Check non-empty. Whitespace-only outputs are also unusable: they have
+        # bytes on disk but would disappear during markdown merge.
         output_size = os.path.getsize(output_path)
         if output_size == 0:
             errors.append(f"Empty output: {chunk['output_file']} (chunk {chunk['id']})")
             continue
+        try:
+            with open(output_path, 'r', encoding='utf-8') as f:
+                output_text = f.read()
+        except Exception as e:
+            errors.append(
+                f"Unreadable output: {chunk['output_file']} (chunk {chunk['id']}): {e}"
+            )
+            continue
+        if not output_text.strip():
+            errors.append(
+                f"Blank output: {chunk['output_file']} (chunk {chunk['id']})"
+            )
+            continue
 
-        # Check abnormally short
+        # Check abnormally short. A translation below 10% of source size is far
+        # more likely to be a failed/truncated agent response than a real book
+        # chunk, and merging it would silently corrupt the final artifact.
         if os.path.exists(source_path):
             source_size = os.path.getsize(source_path)
             if source_size > 0 and output_size < source_size * 0.1:
-                warnings.append(
+                errors.append(
                     f"Suspiciously short: {chunk['output_file']} "
                     f"({output_size} bytes vs source {source_size} bytes)"
                 )
+                continue
 
         ordered_output_files.append(output_path)
 
