@@ -125,6 +125,13 @@ def _term_ids_and_hashes(terms):
     return ids, hashes
 
 
+def _glossary_is_newer_than_output(temp_dir, output_path):
+    glossary_path = os.path.join(temp_dir, 'glossary.json')
+    if not os.path.exists(glossary_path) or not os.path.exists(output_path):
+        return False
+    return os.stat(glossary_path).st_mtime_ns > os.stat(output_path).st_mtime_ns
+
+
 def _now_utc():
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
@@ -192,6 +199,7 @@ def plan(temp_dir, retranslate_untracked=False):
             "missing_output_or_empty_output",
             "manifest_source_hash_changed",
             "untracked_existing_output",
+            "glossary_newer_than_untracked_output",
             "source_hash_changed_since_record",
             "glossary_term_selection_or_term_hash_changed",
         ],
@@ -234,6 +242,14 @@ def plan(temp_dir, retranslate_untracked=False):
             if retranslate_untracked:
                 item["action"] = "translate"
                 _reason(item, "untracked_existing_output")
+            elif glossary is not None and _glossary_is_newer_than_output(temp_dir, output_path):
+                selected_terms = _selected_terms_for_chunk(glossary, source_path)
+                if selected_terms:
+                    item["action"] = "translate"
+                    _reason(item, "glossary_newer_than_untracked_output")
+                else:
+                    item["action"] = "record"
+                    _reason(item, "untracked_existing_output")
             else:
                 item["action"] = "record"
                 _reason(item, "untracked_existing_output")

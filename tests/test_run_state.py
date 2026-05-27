@@ -41,6 +41,9 @@ class RunStateTests(unittest.TestCase):
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         Path(path).write_text(content, encoding="utf-8")
 
+    def _set_mtime_ns(self, path, value):
+        os.utime(path, ns=(value, value))
+
     def _workspace(self):
         tmp = tempfile.TemporaryDirectory()
         temp_dir = Path(tmp.name)
@@ -55,6 +58,9 @@ class RunStateTests(unittest.TestCase):
             str(temp_dir / "input.md"),
         )
         self._write(temp_dir / "glossary.json", json.dumps(glossary_doc(), ensure_ascii=False))
+        self._set_mtime_ns(temp_dir / "glossary.json", 1_000_000_000)
+        self._set_mtime_ns(temp_dir / "output_chunk0001.md", 2_000_000_000)
+        self._set_mtime_ns(temp_dir / "output_chunk0002.md", 2_000_000_000)
         return tmp, temp_dir
 
     def test_untracked_outputs_are_record_only_by_default(self):
@@ -64,6 +70,23 @@ class RunStateTests(unittest.TestCase):
 
         self.assertEqual(plan["translation_chunk_ids"], [])
         self.assertEqual(plan["record_only_chunk_ids"], ["chunk0001", "chunk0002"])
+
+    def test_untracked_output_older_than_glossary_translates_affected_chunk(self):
+        tmp, temp_dir = self._workspace()
+        with tmp:
+            self._write(
+                temp_dir / "glossary.json",
+                json.dumps(glossary_doc(target="泰"), ensure_ascii=False),
+            )
+            self._set_mtime_ns(temp_dir / "output_chunk0001.md", 1_000_000_000)
+            self._set_mtime_ns(temp_dir / "output_chunk0002.md", 1_000_000_000)
+            self._set_mtime_ns(temp_dir / "glossary.json", 2_000_000_000)
+            plan = run_state.plan(str(temp_dir))
+
+        self.assertEqual(plan["translation_chunk_ids"], ["chunk0001"])
+        self.assertEqual(plan["record_only_chunk_ids"], ["chunk0002"])
+        chunk1 = next(c for c in plan["chunks"] if c["chunk_id"] == "chunk0001")
+        self.assertEqual(chunk1["reasons"], ["glossary_newer_than_untracked_output"])
 
     def test_retranslate_untracked_flag_marks_existing_outputs_for_translation(self):
         tmp, temp_dir = self._workspace()
