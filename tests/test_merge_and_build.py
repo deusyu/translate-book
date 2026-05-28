@@ -15,6 +15,7 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 import merge_and_build  # noqa: E402
+from manifest import create_manifest  # noqa: E402
 
 
 class GenerateFormatTests(unittest.TestCase):
@@ -194,6 +195,74 @@ class ExportAliasTests(unittest.TestCase):
     def test_export_name_rejects_paths(self):
         with self.assertRaises(ValueError):
             merge_and_build.export_named_aliases("/tmp", "../bad")
+
+
+class MergeMarkdownValidationTests(unittest.TestCase):
+    def _write(self, path, content):
+        Path(path).write_text(content, encoding="utf-8")
+
+    def _create_manifest_workspace(self, temp_dir, source_content, output_content):
+        temp_path = Path(temp_dir)
+        self._write(temp_path / "input.md", source_content)
+        self._write(temp_path / "chunk0001.md", source_content)
+        self._write(temp_path / "output_chunk0001.md", output_content)
+        create_manifest(temp_dir, ["chunk0001.md"], str(temp_path / "input.md"))
+
+    def test_rejects_suspiciously_short_manifest_output(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            self._create_manifest_workspace(
+                temp_dir,
+                "This source paragraph should not collapse during translation.\n" * 20,
+                "ok\n",
+            )
+
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                result = merge_and_build.merge_markdown_files(temp_dir)
+
+            self.assertFalse(result)
+            self.assertFalse((Path(temp_dir) / "output.md").exists())
+            self.assertIn("Suspiciously short", buf.getvalue())
+
+    def test_rejects_blank_manifest_output(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            self._create_manifest_workspace(
+                temp_dir,
+                "Source content that requires a real translated output.\n",
+                "  \n\t",
+            )
+
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                result = merge_and_build.merge_markdown_files(temp_dir)
+
+            self.assertFalse(result)
+            self.assertFalse((Path(temp_dir) / "output.md").exists())
+            self.assertIn("Blank output", buf.getvalue())
+
+    def test_merge_read_error_fails_without_writing_output_md(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = str(Path(temp_dir) / "output_chunk0001.md")
+
+            with mock.patch.object(
+                merge_and_build,
+                "validate_for_merge",
+                return_value=(True, [output_path], []),
+            ), mock.patch.object(
+                merge_and_build,
+                "_validate_chunk_images",
+                return_value=True,
+            ), mock.patch(
+                "builtins.open",
+                side_effect=OSError("read failed"),
+            ):
+                buf = io.StringIO()
+                with contextlib.redirect_stdout(buf):
+                    result = merge_and_build.merge_markdown_files(temp_dir)
+
+            self.assertFalse(result)
+            self.assertFalse((Path(temp_dir) / "output.md").exists())
+            self.assertIn("Error reading output_chunk0001.md", buf.getvalue())
 
 
 class ImageValidationTests(unittest.TestCase):
