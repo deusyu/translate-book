@@ -74,9 +74,14 @@ def glossary_hash(glossary):
 
 
 def term_hash(term):
-    """SHA-256 of a single term's identifying fields."""
-    payload = f"{term.get('source', '')}→{term.get('target', '')}|{term.get('category', '')}"
-    return hashlib.sha256(payload.encode('utf-8')).hexdigest()
+    """SHA-256 of fields that affect how a term is injected into prompts."""
+    payload = {
+        'source': term.get('source', ''),
+        'target': term.get('target', ''),
+        'category': term.get('category', ''),
+        'aliases': sorted(term.get('aliases', []) or []),
+    }
+    return hashlib.sha256(_canonical_json(payload).encode('utf-8')).hexdigest()
 
 
 def _v2_term_defaults(term):
