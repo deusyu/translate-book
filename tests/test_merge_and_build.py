@@ -15,6 +15,7 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 import merge_and_build  # noqa: E402
+from manifest import create_manifest  # noqa: E402
 
 
 class GenerateFormatTests(unittest.TestCase):
@@ -194,6 +195,60 @@ class ExportAliasTests(unittest.TestCase):
     def test_export_name_rejects_paths(self):
         with self.assertRaises(ValueError):
             merge_and_build.export_named_aliases("/tmp", "../bad")
+
+
+class MergeMarkdownValidationTests(unittest.TestCase):
+    def _write(self, path, content):
+        Path(path).write_text(content, encoding="utf-8")
+
+    def _run_merge(self, temp_dir):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            ok = merge_and_build.merge_markdown_files(temp_dir)
+        return ok, buf.getvalue()
+
+    def test_blank_manifest_output_fails_and_removes_stale_merge(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            self._write(temp_path / "input.md", "input\n")
+            self._write(temp_path / "chunk0001.md", "Translatable source text.\n")
+            self._write(temp_path / "output_chunk0001.md", " \n\t\n")
+            self._write(temp_path / "output.md", "stale merged content\n")
+            create_manifest(temp_dir, ["chunk0001.md"], str(temp_path / "input.md"))
+
+            ok, out = self._run_merge(temp_dir)
+
+            self.assertFalse(ok)
+            self.assertFalse(temp_path.joinpath("output.md").exists())
+            self.assertIn("Blank output", out)
+            self.assertIn("output_chunk0001.md", out)
+
+    def test_suspiciously_short_manifest_output_fails_without_writing_merge(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            self._write(temp_path / "input.md", "input\n")
+            self._write(temp_path / "chunk0001.md", "A" * 500 + "\n")
+            self._write(temp_path / "output_chunk0001.md", "ok\n")
+            create_manifest(temp_dir, ["chunk0001.md"], str(temp_path / "input.md"))
+
+            ok, out = self._run_merge(temp_dir)
+
+            self.assertFalse(ok)
+            self.assertFalse(temp_path.joinpath("output.md").exists())
+            self.assertIn("Suspiciously short", out)
+            self.assertIn("output_chunk0001.md", out)
+
+    def test_legacy_blank_output_fails_without_writing_merge(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            self._write(temp_path / "chunk0001.md", "Translatable source text.\n")
+            self._write(temp_path / "output_chunk0001.md", " \n\t\n")
+
+            ok, out = self._run_merge(temp_dir)
+
+            self.assertFalse(ok)
+            self.assertFalse(temp_path.joinpath("output.md").exists())
+            self.assertIn("Cannot merge output_chunk0001.md", out)
 
 
 class ImageValidationTests(unittest.TestCase):

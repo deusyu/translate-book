@@ -276,6 +276,15 @@ def natural_sort_key(text):
     return [int(t) if t.isdigit() else t.lower() for t in re.split(r'(\d+)', text)]
 
 
+def _read_nonblank_translated_chunk(file_path):
+    """Read a translated chunk and reject whitespace-only content."""
+    with open(file_path, 'r', encoding='utf-8') as f:
+        content = f.read().strip()
+    if not content:
+        raise ValueError("translated chunk is blank after trimming whitespace")
+    return content
+
+
 # =============================================================================
 # Step 4: Merge translated markdown files
 # =============================================================================
@@ -326,12 +335,11 @@ def merge_markdown_files(temp_dir):
         merged_content = ""
         for file_path in ordered_files:
             try:
-                with open(file_path, 'r', encoding='utf-8') as f:
-                    content = f.read().strip()
-                if content:
-                    merged_content += content + "\n\n"
+                content = _read_nonblank_translated_chunk(file_path)
+                merged_content += content + "\n\n"
             except Exception as e:
-                print(f"Error reading {os.path.basename(file_path)}: {e}")
+                print(f"ERROR: Cannot merge {os.path.basename(file_path)}: {e}")
+                return False
     else:
         # Legacy fallback: glob-based merge (no manifest)
         print("WARNING: No manifest.json found — using legacy glob-based merge.")
@@ -371,6 +379,11 @@ def merge_markdown_files(temp_dir):
             if os.path.getsize(fp) == 0:
                 print(f"ERROR: Empty output file: {os.path.basename(fp)}")
                 return False
+            try:
+                _read_nonblank_translated_chunk(fp)
+            except Exception as e:
+                print(f"ERROR: Cannot merge {os.path.basename(fp)}: {e}")
+                return False
 
         # Use source order to determine merge order (via expected output names)
         output_files = [
@@ -382,12 +395,11 @@ def merge_markdown_files(temp_dir):
         merged_content = ""
         for file_path in output_files:
             try:
-                with open(file_path, 'r', encoding='utf-8') as f:
-                    content = f.read().strip()
-                if content:
-                    merged_content += content + "\n\n"
+                content = _read_nonblank_translated_chunk(file_path)
+                merged_content += content + "\n\n"
             except Exception as e:
-                print(f"Error reading {os.path.basename(file_path)}: {e}")
+                print(f"ERROR: Cannot merge {os.path.basename(file_path)}: {e}")
+                return False
 
     try:
         with open(output_md, 'w', encoding='utf-8') as f:

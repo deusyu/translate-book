@@ -8,6 +8,10 @@ import json
 import hashlib
 
 
+SUSPICIOUSLY_SHORT_RATIO = 0.1
+SUSPICIOUSLY_SHORT_SOURCE_MIN_BYTES = 200
+
+
 def file_hash(filepath):
     """Compute SHA-256 hash of a file."""
     h = hashlib.sha256()
@@ -112,20 +116,37 @@ def validate_for_merge(temp_dir):
             errors.append(f"Missing output: {chunk['output_file']} (chunk {chunk['id']})")
             continue
 
-        # Check non-empty
+        # Check readable and non-empty after trimming. Whitespace-only output
+        # would be silently skipped by merge, producing a partial book.
         output_size = os.path.getsize(output_path)
         if output_size == 0:
             errors.append(f"Empty output: {chunk['output_file']} (chunk {chunk['id']})")
             continue
+        try:
+            with open(output_path, 'r', encoding='utf-8') as f:
+                output_text = f.read()
+        except Exception as e:
+            errors.append(
+                f"Unreadable output: {chunk['output_file']} (chunk {chunk['id']}): {e}"
+            )
+            continue
+        if not output_text.strip():
+            errors.append(f"Blank output: {chunk['output_file']} (chunk {chunk['id']})")
+            continue
 
-        # Check abnormally short
+        # Check abnormally short. Very small source chunks can legitimately
+        # shrink below this ratio, so only hard-fail substantive chunks.
         if os.path.exists(source_path):
             source_size = os.path.getsize(source_path)
-            if source_size > 0 and output_size < source_size * 0.1:
-                warnings.append(
+            if source_size > 0 and output_size < source_size * SUSPICIOUSLY_SHORT_RATIO:
+                message = (
                     f"Suspiciously short: {chunk['output_file']} "
                     f"({output_size} bytes vs source {source_size} bytes)"
                 )
+                if source_size >= SUSPICIOUSLY_SHORT_SOURCE_MIN_BYTES:
+                    errors.append(message)
+                    continue
+                warnings.append(message)
 
         ordered_output_files.append(output_path)
 
