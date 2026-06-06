@@ -294,6 +294,87 @@ class TempRootTests(unittest.TestCase):
             self.assertTrue((root / "Alice_temp" / "images" / "cover.jpg").exists())
 
 
+class SourceCacheFingerprintTests(unittest.TestCase):
+    def _write_source(self, path, content):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+
+    def test_empty_temp_dir_has_no_source_cache_conflict(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source = tmp_path / "Alice.epub"
+            self._write_source(source, b"alpha")
+            temp_dir = tmp_path / "Alice_temp"
+
+            conflict = convert._check_source_cache_conflict(str(source), str(temp_dir))
+
+            self.assertIsNone(conflict)
+
+    def test_matching_source_fingerprint_allows_cache_reuse(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source = tmp_path / "Alice.epub"
+            self._write_source(source, b"alpha")
+            temp_dir = tmp_path / "Alice_temp"
+            temp_dir.mkdir()
+            (temp_dir / "input.html").write_text("<p>alpha</p>", encoding="utf-8")
+            convert._write_source_fingerprint(str(temp_dir), str(source))
+
+            conflict = convert._check_source_cache_conflict(str(source), str(temp_dir))
+
+            self.assertIsNone(conflict)
+
+    def test_legacy_cache_without_source_fingerprint_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source = tmp_path / "Alice.epub"
+            self._write_source(source, b"alpha")
+            temp_dir = tmp_path / "Alice_temp"
+            temp_dir.mkdir()
+            (temp_dir / "input.html").write_text("<p>alpha</p>", encoding="utf-8")
+
+            conflict = convert._check_source_cache_conflict(str(source), str(temp_dir))
+
+            self.assertIsNotNone(conflict)
+            self.assertIn("no source_fingerprint.json", conflict)
+
+    def test_same_basename_different_source_rejects_stale_cache(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source_a = tmp_path / "a" / "Alice.epub"
+            source_b = tmp_path / "b" / "Alice.epub"
+            self._write_source(source_a, b"BOOK_ALPHA_UNIQUE_MARKER")
+            self._write_source(source_b, b"BOOK_BETA_UNIQUE_MARKER")
+            temp_dir = Path(convert.build_temp_dir(str(source_a), str(tmp_path / "work")))
+            temp_dir.mkdir(parents=True)
+            (temp_dir / "input.md").write_text("BOOK_ALPHA_UNIQUE_MARKER", encoding="utf-8")
+            (temp_dir / "chunk0001.md").write_text("BOOK_ALPHA_UNIQUE_MARKER", encoding="utf-8")
+            convert._write_source_fingerprint(str(temp_dir), str(source_a))
+
+            conflict = convert._check_source_cache_conflict(str(source_b), str(temp_dir))
+
+            self.assertIsNotNone(conflict)
+            self.assertIn("different source", conflict)
+            self.assertIn("path, size, sha256", conflict)
+
+    def test_replaced_source_file_rejects_stale_cache(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source = tmp_path / "Alice.epub"
+            self._write_source(source, b"BOOK_ALPHA_INPLACE_MARKER")
+            temp_dir = tmp_path / "Alice_temp"
+            temp_dir.mkdir()
+            (temp_dir / "output_chunk0001.md").write_text("translated alpha", encoding="utf-8")
+            convert._write_source_fingerprint(str(temp_dir), str(source))
+
+            self._write_source(source, b"BOOK_BETA_INPLACE_MARKER")
+            conflict = convert._check_source_cache_conflict(str(source), str(temp_dir))
+
+            self.assertIsNotNone(conflict)
+            self.assertIn("different source", conflict)
+            self.assertIn("size, sha256", conflict)
+
+
 class StripPageNumbersCacheConflictTests(unittest.TestCase):
     def test_no_blockers_when_flag_off(self):
         with tempfile.TemporaryDirectory() as tmp:

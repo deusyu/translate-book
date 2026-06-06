@@ -14,8 +14,12 @@ import argparse
 import bisect
 import glob
 import re
+import json
 
-from manifest import create_manifest
+from manifest import create_manifest, file_hash
+
+
+SOURCE_FINGERPRINT_FILE = "source_fingerprint.json"
 
 
 def find_calibre_convert():
@@ -158,6 +162,101 @@ def build_temp_dir(input_file, temp_root=None):
     if temp_root:
         return os.path.join(temp_root, leaf)
     return leaf
+
+
+def _source_fingerprint(input_file):
+    """Return stable identity fields for the source file backing a temp cache."""
+    stat = os.stat(input_file)
+    return {
+        "version": 1,
+        "path": os.path.realpath(input_file),
+        "size": stat.st_size,
+        "sha256": file_hash(input_file),
+    }
+
+
+def _source_fingerprint_path(temp_dir):
+    return os.path.join(temp_dir, SOURCE_FINGERPRINT_FILE)
+
+
+def _write_source_fingerprint(temp_dir, input_file):
+    fingerprint_path = _source_fingerprint_path(temp_dir)
+    with open(fingerprint_path, 'w', encoding='utf-8') as f:
+        json.dump(_source_fingerprint(input_file), f, indent=2, sort_keys=True)
+
+
+def _load_source_fingerprint(temp_dir):
+    fingerprint_path = _source_fingerprint_path(temp_dir)
+    if not os.path.exists(fingerprint_path):
+        return None
+    with open(fingerprint_path, 'r', encoding='utf-8') as f:
+        return json.load(f)
+
+
+def _conversion_cache_artifacts(temp_dir):
+    """Return cached conversion/translation artifacts that must match a source."""
+    if not os.path.isdir(temp_dir):
+        return []
+
+    artifacts = []
+    for filename in ("input.html", "input.md", "manifest.json"):
+        path = os.path.join(temp_dir, filename)
+        if os.path.exists(path):
+            artifacts.append(path)
+
+    images_dir = os.path.join(temp_dir, "images")
+    if os.path.exists(images_dir):
+        artifacts.append(images_dir)
+
+    patterns = (
+        "chunk*.md",
+        "output_chunk*.md",
+        "output_chunk*.meta.json",
+    )
+    for pattern in patterns:
+        artifacts.extend(glob.glob(os.path.join(temp_dir, pattern)))
+
+    return sorted(set(artifacts))
+
+
+def _check_source_cache_conflict(input_file, temp_dir):
+    """Return an error string when cached artifacts do not match input_file."""
+    artifacts = _conversion_cache_artifacts(temp_dir)
+    if not artifacts:
+        return None
+
+    current = _source_fingerprint(input_file)
+    cached = _load_source_fingerprint(temp_dir)
+    if cached is None:
+        return (
+            f"{temp_dir} contains cached conversion artifacts but no "
+            f"{SOURCE_FINGERPRINT_FILE} source fingerprint"
+        )
+
+    mismatched_fields = [
+        field for field in ("path", "size", "sha256")
+        if cached.get(field) != current.get(field)
+    ]
+    if not mismatched_fields:
+        return None
+
+    fields = ", ".join(mismatched_fields)
+    cached_path = cached.get("path", "<unknown>")
+    cached_hash = str(cached.get("sha256", ""))[:12] or "<missing>"
+    return (
+        f"{temp_dir} contains cached artifacts for a different source "
+        f"({fields} differ). Cached: {cached_path} "
+        f"{cached_hash}...; current: {current['path']} "
+        f"{current['sha256'][:12]}..."
+    )
+
+
+def _abort_on_source_cache_conflict(conflict, temp_dir):
+    if not conflict:
+        return
+    print(f"Error: {conflict}")
+    print(f"Delete the cached files (or remove the entire {temp_dir}/ directory) and re-run.")
+    sys.exit(1)
 
 
 def setup_temp_directory(input_file, html_file, images_dir, temp_root=None):
@@ -759,6 +858,10 @@ def main():
 
     try:
         temp_dir = build_temp_dir(input_file, args.temp_root)
+        _abort_on_source_cache_conflict(
+            _check_source_cache_conflict(input_file, temp_dir),
+            temp_dir,
+        )
         input_html_path = os.path.join(temp_dir, "input.html")
 
         if os.path.exists(input_html_path):
@@ -816,6 +919,7 @@ def main():
             temp_dir = setup_temp_directory(input_file, html_file, images_dir, temp_root=args.temp_root)
             if not temp_dir:
                 sys.exit(1)
+            _write_source_fingerprint(temp_dir, input_file)
 
             input_html = os.path.join(temp_dir, "input.html")
             input_md = os.path.join(temp_dir, "input.md")
