@@ -18,7 +18,7 @@ from collections import Counter
 from html.parser import HTMLParser
 from pathlib import Path
 
-from manifest import validate_for_merge
+from manifest import MIN_OUTPUT_SOURCE_RATIO, validate_for_merge
 
 
 # =============================================================================
@@ -276,6 +276,14 @@ def natural_sort_key(text):
     return [int(t) if t.isdigit() else t.lower() for t in re.split(r'(\d+)', text)]
 
 
+def _read_substantive_markdown(file_path):
+    with open(file_path, 'r', encoding='utf-8') as f:
+        content = f.read().strip()
+    if not content:
+        raise ValueError(f"blank output after trimming whitespace: {os.path.basename(file_path)}")
+    return content
+
+
 # =============================================================================
 # Step 4: Merge translated markdown files
 # =============================================================================
@@ -326,12 +334,11 @@ def merge_markdown_files(temp_dir):
         merged_content = ""
         for file_path in ordered_files:
             try:
-                with open(file_path, 'r', encoding='utf-8') as f:
-                    content = f.read().strip()
-                if content:
-                    merged_content += content + "\n\n"
+                content = _read_substantive_markdown(file_path)
+                merged_content += content + "\n\n"
             except Exception as e:
                 print(f"Error reading {os.path.basename(file_path)}: {e}")
+                return False
     else:
         # Legacy fallback: glob-based merge (no manifest)
         print("WARNING: No manifest.json found — using legacy glob-based merge.")
@@ -368,9 +375,24 @@ def merge_markdown_files(temp_dir):
 
         # Verify no empty output files
         for fp in output_files:
-            if os.path.getsize(fp) == 0:
+            source_fp = os.path.join(temp_dir, os.path.basename(fp).replace('output_', '', 1))
+            output_size = os.path.getsize(fp)
+            if output_size == 0:
                 print(f"ERROR: Empty output file: {os.path.basename(fp)}")
                 return False
+            try:
+                _read_substantive_markdown(fp)
+            except Exception as e:
+                print(f"ERROR: Invalid output file: {e}")
+                return False
+            if os.path.exists(source_fp):
+                source_size = os.path.getsize(source_fp)
+                if source_size > 0 and output_size < source_size * MIN_OUTPUT_SOURCE_RATIO:
+                    print(
+                        f"ERROR: Severely truncated output: {os.path.basename(fp)} "
+                        f"({output_size} bytes vs source {source_size} bytes)"
+                    )
+                    return False
 
         # Use source order to determine merge order (via expected output names)
         output_files = [
@@ -382,12 +404,11 @@ def merge_markdown_files(temp_dir):
         merged_content = ""
         for file_path in output_files:
             try:
-                with open(file_path, 'r', encoding='utf-8') as f:
-                    content = f.read().strip()
-                if content:
-                    merged_content += content + "\n\n"
+                content = _read_substantive_markdown(file_path)
+                merged_content += content + "\n\n"
             except Exception as e:
                 print(f"Error reading {os.path.basename(file_path)}: {e}")
+                return False
 
     try:
         with open(output_md, 'w', encoding='utf-8') as f:

@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import glossary as glossary_mod
-from manifest import file_hash, load_manifest
+from manifest import MIN_OUTPUT_SOURCE_RATIO, file_hash, load_manifest
 
 
 RUN_STATE_VERSION = 1
@@ -129,6 +129,22 @@ def _now_utc():
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
+def _output_text(path):
+    return Path(path).read_text(encoding='utf-8')
+
+
+def _output_has_substantive_text(path):
+    return bool(_output_text(path).strip())
+
+
+def _output_is_severely_truncated(source_path, output_path):
+    if not os.path.exists(source_path) or not os.path.exists(output_path):
+        return False
+    source_size = os.path.getsize(source_path)
+    output_size = os.path.getsize(output_path)
+    return source_size > 0 and output_size < source_size * MIN_OUTPUT_SOURCE_RATIO
+
+
 def build_chunk_record(temp_dir, chunk_id):
     entries = {entry["id"]: entry for entry in _chunk_entries_from_manifest(temp_dir)}
     if chunk_id not in entries:
@@ -143,6 +159,10 @@ def build_chunk_record(temp_dir, chunk_id):
         raise FileNotFoundError(f"Output chunk not found: {output_path}")
     if os.path.getsize(output_path) == 0:
         raise ValueError(f"Output chunk is empty: {output_path}")
+    if not _output_has_substantive_text(output_path):
+        raise ValueError(f"Output chunk is blank: {output_path}")
+    if _output_is_severely_truncated(source_path, output_path):
+        raise ValueError(f"Output chunk is severely truncated: {output_path}")
 
     glossary, glossary_hash, _, _ = _load_glossary(temp_dir)
     selected_terms = _selected_terms_for_chunk(glossary, source_path)
@@ -190,6 +210,7 @@ def plan(temp_dir, retranslate_untracked=False):
         "chunks": [],
         "decision_rules": [
             "missing_output_or_empty_output",
+            "blank_output_or_severely_truncated_output",
             "manifest_source_hash_changed",
             "untracked_existing_output",
             "source_hash_changed_since_record",
@@ -221,9 +242,16 @@ def plan(temp_dir, retranslate_untracked=False):
         elif os.path.getsize(output_path) == 0:
             item["action"] = "translate"
             _reason(item, "empty_output")
+        elif not _output_has_substantive_text(output_path):
+            item["action"] = "translate"
+            _reason(item, "blank_output")
 
         current_source_hash = file_hash(source_path) if os.path.exists(source_path) else ""
         manifest_source_hash = entry.get("manifest_source_hash", "")
+        if item["action"] == "unchanged" and _output_is_severely_truncated(source_path, output_path):
+            item["action"] = "translate"
+            _reason(item, "severely_truncated_output")
+
         if item["action"] == "unchanged" and manifest_source_hash:
             if current_source_hash != manifest_source_hash:
                 item["action"] = "translate"
