@@ -15,7 +15,7 @@ import bisect
 import glob
 import re
 
-from manifest import create_manifest
+from manifest import create_manifest, file_hash, load_manifest
 
 
 def find_calibre_convert():
@@ -627,6 +627,41 @@ def _find_existing_chunk_files(temp_dir):
     return [], False
 
 
+def _remove_chunk_cache(temp_dir, chunk_files, reason):
+    """Delete cached chunks and their translated outputs before re-splitting."""
+    removed = 0
+    for filename in chunk_files:
+        paths = [
+            os.path.join(temp_dir, filename),
+            os.path.join(temp_dir, f"output_{filename}"),
+            os.path.join(temp_dir, f"output_{os.path.splitext(filename)[0]}.meta.json"),
+        ]
+        for path in paths:
+            if os.path.exists(path):
+                os.remove(path)
+                removed += 1
+
+    output_md = os.path.join(temp_dir, "output.md")
+    if os.path.exists(output_md):
+        os.remove(output_md)
+        removed += 1
+
+    print(f"Invalidated cached chunks ({reason}); removed {removed} stale file(s)")
+
+
+def _cached_chunks_match_input(temp_dir, input_md):
+    """Return False when manifest proves cached chunks came from another input.md."""
+    manifest = load_manifest(temp_dir)
+    if not manifest:
+        return True
+
+    recorded_source_hash = manifest.get("source_hash", "")
+    current_source_hash = file_hash(input_md) if os.path.exists(input_md) else ""
+    if recorded_source_hash and current_source_hash:
+        return recorded_source_hash == current_source_hash
+    return True
+
+
 def create_config_file(temp_dir, input_file, input_lang, output_lang, metadata=None):
     """Create config.txt file for the pipeline"""
     try:
@@ -663,10 +698,14 @@ def _do_split_and_manifest(temp_dir, input_md, chunk_size):
     """Split markdown and create manifest. Returns chunk count or 0 on failure."""
     existing, is_legacy = _find_existing_chunk_files(temp_dir)
     if existing:
-        print(f"Skipping markdown splitting - found {len(existing)} existing {'page' if is_legacy else 'chunk'} files")
-        # Create/update manifest for existing files
-        create_manifest(temp_dir, existing, input_md)
-        return len(existing)
+        if not _cached_chunks_match_input(temp_dir, input_md):
+            _remove_chunk_cache(temp_dir, existing, "input.md changed since last split")
+            existing = []
+        else:
+            print(f"Skipping markdown splitting - found {len(existing)} existing {'page' if is_legacy else 'chunk'} files")
+            # Create/update manifest for existing files
+            create_manifest(temp_dir, existing, input_md)
+            return len(existing)
 
     chunk_files = split_markdown_structured(input_md, temp_dir, chunk_size)
     if not chunk_files:
