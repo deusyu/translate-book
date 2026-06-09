@@ -267,6 +267,44 @@ class ChunkCacheInvalidationTests(unittest.TestCase):
     def _write(self, path, content):
         Path(path).write_text(content, encoding="utf-8")
 
+    def test_source_fingerprint_keeps_cache_for_same_source_file(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            source = temp_path / "book.epub"
+            cache = temp_path / "book_temp"
+            cache.mkdir()
+            self._write(source, "source bytes\n")
+            self._write(cache / "input.html", "<html></html>\n")
+
+            fingerprint = convert.source_fingerprint(str(source))
+            convert.write_source_fingerprint(str(cache), fingerprint)
+
+            invalidated = convert.invalidate_source_cache_if_needed(str(cache), fingerprint)
+
+            self.assertFalse(invalidated)
+            self.assertTrue((cache / "input.html").exists())
+
+    def test_source_fingerprint_removes_cache_when_source_file_changes(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            source = temp_path / "book.epub"
+            cache = temp_path / "book_temp"
+            cache.mkdir()
+            self._write(source, "old source bytes\n")
+            self._write(cache / "input.html", "<html></html>\n")
+
+            old_fingerprint = convert.source_fingerprint(str(source))
+            convert.write_source_fingerprint(str(cache), old_fingerprint)
+            self._write(source, "new source bytes\n")
+
+            invalidated = convert.invalidate_source_cache_if_needed(
+                str(cache),
+                convert.source_fingerprint(str(source)),
+            )
+
+            self.assertTrue(invalidated)
+            self.assertFalse(cache.exists())
+
     def test_resplits_and_removes_outputs_when_input_md_changes(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)

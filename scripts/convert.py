@@ -13,6 +13,7 @@ import tempfile
 import argparse
 import bisect
 import glob
+import json
 import re
 
 from manifest import create_manifest, file_hash, load_manifest
@@ -158,6 +159,53 @@ def build_temp_dir(input_file, temp_root=None):
     if temp_root:
         return os.path.join(temp_root, leaf)
     return leaf
+
+
+SOURCE_FINGERPRINT_FILE = "source_fingerprint.json"
+
+
+def source_fingerprint(input_file):
+    """Return a stable fingerprint for the source book behind a temp cache."""
+    return {
+        "path": os.path.realpath(input_file),
+        "size": os.path.getsize(input_file),
+        "sha256": file_hash(input_file),
+    }
+
+
+def source_fingerprint_path(temp_dir):
+    return os.path.join(temp_dir, SOURCE_FINGERPRINT_FILE)
+
+
+def load_source_fingerprint(temp_dir):
+    path = source_fingerprint_path(temp_dir)
+    if not os.path.exists(path):
+        return None
+    with open(path, 'r', encoding='utf-8') as f:
+        return json.load(f)
+
+
+def write_source_fingerprint(temp_dir, fingerprint):
+    os.makedirs(temp_dir, exist_ok=True)
+    with open(source_fingerprint_path(temp_dir), 'w', encoding='utf-8') as f:
+        json.dump(fingerprint, f, indent=2, sort_keys=True)
+        f.write('\n')
+
+
+def invalidate_source_cache_if_needed(temp_dir, current_fingerprint):
+    """Remove cached conversion artifacts if they belong to different source bytes."""
+    previous = load_source_fingerprint(temp_dir)
+    if previous is None:
+        return False
+    if previous.get("sha256") == current_fingerprint.get("sha256"):
+        return False
+
+    shutil.rmtree(temp_dir)
+    print(
+        "Invalidated conversion cache: source file changed "
+        f"({previous.get('sha256', '')[:12]}... -> {current_fingerprint.get('sha256', '')[:12]}...)"
+    )
+    return True
 
 
 def setup_temp_directory(input_file, html_file, images_dir, temp_root=None):
@@ -788,6 +836,8 @@ def main():
     if args.temp_root:
         print(f"Temp root: {args.temp_root}")
 
+    current_source_fingerprint = source_fingerprint(input_file)
+
     calibre_path = find_calibre_convert()
     if not calibre_path:
         print("Error: Calibre ebook-convert not found")
@@ -798,6 +848,8 @@ def main():
 
     try:
         temp_dir = build_temp_dir(input_file, args.temp_root)
+        if os.path.isdir(temp_dir):
+            invalidate_source_cache_if_needed(temp_dir, current_source_fingerprint)
         input_html_path = os.path.join(temp_dir, "input.html")
 
         if os.path.exists(input_html_path):
@@ -838,6 +890,7 @@ def main():
                 sys.exit(1)
 
             create_config_file(temp_dir, input_file, args.ilang, args.olang, metadata)
+            write_source_fingerprint(temp_dir, current_source_fingerprint)
             print("Conversion completed successfully!")
             print(f"Temp directory: {temp_dir}")
             return
@@ -874,6 +927,7 @@ def main():
                 sys.exit(1)
 
             create_config_file(temp_dir, input_file, args.ilang, args.olang, metadata)
+            write_source_fingerprint(temp_dir, current_source_fingerprint)
 
             print("Conversion completed successfully!")
             print(f"Temp directory: {temp_dir}")
