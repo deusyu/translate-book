@@ -15,6 +15,50 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 import merge_and_build  # noqa: E402
+from manifest import create_manifest, validate_for_merge  # noqa: E402
+
+
+class StaleOutputSourceChangeTests(unittest.TestCase):
+    def _write(self, path, content):
+        Path(path).write_text(content, encoding="utf-8")
+
+    def test_manifest_refresh_removes_outputs_for_changed_source_chunk(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            self._write(temp_path / "input.md", "current whole book\n")
+            self._write(temp_path / "chunk0001.md", "old source\n")
+            self._write(temp_path / "output_chunk0001.md", "old translation\n")
+            self._write(temp_path / "output_chunk0001.meta.json", '{"old": true}\n')
+            create_manifest(temp_dir, ["chunk0001.md"], str(temp_path / "input.md"))
+
+            self._write(temp_path / "chunk0001.md", "new source\n")
+            create_manifest(temp_dir, ["chunk0001.md"], str(temp_path / "input.md"))
+
+            self.assertFalse((temp_path / "output_chunk0001.md").exists())
+            self.assertFalse((temp_path / "output_chunk0001.meta.json").exists())
+            ok, ordered_files, _ = validate_for_merge(temp_dir)
+            self.assertFalse(ok)
+            self.assertIsNone(ordered_files)
+
+    def test_merge_rejects_stale_output_after_manifest_refresh(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            self._write(temp_path / "input.md", "current whole book\n")
+            self._write(temp_path / "chunk0001.md", "old source\n")
+            self._write(temp_path / "output_chunk0001.md", "old translation\n")
+            self._write(temp_path / "output.md", "stale merged translation\n")
+            create_manifest(temp_dir, ["chunk0001.md"], str(temp_path / "input.md"))
+
+            self._write(temp_path / "chunk0001.md", "new source\n")
+            create_manifest(temp_dir, ["chunk0001.md"], str(temp_path / "input.md"))
+
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                result = merge_and_build.merge_markdown_files(temp_dir)
+
+            self.assertFalse(result)
+            self.assertFalse((temp_path / "output.md").exists(), msg=buf.getvalue())
+            self.assertIn("Missing output: output_chunk0001.md", buf.getvalue())
 
 
 class GenerateFormatTests(unittest.TestCase):

@@ -26,19 +26,49 @@ def create_manifest(temp_dir, chunk_files, source_md_path):
         source_md_path: path to the source input.md
     """
     source_hash = file_hash(source_md_path) if os.path.exists(source_md_path) else ""
+    manifest_path = os.path.join(temp_dir, "manifest.json")
+    previous_source_hashes = {}
+    if os.path.exists(manifest_path):
+        try:
+            with open(manifest_path, 'r', encoding='utf-8') as f:
+                previous_manifest = json.load(f)
+            previous_source_hashes = {
+                chunk.get("source_file"): chunk.get("source_hash", "")
+                for chunk in previous_manifest.get("chunks", [])
+            }
+        except Exception:
+            previous_source_hashes = {}
 
     chunks = []
     for order, filename in enumerate(chunk_files, 1):
         filepath = os.path.join(temp_dir, filename)
         # Derive output filename: chunk0001.md -> output_chunk0001.md
         output_filename = f"output_{filename}"
+        output_path = os.path.join(temp_dir, output_filename)
+        meta_path = os.path.splitext(output_path)[0] + ".meta.json"
         chunk_id = os.path.splitext(filename)[0]  # e.g. "chunk0001"
+        current_source_hash = file_hash(filepath) if os.path.exists(filepath) else ""
+        previous_source_hash = previous_source_hashes.get(filename, "")
+
+        if (
+            previous_source_hash
+            and current_source_hash
+            and previous_source_hash != current_source_hash
+            and os.path.exists(output_path)
+        ):
+            os.remove(output_path)
+            if os.path.exists(meta_path):
+                os.remove(meta_path)
+            print(
+                f"Removed stale output for changed source chunk: "
+                f"{output_filename} ({chunk_id})"
+            )
 
         chunks.append({
             "id": chunk_id,
             "order": order,
             "source_file": filename,
-            "source_hash": file_hash(filepath) if os.path.exists(filepath) else "",
+            "source_hash": current_source_hash,
             "output_file": output_filename,
         })
 
@@ -48,7 +78,6 @@ def create_manifest(temp_dir, chunk_files, source_md_path):
         "chunks": chunks,
     }
 
-    manifest_path = os.path.join(temp_dir, "manifest.json")
     with open(manifest_path, 'w', encoding='utf-8') as f:
         json.dump(manifest, f, indent=2, ensure_ascii=False)
 
