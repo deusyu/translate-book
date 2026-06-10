@@ -182,7 +182,7 @@ The skill launches subagents in batches (default: 8 concurrent). Each subagent:
 4. Writes the result to `output_chunk0042.md`
 5. Writes `output_chunk0042.meta.json` observations for glossary feedback
 
-Before launching subagents, `scripts/run_state.py plan <temp_dir>` decides which chunks need translation, which existing outputs only need state recording, and which are unchanged. Use `--retranslate-untracked` only when adopting an old temp dir whose existing outputs should be forced through the current glossary. If a run is interrupted, re-running skips chunks that already have valid output files and current state. Failed chunks are retried once automatically.
+Before launching subagents, `scripts/run_state.py plan <temp_dir>` decides which chunks need translation, which existing outputs only need state recording, and which are unchanged. When adopting an old temp dir without `run_state.json`, existing outputs are only recorded directly if the current glossary would not inject terms into that chunk; untracked glossary-sensitive chunks are re-translated so stale terminology is not silently preserved. Use `--retranslate-untracked` only when every untracked existing output should be forced through translation. If a run is interrupted, re-running skips chunks that already have valid output files and current state. Failed chunks are retried once automatically.
 
 ### Step 3: Merge & Build
 
