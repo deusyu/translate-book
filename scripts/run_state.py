@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import glossary as glossary_mod
-from manifest import file_hash, load_manifest
+from manifest import file_hash, load_manifest, translated_output_problem
 
 
 RUN_STATE_VERSION = 1
@@ -141,8 +141,9 @@ def build_chunk_record(temp_dir, chunk_id):
         raise FileNotFoundError(f"Source chunk not found: {source_path}")
     if not os.path.exists(output_path):
         raise FileNotFoundError(f"Output chunk not found: {output_path}")
-    if os.path.getsize(output_path) == 0:
-        raise ValueError(f"Output chunk is empty: {output_path}")
+    output_problem = translated_output_problem(output_path, source_path)
+    if output_problem:
+        raise ValueError(f"{output_problem}: {output_path}")
 
     glossary, glossary_hash, _, _ = _load_glossary(temp_dir)
     selected_terms = _selected_terms_for_chunk(glossary, source_path)
@@ -177,6 +178,23 @@ def _reason(item, code, detail=None):
         item["reasons"].append({"code": code, "detail": detail})
 
 
+def _output_problem_reason(problem):
+    if problem.startswith("Empty output"):
+        return "empty_output"
+    if problem.startswith("Blank output"):
+        return "blank_output"
+    if problem.startswith("Severely truncated output"):
+        return "translated_output_too_short"
+    if problem.startswith("Unreadable output"):
+        return "unreadable_output"
+    return "invalid_output"
+
+
+def _mark_output_problem(item, problem):
+    item["action"] = "translate"
+    _reason(item, _output_problem_reason(problem), problem)
+
+
 def plan(temp_dir, retranslate_untracked=False):
     state = load_run_state(temp_dir)
     glossary, glossary_hash, _, _ = _load_glossary(temp_dir)
@@ -189,7 +207,7 @@ def plan(temp_dir, retranslate_untracked=False):
         "unchanged_chunk_ids": [],
         "chunks": [],
         "decision_rules": [
-            "missing_output_or_empty_output",
+            "missing_output_or_invalid_output",
             "manifest_source_hash_changed",
             "untracked_existing_output",
             "source_hash_changed_since_record",
@@ -218,9 +236,10 @@ def plan(temp_dir, retranslate_untracked=False):
         if not os.path.exists(output_path):
             item["action"] = "translate"
             _reason(item, "missing_output")
-        elif os.path.getsize(output_path) == 0:
-            item["action"] = "translate"
-            _reason(item, "empty_output")
+        else:
+            output_problem = translated_output_problem(output_path, source_path)
+            if output_problem:
+                _mark_output_problem(item, output_problem)
 
         current_source_hash = file_hash(source_path) if os.path.exists(source_path) else ""
         manifest_source_hash = entry.get("manifest_source_hash", "")

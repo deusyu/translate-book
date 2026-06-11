@@ -15,6 +15,7 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 import merge_and_build  # noqa: E402
+from manifest import create_manifest  # noqa: E402
 
 
 class GenerateFormatTests(unittest.TestCase):
@@ -194,6 +195,72 @@ class ExportAliasTests(unittest.TestCase):
     def test_export_name_rejects_paths(self):
         with self.assertRaises(ValueError):
             merge_and_build.export_named_aliases("/tmp", "../bad")
+
+
+class MergeMarkdownValidationTests(unittest.TestCase):
+    def _write(self, path, content):
+        Path(path).write_text(content, encoding="utf-8")
+
+    def test_manifest_merge_rejects_whitespace_only_output_and_removes_stale_merge(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            self._write(temp_path / "input.md", "First chapter.\n\nSecond chapter.\n")
+            self._write(temp_path / "chunk0001.md", "First chapter.\n")
+            self._write(temp_path / "chunk0002.md", "Second chapter.\n")
+            self._write(temp_path / "output_chunk0001.md", "第一章。\n")
+            self._write(temp_path / "output_chunk0002.md", "   \n\t\n")
+            self._write(temp_path / "output.md", "stale partial book")
+            create_manifest(
+                temp_dir,
+                ["chunk0001.md", "chunk0002.md"],
+                str(temp_path / "input.md"),
+            )
+
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                result = merge_and_build.merge_markdown_files(temp_dir)
+            out = buf.getvalue()
+
+            self.assertFalse(result)
+            self.assertFalse((temp_path / "output.md").exists(), msg=out)
+            self.assertIn("Blank output", out)
+            self.assertIn("output_chunk0002.md", out)
+
+    def test_manifest_merge_rejects_severely_truncated_output(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            long_source = "This sentence should have been translated. " * 12
+            self._write(temp_path / "input.md", long_source)
+            self._write(temp_path / "chunk0001.md", long_source)
+            self._write(temp_path / "output_chunk0001.md", "短\n")
+            create_manifest(temp_dir, ["chunk0001.md"], str(temp_path / "input.md"))
+
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                result = merge_and_build.merge_markdown_files(temp_dir)
+            out = buf.getvalue()
+
+            self.assertFalse(result)
+            self.assertFalse((temp_path / "output.md").exists(), msg=out)
+            self.assertIn("Severely truncated output", out)
+
+    def test_legacy_merge_rejects_whitespace_only_output(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            self._write(temp_path / "chunk0001.md", "First chapter.\n")
+            self._write(temp_path / "chunk0002.md", "Second chapter.\n")
+            self._write(temp_path / "output_chunk0001.md", "第一章。\n")
+            self._write(temp_path / "output_chunk0002.md", "   \n\t\n")
+
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                result = merge_and_build.merge_markdown_files(temp_dir)
+            out = buf.getvalue()
+
+            self.assertFalse(result)
+            self.assertFalse((temp_path / "output.md").exists(), msg=out)
+            self.assertIn("Blank output", out)
+            self.assertIn("output_chunk0002.md", out)
 
 
 class ImageValidationTests(unittest.TestCase):
