@@ -57,13 +57,25 @@ class RunStateTests(unittest.TestCase):
         self._write(temp_dir / "glossary.json", json.dumps(glossary_doc(), ensure_ascii=False))
         return tmp, temp_dir
 
-    def test_untracked_outputs_are_record_only_by_default(self):
+    def test_untracked_outputs_without_glossary_terms_are_record_only_by_default(self):
         tmp, temp_dir = self._workspace()
         with tmp:
             plan = run_state.plan(str(temp_dir))
 
-        self.assertEqual(plan["translation_chunk_ids"], [])
-        self.assertEqual(plan["record_only_chunk_ids"], ["chunk0001", "chunk0002"])
+        self.assertEqual(plan["translation_chunk_ids"], ["chunk0001"])
+        self.assertEqual(plan["record_only_chunk_ids"], ["chunk0002"])
+
+    def test_untracked_glossary_sensitive_output_needs_translation(self):
+        tmp, temp_dir = self._workspace()
+        with tmp:
+            self._write(
+                temp_dir / "glossary.json",
+                json.dumps(glossary_doc(target="泰"), ensure_ascii=False),
+            )
+            plan = run_state.plan(str(temp_dir))
+
+        self.assertEqual(plan["translation_chunk_ids"], ["chunk0001"])
+        self.assertNotIn("chunk0001", plan["record_only_chunk_ids"])
 
     def test_retranslate_untracked_flag_marks_existing_outputs_for_translation(self):
         tmp, temp_dir = self._workspace()
@@ -119,6 +131,25 @@ class RunStateTests(unittest.TestCase):
             self._write(temp_dir / "input.md", "Taig appears.\n")
             self._write(temp_dir / "chunk0001.md", "Taig appears.\n")
             self._write(temp_dir / "output_chunk0001.md", "泰格出现。\n")
+            create_manifest(str(temp_dir), ["chunk0001.md"], str(temp_dir / "input.md"))
+            self._write(temp_dir / "glossary.json", json.dumps(glossary_doc(), ensure_ascii=False))
+            run_state.record_chunks(str(temp_dir), ["chunk0001"])
+
+            self._write(
+                temp_dir / "glossary.json",
+                json.dumps(glossary_doc(aliases=["Taig"]), ensure_ascii=False),
+            )
+            plan = run_state.plan(str(temp_dir))
+
+        self.assertEqual(plan["translation_chunk_ids"], ["chunk0001"])
+
+    def test_new_alias_for_already_selected_term_needs_translation(self):
+        tmp = tempfile.TemporaryDirectory()
+        with tmp:
+            temp_dir = Path(tmp.name)
+            self._write(temp_dir / "input.md", "Tai and Taig appear.\n")
+            self._write(temp_dir / "chunk0001.md", "Tai and Taig appear.\n")
+            self._write(temp_dir / "output_chunk0001.md", "太一 and Taig appear.\n")
             create_manifest(str(temp_dir), ["chunk0001.md"], str(temp_dir / "input.md"))
             self._write(temp_dir / "glossary.json", json.dumps(glossary_doc(), ensure_ascii=False))
             run_state.record_chunks(str(temp_dir), ["chunk0001"])
