@@ -72,6 +72,42 @@ class CleanCalibreMarkersTests(unittest.TestCase):
         self.assertIn("## Chapter", cleaned)
         self.assertIn("Introduction text follows.", cleaned)
 
+    def test_preserves_monotonic_chapter_numbers_after_headings(self):
+        content = "\n".join(
+            [
+                "## Chapter One",
+                "",
+                "1",
+                "",
+                "Opening text one.",
+                "",
+                "## Chapter Two",
+                "",
+                "2",
+                "",
+                "Opening text two.",
+                "",
+                "## Chapter Three",
+                "",
+                "3",
+                "",
+                "Opening text three.",
+                "",
+                "## Chapter Four",
+                "",
+                "4",
+                "",
+                "Opening text four.",
+            ]
+        )
+
+        cleaned = convert.clean_calibre_markers(content)
+
+        for n in ("1", "2", "3", "4"):
+            self.assertIn(f"\n{n}\n", f"\n{cleaned}\n")
+        for heading in ("## Chapter One", "## Chapter Two", "## Chapter Three", "## Chapter Four"):
+            self.assertIn(heading, cleaned)
+
     def test_drops_digit_line_inside_calibre_fence(self):
         content = "\n".join(
             [
