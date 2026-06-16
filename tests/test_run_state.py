@@ -57,13 +57,22 @@ class RunStateTests(unittest.TestCase):
         self._write(temp_dir / "glossary.json", json.dumps(glossary_doc(), ensure_ascii=False))
         return tmp, temp_dir
 
-    def test_untracked_outputs_are_record_only_by_default(self):
+    def test_untracked_glossary_sensitive_outputs_need_translation_by_default(self):
         tmp, temp_dir = self._workspace()
         with tmp:
             plan = run_state.plan(str(temp_dir))
 
-        self.assertEqual(plan["translation_chunk_ids"], [])
-        self.assertEqual(plan["record_only_chunk_ids"], ["chunk0001", "chunk0002"])
+        self.assertEqual(plan["translation_chunk_ids"], ["chunk0001"])
+        self.assertEqual(plan["record_only_chunk_ids"], ["chunk0002"])
+        by_chunk = {item["chunk_id"]: item for item in plan["chunks"]}
+        self.assertIn(
+            "untracked_glossary_sensitive_output",
+            by_chunk["chunk0001"]["reasons"],
+        )
+        self.assertIn(
+            "untracked_glossary_free_output",
+            by_chunk["chunk0002"]["reasons"],
+        )
 
     def test_retranslate_untracked_flag_marks_existing_outputs_for_translation(self):
         tmp, temp_dir = self._workspace()
@@ -130,6 +139,24 @@ class RunStateTests(unittest.TestCase):
             plan = run_state.plan(str(temp_dir))
 
         self.assertEqual(plan["translation_chunk_ids"], ["chunk0001"])
+
+    def test_new_alias_for_already_selected_term_changes_term_hash(self):
+        tmp, temp_dir = self._workspace()
+        with tmp:
+            run_state.record_chunks(str(temp_dir), ["chunk0001", "chunk0002"])
+            self._write(
+                temp_dir / "glossary.json",
+                json.dumps(glossary_doc(aliases=["Taig"]), ensure_ascii=False),
+            )
+            plan = run_state.plan(str(temp_dir))
+
+        self.assertIn("chunk0001", plan["translation_chunk_ids"])
+        self.assertNotIn("chunk0002", plan["translation_chunk_ids"])
+        chunk1 = next(item for item in plan["chunks"] if item["chunk_id"] == "chunk0001")
+        self.assertEqual(
+            chunk1["reasons"],
+            [{"code": "glossary_term_hash_changed", "detail": ["Tai"]}],
+        )
 
     def test_output_hash_change_is_record_only(self):
         tmp, temp_dir = self._workspace()
