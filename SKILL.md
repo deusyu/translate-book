@@ -92,7 +92,9 @@ Otherwise:
 The glossary is hand-editable. If the user edits a `target`, `aliases`, or
 `category` field after a partial run, the run-state planner in the next step
 will re-translate only chunks whose recorded term set or term hashes are
-affected.
+affected. Existing outputs that predate `run_state.json` are adopted only when
+the current chunk has no selected glossary terms; glossary-sensitive untracked
+outputs are re-translated by default so stale terminology is not locked in.
 
 ### 3.7. Plan Selective Re-translation
 
@@ -102,9 +104,10 @@ Run:
 python3 {baseDir}/scripts/run_state.py plan "<temp_dir>"
 ```
 
-If the user explicitly asks to apply glossary edits to outputs produced before
-`run_state.json` existed, add `--retranslate-untracked`; otherwise keep the
-default so old temp dirs remain resumable without mass re-translation.
+If the user explicitly asks to apply glossary edits to every output produced
+before `run_state.json` existed, add `--retranslate-untracked`; otherwise keep
+the default so old temp dirs remain resumable while still re-translating
+untracked chunks that currently receive glossary terms.
 
 Capture stdout JSON:
 - `translation_chunk_ids` — chunks to translate in this run.
