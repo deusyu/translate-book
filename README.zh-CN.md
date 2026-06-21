@@ -182,7 +182,7 @@ Skill 分批启动 subagent（默认 8 路并发）。每个 subagent：
 4. 将结果写入 `output_chunk0042.md`
 5. 写入 `output_chunk0042.meta.json`，供术语表反馈合并
 
-启动 subagent 前，`scripts/run_state.py plan <temp_dir>` 会判断哪些 chunk 需要翻译、哪些已有输出只需记录状态、哪些无需处理。只有在接管旧 temp 目录且明确希望现有输出按当前术语表重译时，才使用 `--retranslate-untracked`。如果运行中断，重新运行会跳过已有合法输出且状态仍有效的 chunk。翻译失败的 chunk 会自动重试一次。
+启动 subagent 前，`scripts/run_state.py plan <temp_dir>` 会判断哪些 chunk 需要翻译、哪些已有输出只需记录状态、哪些无需处理。没有 `run_state.json` 记录的已有输出，只有在源 chunk 不命中当前术语表时才会被直接采用；命中术语表的未跟踪输出会重译，避免把旧译文记录成已使用当前术语表。只有在希望所有未跟踪输出都强制重译时，才使用 `--retranslate-untracked`。如果运行中断，重新运行会跳过已有合法输出且状态仍有效的 chunk。翻译失败的 chunk 会自动重试一次。
 
 ### 第三步：合并与构建
 
