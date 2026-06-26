@@ -8,6 +8,10 @@ import json
 import hashlib
 
 
+MIN_TRANSLATED_TO_SOURCE_RATIO = 0.1
+TRUNCATION_CHECK_MIN_SOURCE_BYTES = 200
+
+
 def file_hash(filepath):
     """Compute SHA-256 hash of a file."""
     h = hashlib.sha256()
@@ -15,6 +19,35 @@ def file_hash(filepath):
         for block in iter(lambda: f.read(8192), b''):
             h.update(block)
     return h.hexdigest()
+
+
+def translated_output_problem(output_path, source_path=None):
+    """Return a hard-failure reason for unusable translated output, or None."""
+    output_size = os.path.getsize(output_path)
+    if output_size == 0:
+        return "Empty output"
+
+    try:
+        with open(output_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+    except Exception as e:
+        return f"Unreadable output: {e}"
+
+    if not content.strip():
+        return "Blank output (whitespace only)"
+
+    if source_path and os.path.exists(source_path):
+        source_size = os.path.getsize(source_path)
+        if (
+            source_size >= TRUNCATION_CHECK_MIN_SOURCE_BYTES
+            and output_size < source_size * MIN_TRANSLATED_TO_SOURCE_RATIO
+        ):
+            return (
+                f"Severely truncated output "
+                f"({output_size} bytes vs source {source_size} bytes)"
+            )
+
+    return None
 
 
 def create_manifest(temp_dir, chunk_files, source_md_path):
@@ -112,20 +145,14 @@ def validate_for_merge(temp_dir):
             errors.append(f"Missing output: {chunk['output_file']} (chunk {chunk['id']})")
             continue
 
-        # Check non-empty
-        output_size = os.path.getsize(output_path)
-        if output_size == 0:
-            errors.append(f"Empty output: {chunk['output_file']} (chunk {chunk['id']})")
+        # Check content is substantive enough to merge. Whitespace-only files
+        # otherwise pass size checks but disappear when merge strips chunks.
+        output_problem = translated_output_problem(output_path, source_path)
+        if output_problem:
+            errors.append(
+                f"{output_problem}: {chunk['output_file']} (chunk {chunk['id']})"
+            )
             continue
-
-        # Check abnormally short
-        if os.path.exists(source_path):
-            source_size = os.path.getsize(source_path)
-            if source_size > 0 and output_size < source_size * 0.1:
-                warnings.append(
-                    f"Suspiciously short: {chunk['output_file']} "
-                    f"({output_size} bytes vs source {source_size} bytes)"
-                )
 
         ordered_output_files.append(output_path)
 

@@ -18,7 +18,7 @@ from collections import Counter
 from html.parser import HTMLParser
 from pathlib import Path
 
-from manifest import validate_for_merge
+from manifest import translated_output_problem, validate_for_merge
 
 
 # =============================================================================
@@ -366,10 +366,15 @@ def merge_markdown_files(temp_dir):
                 print(f"ERROR: Orphaned outputs (no matching source): {', '.join(sorted(orphaned, key=natural_sort_key))}")
             return False
 
-        # Verify no empty output files
+        # Verify every output has substantive content. Whitespace-only files
+        # would otherwise be stripped and silently omitted from output.md.
         for fp in output_files:
-            if os.path.getsize(fp) == 0:
-                print(f"ERROR: Empty output file: {os.path.basename(fp)}")
+            output_name = os.path.basename(fp)
+            source_name = output_name.removeprefix("output_")
+            source_path = os.path.join(temp_dir, source_name)
+            output_problem = translated_output_problem(fp, source_path)
+            if output_problem:
+                print(f"ERROR: {output_problem}: {output_name}")
                 return False
 
         # Use source order to determine merge order (via expected output names)

@@ -90,6 +90,40 @@ class RunStateTests(unittest.TestCase):
 
         self.assertIn("chunk0002", plan["translation_chunk_ids"])
 
+    def test_blank_output_needs_translation_and_cannot_be_recorded(self):
+        tmp, temp_dir = self._workspace()
+        with tmp:
+            self._write(temp_dir / "output_chunk0002.md", "  \n\t\n")
+            plan = run_state.plan(str(temp_dir))
+
+            self.assertIn("chunk0002", plan["translation_chunk_ids"])
+            chunk2 = next(i for i in plan["chunks"] if i["chunk_id"] == "chunk0002")
+            self.assertIn("blank_output", [r if isinstance(r, str) else r["code"] for r in chunk2["reasons"]])
+            with self.assertRaises(ValueError):
+                run_state.record_chunks(str(temp_dir), ["chunk0002"])
+
+    def test_truncated_output_needs_translation_and_cannot_be_recorded(self):
+        tmp = tempfile.TemporaryDirectory()
+        with tmp:
+            temp_dir = Path(tmp.name)
+            source = "This paragraph should have a real translated output. " * 12
+            self._write(temp_dir / "input.md", source)
+            self._write(temp_dir / "chunk0001.md", source)
+            self._write(temp_dir / "output_chunk0001.md", "短\n")
+            create_manifest(str(temp_dir), ["chunk0001.md"], str(temp_dir / "input.md"))
+            self._write(temp_dir / "glossary.json", json.dumps(glossary_doc(), ensure_ascii=False))
+
+            plan = run_state.plan(str(temp_dir))
+
+            self.assertEqual(plan["translation_chunk_ids"], ["chunk0001"])
+            chunk1 = plan["chunks"][0]
+            self.assertIn(
+                "translated_output_too_short",
+                [r if isinstance(r, str) else r["code"] for r in chunk1["reasons"]],
+            )
+            with self.assertRaises(ValueError):
+                run_state.record_chunks(str(temp_dir), ["chunk0001"])
+
     def test_source_hash_change_needs_translation_after_record(self):
         tmp, temp_dir = self._workspace()
         with tmp:
