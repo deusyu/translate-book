@@ -328,10 +328,13 @@ def merge_markdown_files(temp_dir):
             try:
                 with open(file_path, 'r', encoding='utf-8') as f:
                     content = f.read().strip()
-                if content:
-                    merged_content += content + "\n\n"
             except Exception as e:
                 print(f"Error reading {os.path.basename(file_path)}: {e}")
+                return False
+            if not content:
+                print(f"ERROR: Blank output file: {os.path.basename(file_path)}")
+                return False
+            merged_content += content + "\n\n"
     else:
         # Legacy fallback: glob-based merge (no manifest)
         print("WARNING: No manifest.json found — using legacy glob-based merge.")
@@ -384,10 +387,13 @@ def merge_markdown_files(temp_dir):
             try:
                 with open(file_path, 'r', encoding='utf-8') as f:
                     content = f.read().strip()
-                if content:
-                    merged_content += content + "\n\n"
             except Exception as e:
                 print(f"Error reading {os.path.basename(file_path)}: {e}")
+                return False
+            if not content:
+                print(f"ERROR: Blank output file: {os.path.basename(file_path)}")
+                return False
+            merged_content += content + "\n\n"
 
     try:
         with open(output_md, 'w', encoding='utf-8') as f:
