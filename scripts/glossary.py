@@ -75,6 +75,15 @@ def glossary_hash(glossary):
 
 def term_hash(term):
     """SHA-256 of a single term's identifying fields."""
+    aliases = sorted(term.get('aliases') or [])
+    if aliases:
+        payload = _canonical_json({
+            'source': term.get('source', ''),
+            'target': term.get('target', ''),
+            'category': term.get('category', ''),
+            'aliases': aliases,
+        })
+        return hashlib.sha256(payload.encode('utf-8')).hexdigest()
     payload = f"{term.get('source', '')}→{term.get('target', '')}|{term.get('category', '')}"
     return hashlib.sha256(payload.encode('utf-8')).hexdigest()
 

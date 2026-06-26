@@ -182,7 +182,7 @@ The skill launches subagents in batches (default: 8 concurrent). Each subagent:
 4. Writes the result to `output_chunk0042.md`
 5. Writes `output_chunk0042.meta.json` observations for glossary feedback
 
-Before launching subagents, `scripts/run_state.py plan <temp_dir>` decides which chunks need translation, which existing outputs only need state recording, and which are unchanged. Use `--retranslate-untracked` only when adopting an old temp dir whose existing outputs should be forced through the current glossary. If a run is interrupted, re-running skips chunks that already have valid output files and current state. Failed chunks are retried once automatically.
+Before launching subagents, `scripts/run_state.py plan <temp_dir>` decides which chunks need translation, which existing outputs only need state recording, and which are unchanged. Existing untracked outputs are adopted only when their source chunks do not select glossary terms; untracked glossary-sensitive chunks are re-translated so stale terminology is not recorded as current. Use `--retranslate-untracked` only when adopting an old temp dir whose existing outputs should all be forced through the current glossary. If a run is interrupted, re-running skips chunks that already have valid output files and current state. Failed chunks are retried once automatically.
 
 ### Step 3: Merge & Build
 
@@ -261,7 +261,7 @@ Closes the read+write loop. Glossary v2 adds `id`, `aliases`, `gender`, `confide
 
 ### Phase 3 — Selective re-translation (shipped)
 
-Phase 1's batch feedback only improves *forward*. Selective rerun closes the *backward* loop with `scripts/run_state.py` and `run_state.json`: per-chunk tracking of `glossary_version_used`, `entity_ids_used`, `output_hash`, source hash, and selected entity hashes; five planning rules cover missing/empty output, manifest source drift, untracked outputs, source drift since record, and glossary term selection/hash changes.
+Phase 1's batch feedback only improves *forward*. Selective rerun closes the *backward* loop with `scripts/run_state.py` and `run_state.json`: per-chunk tracking of `glossary_version_used`, `entity_ids_used`, `output_hash`, source hash, and selected entity hashes; planning rules cover missing/empty output, manifest source drift, untracked outputs, untracked glossary-sensitive outputs, source drift since record, and glossary term selection/hash changes.
 
 ### Phase 4 — Bootstrap warm-up (experimental, gated on Phase 1 data)
 

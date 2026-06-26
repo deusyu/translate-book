@@ -182,7 +182,7 @@ Skill 分批启动 subagent（默认 8 路并发）。每个 subagent：
 4. 将结果写入 `output_chunk0042.md`
 5. 写入 `output_chunk0042.meta.json`，供术语表反馈合并
 
-启动 subagent 前，`scripts/run_state.py plan <temp_dir>` 会判断哪些 chunk 需要翻译、哪些已有输出只需记录状态、哪些无需处理。只有在接管旧 temp 目录且明确希望现有输出按当前术语表重译时，才使用 `--retranslate-untracked`。如果运行中断，重新运行会跳过已有合法输出且状态仍有效的 chunk。翻译失败的 chunk 会自动重试一次。
+启动 subagent 前，`scripts/run_state.py plan <temp_dir>` 会判断哪些 chunk 需要翻译、哪些已有输出只需记录状态、哪些无需处理。未记录的已有输出只有在源 chunk 不会选中术语表词条时才会被直接接管；命中术语表的未记录 chunk 会重译，避免把旧术语翻译记录成当前状态。只有在接管旧 temp 目录且明确希望所有现有输出都按当前术语表重译时，才使用 `--retranslate-untracked`。如果运行中断，重新运行会跳过已有合法输出且状态仍有效的 chunk。翻译失败的 chunk 会自动重试一次。
 
 ### 第三步：合并与构建
 
@@ -261,7 +261,7 @@ python3 scripts/merge_and_build.py --temp-dir book_temp --title "《译后书名
 
 ### Phase 3 — 精确重译（已发布）
 
-Phase 1 的批次反馈只能向前优化。精确重译通过 `scripts/run_state.py` 和 `run_state.json` 闭合向后的回路：按 chunk 跟踪 `glossary_version_used`、`entity_ids_used`、`output_hash`、源 hash、以及选中实体的 hash；五条规划规则覆盖缺失/空输出、manifest 源文件漂移、未记录输出、记录后的源文件漂移、以及术语选择/术语 hash 变化。
+Phase 1 的批次反馈只能向前优化。精确重译通过 `scripts/run_state.py` 和 `run_state.json` 闭合向后的回路：按 chunk 跟踪 `glossary_version_used`、`entity_ids_used`、`output_hash`、源 hash、以及选中实体的 hash；规划规则覆盖缺失/空输出、manifest 源文件漂移、未记录输出、未记录但命中术语表的输出、记录后的源文件漂移、以及术语选择/术语 hash 变化。
 
 ### Phase 4 — 冷启动预热（实验性,依赖 Phase 1 的实际数据）
 
