@@ -90,6 +90,23 @@ class RunStateTests(unittest.TestCase):
 
         self.assertIn("chunk0002", plan["translation_chunk_ids"])
 
+    def test_blank_output_needs_translation(self):
+        tmp, temp_dir = self._workspace()
+        with tmp:
+            self._write(temp_dir / "output_chunk0002.md", " \n\t\n")
+            plan = run_state.plan(str(temp_dir))
+
+        self.assertIn("chunk0002", plan["translation_chunk_ids"])
+        self.assertNotIn("chunk0002", plan["record_only_chunk_ids"])
+
+    def test_record_rejects_blank_output(self):
+        tmp, temp_dir = self._workspace()
+        with tmp:
+            self._write(temp_dir / "output_chunk0001.md", " \n\t\n")
+
+            with self.assertRaisesRegex(ValueError, "blank"):
+                run_state.record_chunks(str(temp_dir), ["chunk0001"])
+
     def test_source_hash_change_needs_translation_after_record(self):
         tmp, temp_dir = self._workspace()
         with tmp:

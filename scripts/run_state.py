@@ -115,6 +115,13 @@ def _selected_terms_for_chunk(glossary, source_path):
     return glossary_mod.select_terms_for_chunk(glossary, text)
 
 
+def _read_nonblank_output(output_path):
+    text = Path(output_path).read_text(encoding='utf-8')
+    if not text.strip():
+        raise ValueError(f"Output chunk is blank: {output_path}")
+    return text
+
+
 def _term_ids_and_hashes(terms):
     ids = []
     hashes = {}
@@ -143,6 +150,7 @@ def build_chunk_record(temp_dir, chunk_id):
         raise FileNotFoundError(f"Output chunk not found: {output_path}")
     if os.path.getsize(output_path) == 0:
         raise ValueError(f"Output chunk is empty: {output_path}")
+    _read_nonblank_output(output_path)
 
     glossary, glossary_hash, _, _ = _load_glossary(temp_dir)
     selected_terms = _selected_terms_for_chunk(glossary, source_path)
@@ -221,6 +229,12 @@ def plan(temp_dir, retranslate_untracked=False):
         elif os.path.getsize(output_path) == 0:
             item["action"] = "translate"
             _reason(item, "empty_output")
+        else:
+            try:
+                _read_nonblank_output(output_path)
+            except Exception as e:
+                item["action"] = "translate"
+                _reason(item, "invalid_output", str(e))
 
         current_source_hash = file_hash(source_path) if os.path.exists(source_path) else ""
         manifest_source_hash = entry.get("manifest_source_hash", "")
