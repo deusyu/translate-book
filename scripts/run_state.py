@@ -192,6 +192,7 @@ def plan(temp_dir, retranslate_untracked=False):
             "missing_output_or_empty_output",
             "manifest_source_hash_changed",
             "untracked_existing_output",
+            "untracked_glossary_sensitive_output",
             "source_hash_changed_since_record",
             "glossary_term_selection_or_term_hash_changed",
         ],
@@ -234,6 +235,9 @@ def plan(temp_dir, retranslate_untracked=False):
             if retranslate_untracked:
                 item["action"] = "translate"
                 _reason(item, "untracked_existing_output")
+            elif _selected_terms_for_chunk(glossary, source_path):
+                item["action"] = "translate"
+                _reason(item, "untracked_glossary_sensitive_output")
             else:
                 item["action"] = "record"
                 _reason(item, "untracked_existing_output")

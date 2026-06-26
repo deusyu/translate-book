@@ -102,9 +102,11 @@ Run:
 python3 {baseDir}/scripts/run_state.py plan "<temp_dir>"
 ```
 
-If the user explicitly asks to apply glossary edits to outputs produced before
-`run_state.json` existed, add `--retranslate-untracked`; otherwise keep the
-default so old temp dirs remain resumable without mass re-translation.
+By default, existing outputs without `run_state.json` records are reused only
+when the current glossary selects no terms for that chunk; untracked outputs
+that would receive a term table are re-translated so stale terminology is not
+silently adopted. If the user explicitly asks to force every untracked existing
+output through the current glossary, add `--retranslate-untracked`.
 
 Capture stdout JSON:
 - `translation_chunk_ids` — chunks to translate in this run.
