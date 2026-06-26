@@ -90,6 +90,32 @@ class RunStateTests(unittest.TestCase):
 
         self.assertIn("chunk0002", plan["translation_chunk_ids"])
 
+    def test_whitespace_only_output_needs_translation_and_cannot_record(self):
+        tmp, temp_dir = self._workspace()
+        with tmp:
+            self._write(temp_dir / "output_chunk0002.md", "  \n\t\n")
+            plan = run_state.plan(str(temp_dir))
+
+            self.assertIn("chunk0002", plan["translation_chunk_ids"])
+            with self.assertRaisesRegex(ValueError, "blank"):
+                run_state.record_chunks(str(temp_dir), ["chunk0002"])
+
+    def test_severely_truncated_output_needs_translation_and_cannot_record(self):
+        tmp = tempfile.TemporaryDirectory()
+        with tmp:
+            temp_dir = Path(tmp.name)
+            source = "A long source paragraph that should not translate to two bytes. " * 20
+            self._write(temp_dir / "input.md", source)
+            self._write(temp_dir / "chunk0001.md", source)
+            self._write(temp_dir / "output_chunk0001.md", "ok")
+            create_manifest(str(temp_dir), ["chunk0001.md"], str(temp_dir / "input.md"))
+
+            plan = run_state.plan(str(temp_dir))
+
+            self.assertIn("chunk0001", plan["translation_chunk_ids"])
+            with self.assertRaisesRegex(ValueError, "severely truncated"):
+                run_state.record_chunks(str(temp_dir), ["chunk0001"])
+
     def test_source_hash_change_needs_translation_after_record(self):
         tmp, temp_dir = self._workspace()
         with tmp:

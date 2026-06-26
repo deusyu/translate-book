@@ -8,6 +8,9 @@ import json
 import hashlib
 
 
+MIN_OUTPUT_SOURCE_RATIO = 0.1
+
+
 def file_hash(filepath):
     """Compute SHA-256 hash of a file."""
     h = hashlib.sha256()
@@ -112,20 +115,32 @@ def validate_for_merge(temp_dir):
             errors.append(f"Missing output: {chunk['output_file']} (chunk {chunk['id']})")
             continue
 
-        # Check non-empty
+        # Check non-empty and substantive. Whitespace-only files have bytes on
+        # disk but merge to nothing after strip(), silently dropping a chunk.
         output_size = os.path.getsize(output_path)
         if output_size == 0:
             errors.append(f"Empty output: {chunk['output_file']} (chunk {chunk['id']})")
             continue
+        try:
+            with open(output_path, 'r', encoding='utf-8') as f:
+                output_text = f.read()
+        except Exception as e:
+            errors.append(f"Unreadable output: {chunk['output_file']} (chunk {chunk['id']}): {e}")
+            continue
+        if not output_text.strip():
+            errors.append(f"Blank output: {chunk['output_file']} (chunk {chunk['id']})")
+            continue
 
-        # Check abnormally short
+        # Check abnormally short. Treat severe truncation as unsafe to merge:
+        # the final book would otherwise be generated with silently missing text.
         if os.path.exists(source_path):
             source_size = os.path.getsize(source_path)
-            if source_size > 0 and output_size < source_size * 0.1:
-                warnings.append(
-                    f"Suspiciously short: {chunk['output_file']} "
+            if source_size > 0 and output_size < source_size * MIN_OUTPUT_SOURCE_RATIO:
+                errors.append(
+                    f"Severely truncated output: {chunk['output_file']} "
                     f"({output_size} bytes vs source {source_size} bytes)"
                 )
+                continue
 
         ordered_output_files.append(output_path)
 
