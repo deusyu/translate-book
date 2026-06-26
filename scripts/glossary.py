@@ -74,9 +74,18 @@ def glossary_hash(glossary):
 
 
 def term_hash(term):
-    """SHA-256 of a single term's identifying fields."""
-    payload = f"{term.get('source', '')}→{term.get('target', '')}|{term.get('category', '')}"
-    return hashlib.sha256(payload.encode('utf-8')).hexdigest()
+    """SHA-256 of a single term's translation-affecting fields.
+
+    Aliases are part of the prompt contract: adding one can require
+    re-translating chunks where the source term was already selected.
+    """
+    payload = {
+        'source': term.get('source', ''),
+        'target': term.get('target', ''),
+        'category': term.get('category', ''),
+        'aliases': sorted(term.get('aliases', []) or []),
+    }
+    return hashlib.sha256(_canonical_json(payload).encode('utf-8')).hexdigest()
 
 
 def _v2_term_defaults(term):
