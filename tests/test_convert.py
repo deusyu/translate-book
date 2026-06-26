@@ -10,6 +10,7 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 import convert  # noqa: E402
+from manifest import create_manifest, load_manifest  # noqa: E402
 
 
 class CleanCalibreMarkersTests(unittest.TestCase):
@@ -260,6 +261,76 @@ class CleanCalibreMarkersTests(unittest.TestCase):
         self.assertNotIn("\n3\n", f"\n{cleaned}\n")
         self.assertIn("He was born in", cleaned)
         self.assertIn("Introduction text follows.", cleaned)
+
+
+class ChunkCacheInvalidationTests(unittest.TestCase):
+    def _write(self, path, content):
+        Path(path).write_text(content, encoding="utf-8")
+
+    def test_source_fingerprint_keeps_cache_for_same_source_file(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            source = temp_path / "book.epub"
+            cache = temp_path / "book_temp"
+            cache.mkdir()
+            self._write(source, "source bytes\n")
+            self._write(cache / "input.html", "<html></html>\n")
+
+            fingerprint = convert.source_fingerprint(str(source))
+            convert.write_source_fingerprint(str(cache), fingerprint)
+
+            invalidated = convert.invalidate_source_cache_if_needed(str(cache), fingerprint)
+
+            self.assertFalse(invalidated)
+            self.assertTrue((cache / "input.html").exists())
+
+    def test_source_fingerprint_removes_cache_when_source_file_changes(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            source = temp_path / "book.epub"
+            cache = temp_path / "book_temp"
+            cache.mkdir()
+            self._write(source, "old source bytes\n")
+            self._write(cache / "input.html", "<html></html>\n")
+
+            old_fingerprint = convert.source_fingerprint(str(source))
+            convert.write_source_fingerprint(str(cache), old_fingerprint)
+            self._write(source, "new source bytes\n")
+
+            invalidated = convert.invalidate_source_cache_if_needed(
+                str(cache),
+                convert.source_fingerprint(str(source)),
+            )
+
+            self.assertTrue(invalidated)
+            self.assertFalse(cache.exists())
+
+    def test_resplits_and_removes_outputs_when_input_md_changes(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            input_md = temp_path / "input.md"
+            chunk = temp_path / "chunk0001.md"
+            output = temp_path / "output_chunk0001.md"
+            meta = temp_path / "output_chunk0001.meta.json"
+            merged = temp_path / "output.md"
+
+            self._write(input_md, "old source text\n")
+            self._write(chunk, "old source text\n")
+            self._write(output, "old translation\n")
+            self._write(meta, '{"old": true}\n')
+            self._write(merged, "old merged translation\n")
+            create_manifest(temp_dir, ["chunk0001.md"], str(input_md))
+
+            self._write(input_md, "new source text that must be split\n")
+            chunk_count = convert._do_split_and_manifest(temp_dir, str(input_md), 6000)
+
+            self.assertEqual(chunk_count, 1)
+            self.assertEqual(chunk.read_text(encoding="utf-8"), "new source text that must be split\n")
+            self.assertFalse(output.exists())
+            self.assertFalse(meta.exists())
+            self.assertFalse(merged.exists())
+            manifest = load_manifest(temp_dir)
+            self.assertEqual(manifest["chunk_count"], 1)
 
 
 class TempRootTests(unittest.TestCase):

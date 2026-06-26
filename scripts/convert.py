@@ -13,9 +13,10 @@ import tempfile
 import argparse
 import bisect
 import glob
+import json
 import re
 
-from manifest import create_manifest
+from manifest import create_manifest, file_hash, load_manifest
 
 
 def find_calibre_convert():
@@ -158,6 +159,53 @@ def build_temp_dir(input_file, temp_root=None):
     if temp_root:
         return os.path.join(temp_root, leaf)
     return leaf
+
+
+SOURCE_FINGERPRINT_FILE = "source_fingerprint.json"
+
+
+def source_fingerprint(input_file):
+    """Return a stable fingerprint for the source book behind a temp cache."""
+    return {
+        "path": os.path.realpath(input_file),
+        "size": os.path.getsize(input_file),
+        "sha256": file_hash(input_file),
+    }
+
+
+def source_fingerprint_path(temp_dir):
+    return os.path.join(temp_dir, SOURCE_FINGERPRINT_FILE)
+
+
+def load_source_fingerprint(temp_dir):
+    path = source_fingerprint_path(temp_dir)
+    if not os.path.exists(path):
+        return None
+    with open(path, 'r', encoding='utf-8') as f:
+        return json.load(f)
+
+
+def write_source_fingerprint(temp_dir, fingerprint):
+    os.makedirs(temp_dir, exist_ok=True)
+    with open(source_fingerprint_path(temp_dir), 'w', encoding='utf-8') as f:
+        json.dump(fingerprint, f, indent=2, sort_keys=True)
+        f.write('\n')
+
+
+def invalidate_source_cache_if_needed(temp_dir, current_fingerprint):
+    """Remove cached conversion artifacts if they belong to different source bytes."""
+    previous = load_source_fingerprint(temp_dir)
+    if previous is None:
+        return False
+    if previous.get("sha256") == current_fingerprint.get("sha256"):
+        return False
+
+    shutil.rmtree(temp_dir)
+    print(
+        "Invalidated conversion cache: source file changed "
+        f"({previous.get('sha256', '')[:12]}... -> {current_fingerprint.get('sha256', '')[:12]}...)"
+    )
+    return True
 
 
 def setup_temp_directory(input_file, html_file, images_dir, temp_root=None):
@@ -627,6 +675,41 @@ def _find_existing_chunk_files(temp_dir):
     return [], False
 
 
+def _remove_chunk_cache(temp_dir, chunk_files, reason):
+    """Delete cached chunks and their translated outputs before re-splitting."""
+    removed = 0
+    for filename in chunk_files:
+        paths = [
+            os.path.join(temp_dir, filename),
+            os.path.join(temp_dir, f"output_{filename}"),
+            os.path.join(temp_dir, f"output_{os.path.splitext(filename)[0]}.meta.json"),
+        ]
+        for path in paths:
+            if os.path.exists(path):
+                os.remove(path)
+                removed += 1
+
+    output_md = os.path.join(temp_dir, "output.md")
+    if os.path.exists(output_md):
+        os.remove(output_md)
+        removed += 1
+
+    print(f"Invalidated cached chunks ({reason}); removed {removed} stale file(s)")
+
+
+def _cached_chunks_match_input(temp_dir, input_md):
+    """Return False when manifest proves cached chunks came from another input.md."""
+    manifest = load_manifest(temp_dir)
+    if not manifest:
+        return True
+
+    recorded_source_hash = manifest.get("source_hash", "")
+    current_source_hash = file_hash(input_md) if os.path.exists(input_md) else ""
+    if recorded_source_hash and current_source_hash:
+        return recorded_source_hash == current_source_hash
+    return True
+
+
 def create_config_file(temp_dir, input_file, input_lang, output_lang, metadata=None):
     """Create config.txt file for the pipeline"""
     try:
@@ -663,10 +746,14 @@ def _do_split_and_manifest(temp_dir, input_md, chunk_size):
     """Split markdown and create manifest. Returns chunk count or 0 on failure."""
     existing, is_legacy = _find_existing_chunk_files(temp_dir)
     if existing:
-        print(f"Skipping markdown splitting - found {len(existing)} existing {'page' if is_legacy else 'chunk'} files")
-        # Create/update manifest for existing files
-        create_manifest(temp_dir, existing, input_md)
-        return len(existing)
+        if not _cached_chunks_match_input(temp_dir, input_md):
+            _remove_chunk_cache(temp_dir, existing, "input.md changed since last split")
+            existing = []
+        else:
+            print(f"Skipping markdown splitting - found {len(existing)} existing {'page' if is_legacy else 'chunk'} files")
+            # Create/update manifest for existing files
+            create_manifest(temp_dir, existing, input_md)
+            return len(existing)
 
     chunk_files = split_markdown_structured(input_md, temp_dir, chunk_size)
     if not chunk_files:
@@ -749,6 +836,8 @@ def main():
     if args.temp_root:
         print(f"Temp root: {args.temp_root}")
 
+    current_source_fingerprint = source_fingerprint(input_file)
+
     calibre_path = find_calibre_convert()
     if not calibre_path:
         print("Error: Calibre ebook-convert not found")
@@ -759,6 +848,8 @@ def main():
 
     try:
         temp_dir = build_temp_dir(input_file, args.temp_root)
+        if os.path.isdir(temp_dir):
+            invalidate_source_cache_if_needed(temp_dir, current_source_fingerprint)
         input_html_path = os.path.join(temp_dir, "input.html")
 
         if os.path.exists(input_html_path):
@@ -799,6 +890,7 @@ def main():
                 sys.exit(1)
 
             create_config_file(temp_dir, input_file, args.ilang, args.olang, metadata)
+            write_source_fingerprint(temp_dir, current_source_fingerprint)
             print("Conversion completed successfully!")
             print(f"Temp directory: {temp_dir}")
             return
@@ -835,6 +927,7 @@ def main():
                 sys.exit(1)
 
             create_config_file(temp_dir, input_file, args.ilang, args.olang, metadata)
+            write_source_fingerprint(temp_dir, current_source_fingerprint)
 
             print("Conversion completed successfully!")
             print(f"Temp directory: {temp_dir}")
