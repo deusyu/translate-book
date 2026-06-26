@@ -170,7 +170,7 @@ Calibre 将输入文件转为 HTMLZ，解压后转为 Markdown，再拆分为 ch
 
 已有的 v1 `glossary.json` 会在首次加载时自动升级为 v2。v2 禁止同一个表面词（原文或别名）同时归属于两个不同术语；如果 v1 文件存在同名（polysemous）的重复 source，升级会终止并给出消歧提示 — 手工修复后重新加载即可。
 
-可在两次运行之间编辑 `glossary.json` 修正译法。已存在的 `glossary.json` 不会被覆盖 — 删除它才会重建。`scripts/run_state.py` 会记录每个 chunk 用到的术语表状态，因此后续术语表变化只会重译受影响的 chunk（前提是该 chunk 已写入 run_state）。
+可在两次运行之间编辑 `glossary.json` 修正译法。已存在的 `glossary.json` 不会被覆盖 — 删除它才会重建。`scripts/run_state.py` 会记录每个 chunk 用到的术语表状态，因此后续术语表变化只会重译受影响的 chunk。没有 `run_state.json` 记录的已有输出，如果当前术语表会注入到它的 prompt 中，则会重译；只有不命中术语表的 chunk 才会作为 record-only 续跑状态收养。
 
 ### 第二步：翻译（并行 subagent）
 
@@ -182,7 +182,7 @@ Skill 分批启动 subagent（默认 8 路并发）。每个 subagent：
 4. 将结果写入 `output_chunk0042.md`
 5. 写入 `output_chunk0042.meta.json`，供术语表反馈合并
 
-启动 subagent 前，`scripts/run_state.py plan <temp_dir>` 会判断哪些 chunk 需要翻译、哪些已有输出只需记录状态、哪些无需处理。只有在接管旧 temp 目录且明确希望现有输出按当前术语表重译时，才使用 `--retranslate-untracked`。如果运行中断，重新运行会跳过已有合法输出且状态仍有效的 chunk。翻译失败的 chunk 会自动重试一次。
+启动 subagent 前，`scripts/run_state.py plan <temp_dir>` 会判断哪些 chunk 需要翻译、哪些已有输出只需记录状态、哪些无需处理。只有在接管旧 temp 目录且明确希望现有输出全部按当前设置重译时，才使用 `--retranslate-untracked`；默认行为已经会重译命中当前术语表的未记录输出。如果运行中断，重新运行会跳过已有合法输出且状态仍有效的 chunk。翻译失败的 chunk 会自动重试一次。
 
 ### 第三步：合并与构建
 
