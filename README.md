@@ -170,7 +170,7 @@ Each chunk is translated by a fresh-context sub-agent, which means the same prop
 
 Existing v1 `glossary.json` files are auto-upgraded to v2 on first load. v2 forbids the same surface form (source or alias) appearing in two different terms; if a v1 file has polysemous duplicate sources, the upgrade aborts with a disambiguation message — fix the file by hand and reload.
 
-Edit `glossary.json` between runs to fix translations; existing `glossary.json` is never overwritten — delete it to rebuild from scratch. `scripts/run_state.py` records which glossary terms each chunk used, so later glossary changes only re-translate affected chunks after the state has been recorded.
+Edit `glossary.json` between runs to fix translations; existing `glossary.json` is never overwritten — delete it to rebuild from scratch. `scripts/run_state.py` records which glossary terms each chunk used, so later glossary changes only re-translate affected chunks after the state has been recorded. If an existing output has no run-state record yet, chunks that would receive current glossary terms are re-translated before recording instead of silently adopting stale terminology.
 
 ### Step 2: Translate (parallel subagents)
 
@@ -182,7 +182,7 @@ The skill launches subagents in batches (default: 8 concurrent). Each subagent:
 4. Writes the result to `output_chunk0042.md`
 5. Writes `output_chunk0042.meta.json` observations for glossary feedback
 
-Before launching subagents, `scripts/run_state.py plan <temp_dir>` decides which chunks need translation, which existing outputs only need state recording, and which are unchanged. Use `--retranslate-untracked` only when adopting an old temp dir whose existing outputs should be forced through the current glossary. If a run is interrupted, re-running skips chunks that already have valid output files and current state. Failed chunks are retried once automatically.
+Before launching subagents, `scripts/run_state.py plan <temp_dir>` decides which chunks need translation, which existing outputs only need state recording, and which are unchanged. Untracked existing outputs are recorded only when no selected glossary terms affect that chunk; glossary-sensitive untracked outputs are translated so the current term table is applied. Use `--retranslate-untracked` only when every untracked existing output should be forced through translation. If a run is interrupted, re-running skips chunks that already have valid output files and current state. Failed chunks are retried once automatically.
 
 ### Step 3: Merge & Build
 
