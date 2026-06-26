@@ -227,6 +227,17 @@ _PAGE_SEQUENCE_MIN_LENGTH = 4
 _PAGE_SEQUENCE_MIN_RATIO = 0.5
 
 
+def _previous_nonblank_line(lines, idx):
+    for j in range(idx - 1, -1, -1):
+        if lines[j].strip():
+            return lines[j]
+    return None
+
+
+def _is_markdown_heading(line):
+    return bool(re.match(r'^\s{0,3}#{1,6}\s+\S', line or ''))
+
+
 def _detect_page_number_lines(lines):
     """Detect standalone-digit lines that form a monotonic page-number sequence.
 
@@ -244,6 +255,10 @@ def _detect_page_number_lines(lines):
     for i, line in enumerate(lines):
         s = line.strip()
         if s.isdigit():
+            # Chapter/section numbers often appear as standalone digits directly
+            # after a Markdown heading; they are content, not page footers.
+            if _is_markdown_heading(_previous_nonblank_line(lines, i)):
+                continue
             digit_indices.append(i)
             digit_values.append(int(s))
 
@@ -318,10 +333,7 @@ def clean_calibre_markers(content, strip_page_numbers=False):
         return False
 
     def prev_nonblank(idx):
-        for j in range(idx - 1, -1, -1):
-            if lines[j].strip():
-                return lines[j]
-        return None
+        return _previous_nonblank_line(lines, idx)
 
     def next_nonblank(idx):
         for j in range(idx + 1, len(lines)):
