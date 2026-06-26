@@ -131,6 +131,29 @@ class RunStateTests(unittest.TestCase):
 
         self.assertEqual(plan["translation_chunk_ids"], ["chunk0001"])
 
+    def test_new_alias_retranslates_chunk_when_canonical_term_already_matched(self):
+        tmp = tempfile.TemporaryDirectory()
+        with tmp:
+            temp_dir = Path(tmp.name)
+            self._write(temp_dir / "input.md", "Tai met Taig.\n")
+            self._write(temp_dir / "chunk0001.md", "Tai met Taig.\n")
+            self._write(temp_dir / "output_chunk0001.md", "太一见到了 Taig。\n")
+            create_manifest(str(temp_dir), ["chunk0001.md"], str(temp_dir / "input.md"))
+            self._write(temp_dir / "glossary.json", json.dumps(glossary_doc(), ensure_ascii=False))
+            run_state.record_chunks(str(temp_dir), ["chunk0001"])
+
+            self._write(
+                temp_dir / "glossary.json",
+                json.dumps(glossary_doc(aliases=["Taig"]), ensure_ascii=False),
+            )
+            plan = run_state.plan(str(temp_dir))
+
+        self.assertEqual(plan["translation_chunk_ids"], ["chunk0001"])
+        self.assertEqual(
+            plan["chunks"][0]["reasons"],
+            [{"code": "glossary_term_hash_changed", "detail": ["Tai"]}],
+        )
+
     def test_output_hash_change_is_record_only(self):
         tmp, temp_dir = self._workspace()
         with tmp:
