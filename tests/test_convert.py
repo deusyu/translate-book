@@ -105,9 +105,43 @@ class CleanCalibreMarkersTests(unittest.TestCase):
         self.assertNotIn("\n7\n", f"\n{cleaned}\n")
         self.assertNotIn("broken.ct}", cleaned)
 
-    def test_drops_sequential_page_numbers(self):
+    def test_preserves_monotonic_standalone_numbers_by_default(self):
+        # Standalone numbers can be real content (problem lists, verse numbers,
+        # tables). Without an explicit page-number flag, keep them unless they
+        # are adjacent to Calibre noise.
+        content = "\n".join(
+            [
+                "Problem set",
+                "",
+                "1",
+                "",
+                "Solve one.",
+                "",
+                "2",
+                "",
+                "Solve two.",
+                "",
+                "3",
+                "",
+                "Solve three.",
+                "",
+                "4",
+                "",
+                "Solve four.",
+            ]
+        )
+
+        cleaned = convert.clean_calibre_markers(content)
+
+        for n in ("1", "2", "3", "4"):
+            self.assertIn(f"\n{n}\n", f"\n{cleaned}\n")
+        for p in ("Solve one.", "Solve two.", "Solve three.", "Solve four."):
+            self.assertIn(p, cleaned)
+
+    def test_auto_strip_drops_sequential_page_numbers(self):
         # Six paragraphs separated by sequential page-number footers — clear
-        # monotonic spine should be detected and dropped.
+        # monotonic spine should be detected and dropped when explicitly
+        # requested.
         content = "\n".join(
             [
                 "Para one.",
@@ -134,7 +168,7 @@ class CleanCalibreMarkersTests(unittest.TestCase):
             ]
         )
 
-        cleaned = convert.clean_calibre_markers(content)
+        cleaned = convert.clean_calibre_markers(content, auto_strip_page_numbers=True)
 
         for n in ("1", "2", "3", "4", "5"):
             self.assertNotIn(f"\n{n}\n", f"\n{cleaned}\n")
@@ -173,7 +207,7 @@ class CleanCalibreMarkersTests(unittest.TestCase):
             ]
         )
 
-        cleaned = convert.clean_calibre_markers(content)
+        cleaned = convert.clean_calibre_markers(content, auto_strip_page_numbers=True)
 
         self.assertIn("\n1984\n", f"\n{cleaned}\n")
         for n in ("1", "2", "3", "4", "5"):
@@ -292,6 +326,78 @@ class TempRootTests(unittest.TestCase):
             self.assertEqual(created, str(root / "Alice_temp"))
             self.assertTrue((root / "Alice_temp" / "input.html").exists())
             self.assertTrue((root / "Alice_temp" / "images" / "cover.jpg").exists())
+
+
+class MainHtmlzOutputTests(unittest.TestCase):
+    def test_main_uses_private_htmlz_tempfile_without_deleting_sibling(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "book.epub"
+            sibling_htmlz = Path(tmp) / "book.htmlz"
+            source.write_text("epub placeholder", encoding="utf-8")
+            sibling_htmlz.write_text("user-owned htmlz", encoding="utf-8")
+            calls = {}
+
+            old_argv = sys.argv[:]
+            originals = {
+                name: getattr(convert, name)
+                for name in [
+                    "find_calibre_convert",
+                    "convert_to_htmlz",
+                    "extract_htmlz",
+                    "extract_metadata_from_htmlz",
+                    "setup_temp_directory",
+                    "convert_html_to_markdown",
+                    "_do_split_and_manifest",
+                    "create_config_file",
+                ]
+            }
+            try:
+                convert.find_calibre_convert = lambda: "ebook-convert"
+
+                def fake_convert(input_file, htmlz_file, calibre_path):
+                    calls["htmlz_file"] = Path(htmlz_file)
+                    Path(htmlz_file).write_text("generated htmlz", encoding="utf-8")
+                    return True
+
+                def fake_extract(htmlz_file, extract_dir):
+                    html = Path(extract_dir) / "index.html"
+                    html.write_text("<html></html>", encoding="utf-8")
+                    return str(html), None
+
+                def fake_setup(input_file, html_file, images_dir, temp_root=None):
+                    temp_dir = Path(tmp) / "work"
+                    temp_dir.mkdir()
+                    (temp_dir / "input.html").write_text("<html></html>", encoding="utf-8")
+                    return str(temp_dir)
+
+                def fake_markdown(
+                    html_file,
+                    md_file,
+                    strip_page_numbers=False,
+                    auto_strip_page_numbers=False,
+                ):
+                    Path(md_file).write_text("markdown", encoding="utf-8")
+                    return True
+
+                convert.convert_to_htmlz = fake_convert
+                convert.extract_htmlz = fake_extract
+                convert.extract_metadata_from_htmlz = lambda extract_dir: {}
+                convert.setup_temp_directory = fake_setup
+                convert.convert_html_to_markdown = fake_markdown
+                convert._do_split_and_manifest = lambda temp_dir, input_md, chunk_size: 1
+                convert.create_config_file = lambda *args, **kwargs: None
+
+                sys.argv = ["convert.py", str(source)]
+                convert.main()
+            finally:
+                sys.argv = old_argv
+                for name, func in originals.items():
+                    setattr(convert, name, func)
+
+            self.assertNotEqual(calls["htmlz_file"], sibling_htmlz)
+            self.assertNotEqual(calls["htmlz_file"].parent, source.parent)
+            self.assertTrue(sibling_htmlz.exists())
+            self.assertEqual(sibling_htmlz.read_text(encoding="utf-8"), "user-owned htmlz")
 
 
 class StripPageNumbersCacheConflictTests(unittest.TestCase):

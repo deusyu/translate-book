@@ -187,7 +187,12 @@ def setup_temp_directory(input_file, html_file, images_dir, temp_root=None):
         return None
 
 
-def convert_html_to_markdown(html_file, md_file, strip_page_numbers=False):
+def convert_html_to_markdown(
+    html_file,
+    md_file,
+    strip_page_numbers=False,
+    auto_strip_page_numbers=False,
+):
     """Convert HTML to Markdown using pandoc"""
     try:
         import pypandoc
@@ -205,7 +210,11 @@ def convert_html_to_markdown(html_file, md_file, strip_page_numbers=False):
 
             content = content.replace('\ufeff', '')
             content = content.replace('\u00a0', ' ')
-            content = clean_calibre_markers(content, strip_page_numbers=strip_page_numbers)
+            content = clean_calibre_markers(
+                content,
+                strip_page_numbers=strip_page_numbers,
+                auto_strip_page_numbers=auto_strip_page_numbers,
+            )
 
             with open(md_file, 'w', encoding='utf-8') as f:
                 f.write(content)
@@ -281,18 +290,19 @@ def _detect_page_number_lines(lines):
     return {digit_indices[i] for i in lnds}
 
 
-def clean_calibre_markers(content, strip_page_numbers=False):
+def clean_calibre_markers(content, strip_page_numbers=False, auto_strip_page_numbers=False):
     """Clean up Calibre-specific markers from markdown content.
 
     Standalone digit lines are handled in two layers:
       1. If a line is adjacent to Calibre noise (::: fence, .ct}/.cn} marker),
          drop it — clearly leftover.
-      2. Otherwise, run LNDS over all standalone digits to detect a monotonic
-         page-number sequence and drop those. Outliers like years (1984),
-         chapter numbers, and citation indices stay preserved.
+      2. If auto_strip_page_numbers=True, run LNDS over all standalone digits
+         to detect a monotonic page-number sequence and drop those. Outliers
+         like years (1984), chapter numbers, and citation indices stay
+         preserved.
 
-    Pass strip_page_numbers=True to bypass both layers and aggressively delete
-    every standalone-digit line (legacy behavior).
+    Pass strip_page_numbers=True to aggressively delete every standalone-digit
+    line (legacy behavior).
     """
     content = re.sub(r'\{\.calibre[^}]*\}', '', content)
     content = re.sub(r'\(#calibre_link-\d+\)', '', content)
@@ -305,7 +315,11 @@ def clean_calibre_markers(content, strip_page_numbers=False):
 
     lines = content.split('\n')
 
-    page_number_lines = set() if strip_page_numbers else _detect_page_number_lines(lines)
+    page_number_lines = (
+        _detect_page_number_lines(lines)
+        if auto_strip_page_numbers and not strip_page_numbers
+        else set()
+    )
 
     def is_calibre_noise(line):
         s = line.strip()
@@ -676,12 +690,12 @@ def _do_split_and_manifest(temp_dir, input_md, chunk_size):
 
 
 def _check_strip_page_numbers_cache_conflict(strip_flag, temp_dir, input_md):
-    """Return list of cached files that would silently neutralize --strip-page-numbers.
+    """Return cached files that would silently neutralize page-number cleaning.
 
-    The flag only takes effect inside clean_calibre_markers, which runs during
-    HTML→Markdown conversion. If input.md or chunk*.md already exist from a
-    prior run, both are reused as-is and the flag becomes a no-op. Surface
-    that conflict so the user knows to clean up.
+    Page-number flags only take effect inside clean_calibre_markers, which runs
+    during HTML→Markdown conversion. If input.md or chunk*.md already exist
+    from a prior run, both are reused as-is and the flags become no-ops.
+    Surface that conflict so the user knows to clean up.
     """
     if not strip_flag:
         return []
@@ -705,7 +719,7 @@ def _check_strip_page_numbers_cache_conflict(strip_flag, temp_dir, input_md):
 def _abort_on_strip_cache_conflict(blockers, temp_dir):
     if not blockers:
         return
-    print("Error: --strip-page-numbers cannot take effect because cached files exist:")
+    print("Error: page-number cleaning options cannot take effect because cached files exist:")
     for b in blockers:
         print(f"  - {b}")
     print(f"Delete the cached files (or remove the entire {temp_dir}/ directory) and re-run.")
@@ -729,6 +743,12 @@ def main():
         action="store_true",
         help="Aggressively delete every standalone-digit line (legacy behavior). "
              "Default is off: standalone digits are preserved unless adjacent to Calibre noise.",
+    )
+    parser.add_argument(
+        "--auto-strip-page-numbers",
+        action="store_true",
+        help="Delete auto-detected monotonic page-number sequences. "
+             "Use only when standalone numeric content is not meaningful.",
     )
 
     args = parser.parse_args()
@@ -755,11 +775,10 @@ def main():
         print("Please install Calibre: https://calibre-ebook.com/")
         sys.exit(1)
 
-    htmlz_file = f"{os.path.splitext(input_file)[0]}.htmlz"
-
     try:
         temp_dir = build_temp_dir(input_file, args.temp_root)
         input_html_path = os.path.join(temp_dir, "input.html")
+        page_number_cleaning_requested = args.strip_page_numbers or args.auto_strip_page_numbers
 
         if os.path.exists(input_html_path):
             print(f"Skipping HTMLZ conversion - input.html already exists")
@@ -785,13 +804,20 @@ def main():
 
             input_md = os.path.join(temp_dir, "input.md")
             _abort_on_strip_cache_conflict(
-                _check_strip_page_numbers_cache_conflict(args.strip_page_numbers, temp_dir, input_md),
+                _check_strip_page_numbers_cache_conflict(
+                    page_number_cleaning_requested, temp_dir, input_md
+                ),
                 temp_dir,
             )
             if os.path.exists(input_md):
                 print(f"Skipping HTML to Markdown conversion - input.md already exists")
             else:
-                if not convert_html_to_markdown(input_html_path, input_md, strip_page_numbers=args.strip_page_numbers):
+                if not convert_html_to_markdown(
+                    input_html_path,
+                    input_md,
+                    strip_page_numbers=args.strip_page_numbers,
+                    auto_strip_page_numbers=args.auto_strip_page_numbers,
+                ):
                     sys.exit(1)
 
             chunk_count = _do_split_and_manifest(temp_dir, input_md, args.chunk_size)
@@ -803,45 +829,52 @@ def main():
             print(f"Temp directory: {temp_dir}")
             return
 
-        if not convert_to_htmlz(input_file, htmlz_file, calibre_path):
-            sys.exit(1)
-
-        with tempfile.TemporaryDirectory() as extract_dir:
-            html_file, images_dir = extract_htmlz(htmlz_file, extract_dir)
-            if not html_file:
+        base_name = os.path.splitext(os.path.basename(input_file))[0]
+        with tempfile.TemporaryDirectory(prefix=f"{base_name}_htmlz_") as htmlz_dir:
+            htmlz_file = os.path.join(htmlz_dir, f"{base_name}.htmlz")
+            if not convert_to_htmlz(input_file, htmlz_file, calibre_path):
                 sys.exit(1)
 
-            metadata = extract_metadata_from_htmlz(extract_dir)
-
-            temp_dir = setup_temp_directory(input_file, html_file, images_dir, temp_root=args.temp_root)
-            if not temp_dir:
-                sys.exit(1)
-
-            input_html = os.path.join(temp_dir, "input.html")
-            input_md = os.path.join(temp_dir, "input.md")
-
-            _abort_on_strip_cache_conflict(
-                _check_strip_page_numbers_cache_conflict(args.strip_page_numbers, temp_dir, input_md),
-                temp_dir,
-            )
-            if os.path.exists(input_md):
-                print(f"Skipping HTML to Markdown conversion - input.md already exists")
-            else:
-                if not convert_html_to_markdown(input_html, input_md, strip_page_numbers=args.strip_page_numbers):
+            with tempfile.TemporaryDirectory() as extract_dir:
+                html_file, images_dir = extract_htmlz(htmlz_file, extract_dir)
+                if not html_file:
                     sys.exit(1)
 
-            chunk_count = _do_split_and_manifest(temp_dir, input_md, args.chunk_size)
-            if chunk_count == 0:
-                sys.exit(1)
+                metadata = extract_metadata_from_htmlz(extract_dir)
 
-            create_config_file(temp_dir, input_file, args.ilang, args.olang, metadata)
+                temp_dir = setup_temp_directory(input_file, html_file, images_dir, temp_root=args.temp_root)
+                if not temp_dir:
+                    sys.exit(1)
 
-            print("Conversion completed successfully!")
-            print(f"Temp directory: {temp_dir}")
-            print(f"Markdown chunks: {chunk_count} files")
+                input_html = os.path.join(temp_dir, "input.html")
+                input_md = os.path.join(temp_dir, "input.md")
 
-            if os.path.exists(htmlz_file):
-                os.remove(htmlz_file)
+                _abort_on_strip_cache_conflict(
+                    _check_strip_page_numbers_cache_conflict(
+                        page_number_cleaning_requested, temp_dir, input_md
+                    ),
+                    temp_dir,
+                )
+                if os.path.exists(input_md):
+                    print(f"Skipping HTML to Markdown conversion - input.md already exists")
+                else:
+                    if not convert_html_to_markdown(
+                        input_html,
+                        input_md,
+                        strip_page_numbers=args.strip_page_numbers,
+                        auto_strip_page_numbers=args.auto_strip_page_numbers,
+                    ):
+                        sys.exit(1)
+
+                chunk_count = _do_split_and_manifest(temp_dir, input_md, args.chunk_size)
+                if chunk_count == 0:
+                    sys.exit(1)
+
+                create_config_file(temp_dir, input_file, args.ilang, args.olang, metadata)
+
+                print("Conversion completed successfully!")
+                print(f"Temp directory: {temp_dir}")
+                print(f"Markdown chunks: {chunk_count} files")
 
     except KeyboardInterrupt:
         print("\nConversion interrupted by user")
