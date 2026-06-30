@@ -235,8 +235,13 @@ def plan(temp_dir, retranslate_untracked=False):
                 item["action"] = "translate"
                 _reason(item, "untracked_existing_output")
             else:
-                item["action"] = "record"
-                _reason(item, "untracked_existing_output")
+                selected_terms = _selected_terms_for_chunk(glossary, source_path)
+                if selected_terms:
+                    item["action"] = "translate"
+                    _reason(item, "untracked_glossary_sensitive_output")
+                else:
+                    item["action"] = "record"
+                    _reason(item, "untracked_existing_output")
 
         if item["action"] == "unchanged" and record is not None:
             if record.get("source_hash") != current_source_hash:

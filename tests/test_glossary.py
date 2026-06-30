@@ -625,6 +625,26 @@ class HashTests(unittest.TestCase):
         t2 = {'source': 'Apple', 'target': '苹果', 'category': 'company'}
         self.assertNotEqual(glossary.term_hash(t1), glossary.term_hash(t2))
 
+    def test_term_hash_changes_when_aliases_change(self):
+        t1 = {'source': 'Tai', 'target': '太一', 'category': 'person', 'aliases': []}
+        t2 = {'source': 'Tai', 'target': '太一', 'category': 'person', 'aliases': ['Taig']}
+        self.assertNotEqual(glossary.term_hash(t1), glossary.term_hash(t2))
+
+    def test_term_hash_alias_order_is_stable(self):
+        t1 = {
+            'source': 'Tai',
+            'target': '太一',
+            'category': 'person',
+            'aliases': ['Taig', 'Taighi'],
+        }
+        t2 = {
+            'source': 'Tai',
+            'target': '太一',
+            'category': 'person',
+            'aliases': ['Taighi', 'Taig'],
+        }
+        self.assertEqual(glossary.term_hash(t1), glossary.term_hash(t2))
+
 
 class FormatTermsForPromptTests(unittest.TestCase):
     def test_empty_terms_returns_empty_string(self):
