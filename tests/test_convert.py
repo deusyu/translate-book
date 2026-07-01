@@ -352,5 +352,78 @@ class StripPageNumbersCacheConflictTests(unittest.TestCase):
             self.assertIn("3 chunk file(s)", blockers[0])
 
 
+class SourceFingerprintCacheTests(unittest.TestCase):
+    def _write(self, path, content):
+        Path(path).write_text(content, encoding="utf-8")
+
+    def test_no_conflict_when_temp_dir_has_no_reusable_cache(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "book.epub"
+            self._write(source, "source bytes")
+            temp_dir = Path(tmp) / "book_temp"
+
+            conflict = convert._source_cache_conflict(
+                str(temp_dir),
+                convert.source_fingerprint(str(source)),
+            )
+
+            self.assertIsNone(conflict)
+
+    def test_conflict_when_cache_lacks_fingerprint(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "book.epub"
+            temp_dir = root / "book_temp"
+            temp_dir.mkdir()
+            self._write(source, "source bytes")
+            self._write(temp_dir / "input.html", "<html></html>")
+
+            conflict = convert._source_cache_conflict(
+                str(temp_dir),
+                convert.source_fingerprint(str(source)),
+            )
+
+            self.assertIsNotNone(conflict)
+            self.assertIn("source_fingerprint.json", conflict)
+
+    def test_conflict_when_cached_source_bytes_differ(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "book.epub"
+            temp_dir = root / "book_temp"
+            temp_dir.mkdir()
+            self._write(source, "old source bytes")
+            fp = convert.source_fingerprint(str(source))
+            convert._write_source_fingerprint(str(temp_dir), fp)
+            self._write(temp_dir / "input.html", "<html></html>")
+
+            self._write(source, "new source bytes")
+            conflict = convert._source_cache_conflict(
+                str(temp_dir),
+                convert.source_fingerprint(str(source)),
+            )
+
+            self.assertIsNotNone(conflict)
+            self.assertIn("different source bytes", conflict)
+
+    def test_no_conflict_when_cached_source_bytes_match(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "book.epub"
+            temp_dir = root / "book_temp"
+            temp_dir.mkdir()
+            self._write(source, "source bytes")
+            fp = convert.source_fingerprint(str(source))
+            convert._write_source_fingerprint(str(temp_dir), fp)
+            self._write(temp_dir / "input.html", "<html></html>")
+
+            conflict = convert._source_cache_conflict(
+                str(temp_dir),
+                convert.source_fingerprint(str(source)),
+            )
+
+            self.assertIsNone(conflict)
+
+
 if __name__ == "__main__":
     unittest.main()

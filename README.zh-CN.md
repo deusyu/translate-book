@@ -140,7 +140,7 @@ Pull request 不是首选贡献入口，可能会被关闭并转为 issue 继续
 python3 scripts/convert.py /path/to/book.pdf --olang zh
 ```
 
-Calibre 将输入文件转为 HTMLZ，解压后转为 Markdown，再拆分为 chunk（每个约 6000 字符）。`manifest.json` 记录每个源 chunk 的 SHA-256 hash，用于后续校验。
+Calibre 将输入文件转为 HTMLZ，解压后转为 Markdown，再拆分为 chunk（每个约 6000 字符）。`source_fingerprint.json` 会记录当前 temp 目录所使用源文件字节的 SHA-256 身份，`manifest.json` 则记录每个源 chunk 的 SHA-256 hash，用于后续校验。如果已有缓存产物无法证明来自当前源文件，转换会中止；请使用新的 `--temp-root` 或删除旧 temp 目录后重试。
 
 默认工作目录是当前目录下的 `{book_name}_temp/`。如果要换父目录，可使用 `--temp-root /path/to/work`；叶子目录名仍保持 `{book_name}_temp/`。
 
@@ -182,7 +182,7 @@ Skill 分批启动 subagent（默认 8 路并发）。每个 subagent：
 4. 将结果写入 `output_chunk0042.md`
 5. 写入 `output_chunk0042.meta.json`，供术语表反馈合并
 
-启动 subagent 前，`scripts/run_state.py plan <temp_dir>` 会判断哪些 chunk 需要翻译、哪些已有输出只需记录状态、哪些无需处理。只有在接管旧 temp 目录且明确希望现有输出按当前术语表重译时，才使用 `--retranslate-untracked`。如果运行中断，重新运行会跳过已有合法输出且状态仍有效的 chunk。翻译失败的 chunk 会自动重试一次。
+启动 subagent 前，`scripts/run_state.py plan <temp_dir>` 会判断哪些 chunk 需要翻译、哪些已有输出只需记录状态、哪些无需处理。只有在接管旧 temp 目录且明确希望现有输出按当前所有设置重译时，才使用 `--retranslate-untracked`；默认情况下，未跟踪但命中术语表的输出会被重译，而不是直接按可能过期的术语记录到 run_state。如果运行中断，重新运行会跳过已有合法输出且状态仍有效的 chunk。翻译失败的 chunk 会自动重试一次。
 
 ### 第三步：合并与构建
 
@@ -200,8 +200,8 @@ python3 scripts/merge_and_build.py --temp-dir book_temp --title "《译后书名
 
 合并前校验：
 - 每个源 chunk 都有对应的输出文件（1:1 匹配）
-- 源 chunk hash 与 manifest 一致（无过时输出）
-- 输出文件不为空
+- 源 chunk hash 与 manifest 一致；如果 chunk 已变化，会移除过时输出和 canonical 构建产物
+- 输出文件不能为空、空白或严重截断
 
 校验通过后：合并 → Pandoc 生成 HTML → 注入目录 → Calibre 生成 DOCX、EPUB、PDF。
 
@@ -232,6 +232,7 @@ python3 scripts/merge_and_build.py --temp-dir book_temp --title "《译后书名
 |------|----------|
 | `Calibre ebook-convert not found` | 安装 Calibre，确保 `ebook-convert` 在 PATH 中 |
 | `Manifest validation failed` | 源 chunk 在拆分后被修改 — 重新运行 `convert.py` |
+| `source_fingerprint.json` 错误 | 已缓存的转换产物无法证明来自当前输入文件 — 使用新的 `--temp-root` 或删除 temp 目录 |
 | `Missing source chunk` | 源文件被删除 — 重新运行 `convert.py` 重新生成 |
 | 翻译不完整 | 重新运行 Skill，会从中断处继续 |
 | 修改标题、模板或图片后输出未更新 | 删除 temp 目录中的 `output.md`、`book*.html`、`book.docx`、`book.epub`、`book.pdf`，然后重跑 `merge_and_build.py` |

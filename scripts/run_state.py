@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import glossary as glossary_mod
-from manifest import file_hash, load_manifest
+from manifest import file_hash, load_manifest, translated_output_problem
 
 
 RUN_STATE_VERSION = 1
@@ -141,8 +141,9 @@ def build_chunk_record(temp_dir, chunk_id):
         raise FileNotFoundError(f"Source chunk not found: {source_path}")
     if not os.path.exists(output_path):
         raise FileNotFoundError(f"Output chunk not found: {output_path}")
-    if os.path.getsize(output_path) == 0:
-        raise ValueError(f"Output chunk is empty: {output_path}")
+    output_problem = translated_output_problem(source_path, output_path)
+    if output_problem:
+        raise ValueError(f"Output chunk is invalid ({output_problem}): {output_path}")
 
     glossary, glossary_hash, _, _ = _load_glossary(temp_dir)
     selected_terms = _selected_terms_for_chunk(glossary, source_path)
@@ -190,8 +191,10 @@ def plan(temp_dir, retranslate_untracked=False):
         "chunks": [],
         "decision_rules": [
             "missing_output_or_empty_output",
+            "invalid_output",
             "manifest_source_hash_changed",
             "untracked_existing_output",
+            "untracked_glossary_sensitive_output",
             "source_hash_changed_since_record",
             "glossary_term_selection_or_term_hash_changed",
         ],
@@ -218,9 +221,17 @@ def plan(temp_dir, retranslate_untracked=False):
         if not os.path.exists(output_path):
             item["action"] = "translate"
             _reason(item, "missing_output")
-        elif os.path.getsize(output_path) == 0:
+        else:
+            output_problem = translated_output_problem(source_path, output_path)
+            if output_problem:
+                item["action"] = "translate"
+                _reason(item, "invalid_output", output_problem)
+
+        if item["action"] == "translate":
+            pass
+        elif not os.path.exists(source_path):
             item["action"] = "translate"
-            _reason(item, "empty_output")
+            _reason(item, "missing_source")
 
         current_source_hash = file_hash(source_path) if os.path.exists(source_path) else ""
         manifest_source_hash = entry.get("manifest_source_hash", "")
@@ -235,8 +246,13 @@ def plan(temp_dir, retranslate_untracked=False):
                 item["action"] = "translate"
                 _reason(item, "untracked_existing_output")
             else:
-                item["action"] = "record"
-                _reason(item, "untracked_existing_output")
+                selected_terms = _selected_terms_for_chunk(glossary, source_path)
+                if selected_terms:
+                    item["action"] = "translate"
+                    _reason(item, "untracked_glossary_sensitive_output")
+                else:
+                    item["action"] = "record"
+                    _reason(item, "untracked_existing_output")
 
         if item["action"] == "unchanged" and record is not None:
             if record.get("source_hash") != current_source_hash:
