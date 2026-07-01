@@ -14,6 +14,8 @@ import argparse
 import bisect
 import glob
 import re
+import json
+import hashlib
 
 from manifest import create_manifest
 
@@ -158,6 +160,88 @@ def build_temp_dir(input_file, temp_root=None):
     if temp_root:
         return os.path.join(temp_root, leaf)
     return leaf
+
+
+SOURCE_FINGERPRINT_FILE = "source_fingerprint.json"
+_SOURCE_CACHE_MARKERS = (
+    "input.html",
+    "input.md",
+    "manifest.json",
+    "run_state.json",
+    "glossary.json",
+    "output.md",
+)
+
+
+def source_fingerprint(input_file):
+    """Return a stable identity for the exact source bytes being converted."""
+    h = hashlib.sha256()
+    with open(input_file, 'rb') as f:
+        for block in iter(lambda: f.read(8192), b''):
+            h.update(block)
+    return {
+        "path": os.path.realpath(input_file),
+        "size": os.path.getsize(input_file),
+        "sha256": h.hexdigest(),
+    }
+
+
+def _write_source_fingerprint(temp_dir, fingerprint):
+    os.makedirs(temp_dir, exist_ok=True)
+    path = os.path.join(temp_dir, SOURCE_FINGERPRINT_FILE)
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump(fingerprint, f, indent=2, sort_keys=True)
+        f.write('\n')
+
+
+def _load_source_fingerprint(temp_dir):
+    path = os.path.join(temp_dir, SOURCE_FINGERPRINT_FILE)
+    if not os.path.exists(path):
+        return None
+    with open(path, 'r', encoding='utf-8') as f:
+        return json.load(f)
+
+
+def _has_reusable_source_cache(temp_dir):
+    if not os.path.isdir(temp_dir):
+        return False
+    for name in _SOURCE_CACHE_MARKERS:
+        if os.path.exists(os.path.join(temp_dir, name)):
+            return True
+    for pattern in ('chunk*.md', 'output_chunk*.md'):
+        if glob.glob(os.path.join(temp_dir, pattern)):
+            return True
+    return False
+
+
+def _source_cache_conflict(temp_dir, current_fingerprint):
+    """Return a human-readable cache identity conflict, or None."""
+    if not _has_reusable_source_cache(temp_dir):
+        return None
+
+    stored = _load_source_fingerprint(temp_dir)
+    if stored is None:
+        return (
+            f"{temp_dir}/ contains cached conversion artifacts but no "
+            f"{SOURCE_FINGERPRINT_FILE}; cannot prove they came from this input"
+        )
+
+    for key in ("sha256", "size"):
+        if stored.get(key) != current_fingerprint.get(key):
+            return (
+                f"{temp_dir}/ was created for different source bytes "
+                f"(cached {stored.get('sha256', '')[:12]}..., "
+                f"current {current_fingerprint.get('sha256', '')[:12]}...)"
+            )
+    return None
+
+
+def _abort_on_source_cache_conflict(conflict):
+    if not conflict:
+        return
+    print(f"Error: {conflict}")
+    print("Use a fresh --temp-root or delete the temp directory before converting this source.")
+    sys.exit(1)
 
 
 def setup_temp_directory(input_file, html_file, images_dir, temp_root=None):
@@ -759,6 +843,10 @@ def main():
 
     try:
         temp_dir = build_temp_dir(input_file, args.temp_root)
+        current_fingerprint = source_fingerprint(input_file)
+        _abort_on_source_cache_conflict(
+            _source_cache_conflict(temp_dir, current_fingerprint)
+        )
         input_html_path = os.path.join(temp_dir, "input.html")
 
         if os.path.exists(input_html_path):
@@ -799,6 +887,7 @@ def main():
                 sys.exit(1)
 
             create_config_file(temp_dir, input_file, args.ilang, args.olang, metadata)
+            _write_source_fingerprint(temp_dir, current_fingerprint)
             print("Conversion completed successfully!")
             print(f"Temp directory: {temp_dir}")
             return
@@ -835,6 +924,7 @@ def main():
                 sys.exit(1)
 
             create_config_file(temp_dir, input_file, args.ilang, args.olang, metadata)
+            _write_source_fingerprint(temp_dir, current_fingerprint)
 
             print("Conversion completed successfully!")
             print(f"Temp directory: {temp_dir}")

@@ -8,6 +8,19 @@ import json
 import hashlib
 
 
+CANONICAL_BUILD_ARTIFACTS = (
+    "output.md",
+    "book.html",
+    "book_doc.html",
+    "book.docx",
+    "book.epub",
+    "book.pdf",
+)
+
+MIN_SUBSTANTIVE_SOURCE_BYTES = 200
+MIN_TRANSLATED_SIZE_RATIO = 0.10
+
+
 def file_hash(filepath):
     """Compute SHA-256 hash of a file."""
     h = hashlib.sha256()
@@ -15,6 +28,96 @@ def file_hash(filepath):
         for block in iter(lambda: f.read(8192), b''):
             h.update(block)
     return h.hexdigest()
+
+
+def _remove_if_exists(path, removed):
+    if os.path.exists(path):
+        os.remove(path)
+        removed.append(os.path.basename(path))
+
+
+def _stale_output_targets(temp_dir, output_file):
+    output_path = os.path.join(temp_dir, output_file)
+    meta_name = f"{os.path.splitext(output_file)[0]}.meta.json"
+    return [output_path, os.path.join(temp_dir, meta_name)]
+
+
+def _invalidate_build_artifacts(temp_dir, removed):
+    for filename in CANONICAL_BUILD_ARTIFACTS:
+        _remove_if_exists(os.path.join(temp_dir, filename), removed)
+
+
+def _cleanup_stale_outputs(temp_dir, new_chunks, previous_manifest):
+    """Delete translated outputs that no longer match the new manifest."""
+    if not previous_manifest:
+        return []
+
+    previous_by_id = {
+        chunk.get("id"): chunk
+        for chunk in previous_manifest.get("chunks", [])
+        if chunk.get("id")
+    }
+    new_ids = {chunk["id"] for chunk in new_chunks}
+    removed = []
+
+    for chunk in new_chunks:
+        previous = previous_by_id.get(chunk["id"])
+        if not previous:
+            continue
+        previous_hash = previous.get("source_hash", "")
+        if (
+            previous.get("output_file") != chunk["output_file"]
+            or (previous_hash and previous_hash != chunk.get("source_hash", ""))
+        ):
+            for path in _stale_output_targets(temp_dir, chunk["output_file"]):
+                _remove_if_exists(path, removed)
+
+    for previous in previous_manifest.get("chunks", []):
+        if previous.get("id") in new_ids:
+            continue
+        output_file = previous.get("output_file")
+        if not output_file:
+            continue
+        for path in _stale_output_targets(temp_dir, output_file):
+            _remove_if_exists(path, removed)
+
+    if removed:
+        _invalidate_build_artifacts(temp_dir, removed)
+        print(
+            "Removed stale translated/build artifact(s): "
+            + ", ".join(sorted(set(removed)))
+        )
+    return removed
+
+
+def translated_output_problem(source_path, output_path):
+    """Return a hard-failure reason for unusable translated output, or None."""
+    if not os.path.exists(output_path):
+        return "missing"
+
+    output_size = os.path.getsize(output_path)
+    if output_size == 0:
+        return "empty"
+
+    try:
+        with open(output_path, 'r', encoding='utf-8') as f:
+            if not f.read().strip():
+                return "blank"
+    except UnicodeDecodeError as e:
+        return f"not valid UTF-8 ({e})"
+
+    if os.path.exists(source_path):
+        source_size = os.path.getsize(source_path)
+        if (
+            source_size >= MIN_SUBSTANTIVE_SOURCE_BYTES
+            and output_size < source_size * MIN_TRANSLATED_SIZE_RATIO
+        ):
+            return (
+                f"severely truncated ({output_size} bytes vs source "
+                f"{source_size} bytes)"
+            )
+
+    return None
 
 
 def create_manifest(temp_dir, chunk_files, source_md_path):
@@ -27,6 +130,7 @@ def create_manifest(temp_dir, chunk_files, source_md_path):
     """
     source_hash = file_hash(source_md_path) if os.path.exists(source_md_path) else ""
 
+    previous_manifest = load_manifest(temp_dir)
     chunks = []
     for order, filename in enumerate(chunk_files, 1):
         filepath = os.path.join(temp_dir, filename)
@@ -41,6 +145,8 @@ def create_manifest(temp_dir, chunk_files, source_md_path):
             "source_hash": file_hash(filepath) if os.path.exists(filepath) else "",
             "output_file": output_filename,
         })
+
+    _cleanup_stale_outputs(temp_dir, chunks, previous_manifest)
 
     manifest = {
         "chunk_count": len(chunks),
@@ -107,19 +213,20 @@ def validate_for_merge(temp_dir):
                 )
                 continue
 
-        # Check output exists
-        if not os.path.exists(output_path):
+        output_problem = translated_output_problem(source_path, output_path)
+        if output_problem == "missing":
             errors.append(f"Missing output: {chunk['output_file']} (chunk {chunk['id']})")
             continue
-
-        # Check non-empty
-        output_size = os.path.getsize(output_path)
-        if output_size == 0:
-            errors.append(f"Empty output: {chunk['output_file']} (chunk {chunk['id']})")
+        if output_problem:
+            errors.append(
+                f"Invalid output: {chunk['output_file']} (chunk {chunk['id']}) — "
+                f"{output_problem}"
+            )
             continue
 
         # Check abnormally short
         if os.path.exists(source_path):
+            output_size = os.path.getsize(output_path)
             source_size = os.path.getsize(source_path)
             if source_size > 0 and output_size < source_size * 0.1:
                 warnings.append(

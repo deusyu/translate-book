@@ -39,8 +39,14 @@ changes.
 This creates a `{filename}_temp/` directory containing:
 - `input.html`, `input.md` — intermediate files
 - `chunk0001.md`, `chunk0002.md`, ... — source chunks for translation
+- `source_fingerprint.json` — SHA-256 identity of the source bytes used for this temp dir
 - `manifest.json` — chunk manifest for tracking and validation
 - `config.txt` — pipeline configuration with metadata
+
+If `convert.py` reports that cached artifacts lack a source fingerprint or were
+created from different source bytes, stop and use a fresh `--temp-root` or
+delete the temp directory before retrying. Do not reuse outputs from a temp dir
+whose source identity cannot be verified.
 
 ### 3. Discover Source Chunks
 
@@ -102,9 +108,11 @@ Run:
 python3 {baseDir}/scripts/run_state.py plan "<temp_dir>"
 ```
 
-If the user explicitly asks to apply glossary edits to outputs produced before
-`run_state.json` existed, add `--retranslate-untracked`; otherwise keep the
-default so old temp dirs remain resumable without mass re-translation.
+If the user explicitly asks to apply all current settings to outputs produced
+before `run_state.json` existed, add `--retranslate-untracked`; otherwise keep
+the default. The default still re-translates untracked outputs whose source
+chunk selects glossary terms, because recording those outputs would lock stale
+terminology into the run state.
 
 Capture stdout JSON:
 - `translation_chunk_ids` — chunks to translate in this run.
@@ -338,7 +346,7 @@ If any are missing, retry them — each missing chunk as its own sub-agent. Maxi
 
 Also read `manifest.json` and verify:
 - Every chunk id has a corresponding output file
-- No output file is empty (0 bytes)
+- No output file is empty, blank, or severely truncated
 
 Then run the meta-merge observability snapshot:
 

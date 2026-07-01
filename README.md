@@ -140,7 +140,7 @@ A useful issue should include:
 python3 scripts/convert.py /path/to/book.pdf --olang zh
 ```
 
-Calibre converts the input to HTMLZ, which is extracted and converted to Markdown, then split into chunks (~6000 chars each). A `manifest.json` records the SHA-256 hash of each source chunk for later validation.
+Calibre converts the input to HTMLZ, which is extracted and converted to Markdown, then split into chunks (~6000 chars each). A `source_fingerprint.json` records the SHA-256 identity of the source bytes used for the temp dir, and a `manifest.json` records the SHA-256 hash of each source chunk for later validation. If cached artifacts cannot be tied to the current source bytes, conversion aborts; use a fresh `--temp-root` or delete the old temp dir.
 
 By default the working directory is `{book_name}_temp/` under the current directory. Use `--temp-root /path/to/work` to keep the same leaf directory name under a different parent.
 
@@ -182,7 +182,7 @@ The skill launches subagents in batches (default: 8 concurrent). Each subagent:
 4. Writes the result to `output_chunk0042.md`
 5. Writes `output_chunk0042.meta.json` observations for glossary feedback
 
-Before launching subagents, `scripts/run_state.py plan <temp_dir>` decides which chunks need translation, which existing outputs only need state recording, and which are unchanged. Use `--retranslate-untracked` only when adopting an old temp dir whose existing outputs should be forced through the current glossary. If a run is interrupted, re-running skips chunks that already have valid output files and current state. Failed chunks are retried once automatically.
+Before launching subagents, `scripts/run_state.py plan <temp_dir>` decides which chunks need translation, which existing outputs only need state recording, and which are unchanged. Use `--retranslate-untracked` only when adopting an old temp dir whose existing outputs should be forced through all current settings; by default, untracked outputs that select glossary terms are re-translated rather than recorded against potentially stale terminology. If a run is interrupted, re-running skips chunks that already have valid output files and current state. Failed chunks are retried once automatically.
 
 ### Step 3: Merge & Build
 
@@ -200,8 +200,8 @@ python3 scripts/merge_and_build.py --temp-dir book_temp --title "《translated t
 
 Before merging, the script validates:
 - Every source chunk has a corresponding output file (1:1 match)
-- Source chunk hashes match the manifest (no stale outputs)
-- No output files are empty
+- Source chunk hashes match the manifest; if chunks changed, stale outputs and canonical build artifacts are removed
+- No output files are empty, blank, or severely truncated
 
 Then: merge → Pandoc HTML → inject TOC → Calibre generates DOCX, EPUB, PDF.
 
@@ -232,6 +232,7 @@ Then: merge → Pandoc HTML → inject TOC → Calibre generates DOCX, EPUB, PDF
 |---------|----------|
 | `Calibre ebook-convert not found` | Install Calibre and ensure `ebook-convert` is in PATH |
 | `Manifest validation failed` | Source chunks changed since splitting — re-run `convert.py` |
+| `source_fingerprint.json` error | Cached conversion artifacts cannot be tied to the current input file — use a fresh `--temp-root` or delete the temp directory |
 | `Missing source chunk` | Source file deleted — re-run `convert.py` to regenerate |
 | Incomplete translation | Re-run the skill — it resumes from where it stopped |
 | Changed title/template/assets but output didn't update | Delete existing `output.md`, `book*.html`, `book.docx`, `book.epub`, `book.pdf` from the temp dir, then re-run `merge_and_build.py` |

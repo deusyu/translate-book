@@ -15,6 +15,7 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 import merge_and_build  # noqa: E402
+from manifest import create_manifest  # noqa: E402
 
 
 class GenerateFormatTests(unittest.TestCase):
@@ -341,6 +342,32 @@ class ImageValidationTests(unittest.TestCase):
             self.assertFalse(result)
             self.assertFalse(output_md.exists(), msg=f"stale output.md should be deleted; stdout=\n{out}")
             self.assertIn("output_chunk0001.md", out)
+
+    def test_remerges_when_manifest_is_newer_than_output_md(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            chunk = temp_path / "chunk0001.md"
+            out_chunk = temp_path / "output_chunk0001.md"
+            output_md = temp_path / "output.md"
+            manifest_path = temp_path / "manifest.json"
+
+            self._write(temp_path / "input.md", "Source text.\n")
+            self._write(chunk, "Source text.\n")
+            create_manifest(temp_dir, ["chunk0001.md"], str(temp_path / "input.md"))
+            self._write(out_chunk, "Translated text.\n")
+            self._write(output_md, "stale merged content\n")
+
+            os.utime(chunk, (100, 100))
+            os.utime(out_chunk, (100, 100))
+            os.utime(output_md, (200, 200))
+            os.utime(manifest_path, (300, 300))
+
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                result = merge_and_build.merge_markdown_files(temp_dir)
+
+            self.assertTrue(result, msg=buf.getvalue())
+            self.assertEqual(output_md.read_text(encoding="utf-8"), "Translated text.\n\n")
 
     def test_passes_when_code_block_preserves_broken_img_example(self):
         # Regression: a tech book may legitimately ship a fenced code block that

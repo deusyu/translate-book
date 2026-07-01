@@ -18,7 +18,7 @@ from collections import Counter
 from html.parser import HTMLParser
 from pathlib import Path
 
-from manifest import validate_for_merge
+from manifest import translated_output_problem, validate_for_merge
 
 
 # =============================================================================
@@ -301,16 +301,24 @@ def merge_markdown_files(temp_dir):
             print(f"WARNING: output.md exists but manifest validation failed — deleting stale output.md")
             os.remove(output_md)
         else:
-            # Check if any output_chunk is newer than output.md (re-translated chunks)
+            # Check if any merge input is newer than output.md (re-translated chunks
+            # or a rewritten manifest with a new chunk order/source set).
             output_md_mtime = os.path.getmtime(output_md)
-            newer_chunks = []
+            merge_inputs = []
             if ordered_files:
-                newer_chunks = [
-                    os.path.basename(f) for f in ordered_files
-                    if os.path.getmtime(f) > output_md_mtime
-                ]
-            if newer_chunks:
-                print(f"Re-merging — {len(newer_chunks)} chunk(s) newer than output.md: {', '.join(newer_chunks[:5])}{'...' if len(newer_chunks) > 5 else ''}")
+                merge_inputs.extend(ordered_files)
+            else:
+                merge_inputs.extend(glob.glob(os.path.join(temp_dir, 'output_chunk*.md')))
+            manifest_path = os.path.join(temp_dir, 'manifest.json')
+            if os.path.exists(manifest_path):
+                merge_inputs.append(manifest_path)
+
+            newer_inputs = [
+                os.path.basename(f) for f in merge_inputs
+                if os.path.getmtime(f) > output_md_mtime
+            ]
+            if newer_inputs:
+                print(f"Re-merging — {len(newer_inputs)} input(s) newer than output.md: {', '.join(newer_inputs[:5])}{'...' if len(newer_inputs) > 5 else ''}")
                 os.remove(output_md)
             else:
                 print(f"Skipping merge - output.md already exists and is up to date")
@@ -366,17 +374,21 @@ def merge_markdown_files(temp_dir):
                 print(f"ERROR: Orphaned outputs (no matching source): {', '.join(sorted(orphaned, key=natural_sort_key))}")
             return False
 
-        # Verify no empty output files
-        for fp in output_files:
-            if os.path.getsize(fp) == 0:
-                print(f"ERROR: Empty output file: {os.path.basename(fp)}")
-                return False
-
         # Use source order to determine merge order (via expected output names)
         output_files = [
             os.path.join(temp_dir, f"output_{name}")
             for name in source_basenames
         ]
+
+        for source_name, fp in zip(source_basenames, output_files):
+            problem = translated_output_problem(
+                os.path.join(temp_dir, source_name),
+                fp,
+            )
+            if problem:
+                print(f"ERROR: Invalid output file: {os.path.basename(fp)} — {problem}")
+                return False
+
         print(f"Merging {len(output_files)} translated files (legacy glob)")
 
         merged_content = ""
