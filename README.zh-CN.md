@@ -140,7 +140,7 @@ Pull request 不是首选贡献入口，可能会被关闭并转为 issue 继续
 python3 scripts/convert.py /path/to/book.pdf --olang zh
 ```
 
-Calibre 将输入文件转为 HTMLZ，解压后转为 Markdown，再拆分为 chunk（每个约 6000 字符）。`manifest.json` 记录每个源 chunk 的 SHA-256 hash，用于后续校验。
+Calibre 将输入文件转为 HTMLZ，解压后转为 Markdown，再拆分为 chunk（每个约 6000 字符）。`manifest.json` 记录每个源 chunk 的 SHA-256 hash，用于后续校验；`source_fingerprint.json` 则把 temp 目录与生成它的源文件字节绑定 — 若源文件被替换后重跑，会直接报错中止，而不是静默复用过时的 chunk。指纹机制之前创建的 temp 目录会在首次重跑时打印警告并被接管。
 
 默认工作目录是当前目录下的 `{book_name}_temp/`。如果要换父目录，可使用 `--temp-root /path/to/work`；叶子目录名仍保持 `{book_name}_temp/`。
 
@@ -170,7 +170,7 @@ Calibre 将输入文件转为 HTMLZ，解压后转为 Markdown，再拆分为 ch
 
 已有的 v1 `glossary.json` 会在首次加载时自动升级为 v2。v2 禁止同一个表面词（原文或别名）同时归属于两个不同术语；如果 v1 文件存在同名（polysemous）的重复 source，升级会终止并给出消歧提示 — 手工修复后重新加载即可。
 
-可在两次运行之间编辑 `glossary.json` 修正译法。已存在的 `glossary.json` 不会被覆盖 — 删除它才会重建。`scripts/run_state.py` 会记录每个 chunk 用到的术语表状态，因此后续术语表变化只会重译受影响的 chunk（前提是该 chunk 已写入 run_state）。
+可在两次运行之间编辑 `glossary.json` 修正译法。已存在的 `glossary.json` 不会被覆盖 — 删除它才会重建。`scripts/run_state.py` 会记录每个 chunk 用到的术语表状态，因此后续术语表变化（包括 `target`、`category`、`aliases` 的编辑）只会重译受影响的 chunk（前提是该 chunk 已写入 run_state）。
 
 ### 第二步：翻译（并行 subagent）
 
@@ -201,7 +201,7 @@ python3 scripts/merge_and_build.py --temp-dir book_temp --title "《译后书名
 合并前校验：
 - 每个源 chunk 都有对应的输出文件（1:1 匹配）
 - 源 chunk hash 与 manifest 一致（无过时输出）
-- 输出文件不为空
+- 输出文件不为空、非纯空白（whitespace-only）、可正常读取 — 空白 chunk 会中止合并，而不是静默丢失该段内容
 
 校验通过后：合并 → Pandoc 生成 HTML → 注入目录 → Calibre 生成 DOCX、EPUB、PDF。
 
@@ -232,6 +232,8 @@ python3 scripts/merge_and_build.py --temp-dir book_temp --title "《译后书名
 |------|----------|
 | `Calibre ebook-convert not found` | 安装 Calibre，确保 `ebook-convert` 在 PATH 中 |
 | `Manifest validation failed` | 源 chunk 在拆分后被修改 — 重新运行 `convert.py` |
+| `was created from different source bytes` | temp 目录属于另一个源文件 — 删除 temp 目录或换一个 `--temp-root` |
+| `Blank output` / `Empty output` | 某个 subagent 写出了空白或空的 chunk — 重新运行 skill 让它重译 |
 | `Missing source chunk` | 源文件被删除 — 重新运行 `convert.py` 重新生成 |
 | 翻译不完整 | 重新运行 Skill，会从中断处继续 |
 | 修改标题、模板或图片后输出未更新 | 删除 temp 目录中的 `output.md`、`book*.html`、`book.docx`、`book.epub`、`book.pdf`，然后重跑 `merge_and_build.py` |

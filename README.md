@@ -140,7 +140,7 @@ A useful issue should include:
 python3 scripts/convert.py /path/to/book.pdf --olang zh
 ```
 
-Calibre converts the input to HTMLZ, which is extracted and converted to Markdown, then split into chunks (~6000 chars each). A `manifest.json` records the SHA-256 hash of each source chunk for later validation.
+Calibre converts the input to HTMLZ, which is extracted and converted to Markdown, then split into chunks (~6000 chars each). A `manifest.json` records the SHA-256 hash of each source chunk for later validation, and a `source_fingerprint.json` ties the temp dir to the exact source bytes it was built from — re-running against a replaced source file aborts instead of silently reusing stale chunks. Temp dirs created before fingerprinting are adopted with a warning on first re-run.
 
 By default the working directory is `{book_name}_temp/` under the current directory. Use `--temp-root /path/to/work` to keep the same leaf directory name under a different parent.
 
@@ -170,7 +170,7 @@ Each chunk is translated by a fresh-context sub-agent, which means the same prop
 
 Existing v1 `glossary.json` files are auto-upgraded to v2 on first load. v2 forbids the same surface form (source or alias) appearing in two different terms; if a v1 file has polysemous duplicate sources, the upgrade aborts with a disambiguation message — fix the file by hand and reload.
 
-Edit `glossary.json` between runs to fix translations; existing `glossary.json` is never overwritten — delete it to rebuild from scratch. `scripts/run_state.py` records which glossary terms each chunk used, so later glossary changes only re-translate affected chunks after the state has been recorded.
+Edit `glossary.json` between runs to fix translations; existing `glossary.json` is never overwritten — delete it to rebuild from scratch. `scripts/run_state.py` records which glossary terms each chunk used, so later glossary changes (including `target`, `category`, and `aliases` edits) only re-translate affected chunks after the state has been recorded.
 
 ### Step 2: Translate (parallel subagents)
 
@@ -201,7 +201,7 @@ python3 scripts/merge_and_build.py --temp-dir book_temp --title "《translated t
 Before merging, the script validates:
 - Every source chunk has a corresponding output file (1:1 match)
 - Source chunk hashes match the manifest (no stale outputs)
-- No output files are empty
+- No output files are empty, blank (whitespace-only), or unreadable — a blank chunk aborts the merge instead of silently dropping its content
 
 Then: merge → Pandoc HTML → inject TOC → Calibre generates DOCX, EPUB, PDF.
 
@@ -232,6 +232,8 @@ Then: merge → Pandoc HTML → inject TOC → Calibre generates DOCX, EPUB, PDF
 |---------|----------|
 | `Calibre ebook-convert not found` | Install Calibre and ensure `ebook-convert` is in PATH |
 | `Manifest validation failed` | Source chunks changed since splitting — re-run `convert.py` |
+| `was created from different source bytes` | The temp dir belongs to a different source file — delete the temp dir or use a fresh `--temp-root` |
+| `Blank output` / `Empty output` | A subagent wrote a whitespace-only or empty chunk — re-run the skill to re-translate it |
 | `Missing source chunk` | Source file deleted — re-run `convert.py` to regenerate |
 | Incomplete translation | Re-run the skill — it resumes from where it stopped |
 | Changed title/template/assets but output didn't update | Delete existing `output.md`, `book*.html`, `book.docx`, `book.epub`, `book.pdf` from the temp dir, then re-run `merge_and_build.py` |

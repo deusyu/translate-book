@@ -40,7 +40,13 @@ This creates a `{filename}_temp/` directory containing:
 - `input.html`, `input.md` — intermediate files
 - `chunk0001.md`, `chunk0002.md`, ... — source chunks for translation
 - `manifest.json` — chunk manifest for tracking and validation
+- `source_fingerprint.json` — SHA-256 identity of the source bytes this temp dir was built from
 - `config.txt` — pipeline configuration with metadata
+
+If `convert.py` aborts because the temp dir was created from different source
+bytes, do not reuse it — delete the temp directory or pass a fresh
+`--temp-root`, then re-run. Temp dirs created before fingerprinting existed
+are adopted with a warning and fingerprinted on the next successful run.
 
 ### 3. Discover Source Chunks
 
@@ -338,7 +344,7 @@ If any are missing, retry them — each missing chunk as its own sub-agent. Maxi
 
 Also read `manifest.json` and verify:
 - Every chunk id has a corresponding output file
-- No output file is empty (0 bytes)
+- No output file is empty (0 bytes) or blank (whitespace-only)
 
 Then run the meta-merge observability snapshot:
 
