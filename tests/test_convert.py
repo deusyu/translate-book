@@ -352,5 +352,112 @@ class StripPageNumbersCacheConflictTests(unittest.TestCase):
             self.assertIn("3 chunk file(s)", blockers[0])
 
 
+class SourceFingerprintCacheTests(unittest.TestCase):
+    def _write(self, path, content):
+        Path(path).write_text(content, encoding="utf-8")
+
+    def test_no_conflict_for_fresh_temp_dir(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "book.epub"
+            self._write(source, "source bytes")
+
+            status, message = convert.check_source_cache(
+                str(Path(tmp) / "book_temp"),
+                convert.source_fingerprint(str(source)),
+            )
+
+        self.assertIsNone(status)
+        self.assertIsNone(message)
+
+    def test_adopts_cache_that_predates_fingerprinting(self):
+        # Temp dirs created before this feature have no fingerprint file.
+        # They must stay resumable (trust-on-first-use), with a warning.
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "book.epub"
+            temp_dir = Path(tmp) / "book_temp"
+            temp_dir.mkdir()
+            self._write(source, "source bytes")
+            self._write(temp_dir / "input.html", "<html></html>")
+
+            status, message = convert.check_source_cache(
+                str(temp_dir), convert.source_fingerprint(str(source))
+            )
+
+        self.assertEqual(status, "adopt")
+        self.assertIn(convert.SOURCE_FINGERPRINT_FILE, message)
+
+    def test_mismatch_when_source_bytes_changed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "book.epub"
+            temp_dir = Path(tmp) / "book_temp"
+            temp_dir.mkdir()
+            self._write(source, "old source bytes")
+            convert._write_source_fingerprint(
+                str(temp_dir), convert.source_fingerprint(str(source))
+            )
+            self._write(temp_dir / "input.html", "<html></html>")
+
+            self._write(source, "new source bytes!!")
+            status, message = convert.check_source_cache(
+                str(temp_dir), convert.source_fingerprint(str(source))
+            )
+
+        self.assertEqual(status, "mismatch")
+        self.assertIn("different source bytes", message)
+
+    def test_no_conflict_when_source_bytes_match(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "book.epub"
+            temp_dir = Path(tmp) / "book_temp"
+            temp_dir.mkdir()
+            self._write(source, "source bytes")
+            convert._write_source_fingerprint(
+                str(temp_dir), convert.source_fingerprint(str(source))
+            )
+            self._write(temp_dir / "input.html", "<html></html>")
+
+            status, message = convert.check_source_cache(
+                str(temp_dir), convert.source_fingerprint(str(source))
+            )
+
+        self.assertIsNone(status)
+        self.assertIsNone(message)
+
+    def test_moving_source_file_does_not_invalidate_cache(self):
+        # Only content identity matters — renaming/moving the book is fine.
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "book.epub"
+            temp_dir = Path(tmp) / "book_temp"
+            temp_dir.mkdir()
+            self._write(source, "source bytes")
+            convert._write_source_fingerprint(
+                str(temp_dir), convert.source_fingerprint(str(source))
+            )
+            self._write(temp_dir / "input.html", "<html></html>")
+
+            moved = Path(tmp) / "renamed-book.epub"
+            source.rename(moved)
+            status, _ = convert.check_source_cache(
+                str(temp_dir), convert.source_fingerprint(str(moved))
+            )
+
+        self.assertIsNone(status)
+
+    def test_corrupt_fingerprint_file_is_adopted_not_crashed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "book.epub"
+            temp_dir = Path(tmp) / "book_temp"
+            temp_dir.mkdir()
+            self._write(source, "source bytes")
+            self._write(temp_dir / "input.html", "<html></html>")
+            self._write(temp_dir / convert.SOURCE_FINGERPRINT_FILE, "{not json")
+
+            status, _ = convert.check_source_cache(
+                str(temp_dir), convert.source_fingerprint(str(source))
+            )
+
+        self.assertEqual(status, "adopt")
+
+
 if __name__ == "__main__":
     unittest.main()

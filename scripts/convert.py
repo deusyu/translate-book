@@ -13,9 +13,10 @@ import tempfile
 import argparse
 import bisect
 import glob
+import json
 import re
 
-from manifest import create_manifest
+from manifest import create_manifest, file_hash
 
 
 def find_calibre_convert():
@@ -158,6 +159,106 @@ def build_temp_dir(input_file, temp_root=None):
     if temp_root:
         return os.path.join(temp_root, leaf)
     return leaf
+
+
+SOURCE_FINGERPRINT_FILE = "source_fingerprint.json"
+
+# Files whose presence means the temp dir carries conversion state derived
+# from some source book — and must therefore be tied to the current one.
+_SOURCE_CACHE_MARKERS = (
+    "input.html",
+    "input.md",
+    "manifest.json",
+    "run_state.json",
+    "glossary.json",
+    "output.md",
+)
+
+
+def source_fingerprint(input_file):
+    """Stable identity of the exact source bytes being converted."""
+    return {
+        "path": os.path.realpath(input_file),
+        "size": os.path.getsize(input_file),
+        "sha256": file_hash(input_file),
+    }
+
+
+def _write_source_fingerprint(temp_dir, fingerprint):
+    os.makedirs(temp_dir, exist_ok=True)
+    path = os.path.join(temp_dir, SOURCE_FINGERPRINT_FILE)
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump(fingerprint, f, indent=2, sort_keys=True)
+        f.write('\n')
+
+
+def _load_source_fingerprint(temp_dir):
+    path = os.path.join(temp_dir, SOURCE_FINGERPRINT_FILE)
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _has_reusable_source_cache(temp_dir):
+    if not os.path.isdir(temp_dir):
+        return False
+    for name in _SOURCE_CACHE_MARKERS:
+        if os.path.exists(os.path.join(temp_dir, name)):
+            return True
+    for pattern in ('chunk*.md', 'output_chunk*.md'):
+        if glob.glob(os.path.join(temp_dir, pattern)):
+            return True
+    return False
+
+
+def check_source_cache(temp_dir, current_fingerprint):
+    """Compare the temp dir's cached source identity against the current input.
+
+    Returns (status, message):
+      (None, None)        — fresh temp dir, or fingerprint matches; proceed.
+      ('adopt', message)  — cache predates fingerprinting; adopt it and record
+                            the current fingerprint (trust-on-first-use, keeps
+                            pre-upgrade temp dirs resumable).
+      ('mismatch', message) — cache was built from different source bytes;
+                              the caller must abort.
+
+    Only content identity (sha256 + size) is compared — moving or renaming the
+    source file does not invalidate the cache.
+    """
+    if not _has_reusable_source_cache(temp_dir):
+        return None, None
+
+    stored = _load_source_fingerprint(temp_dir)
+    if stored is None:
+        return 'adopt', (
+            f"{temp_dir}/ contains cached conversion artifacts without a "
+            f"{SOURCE_FINGERPRINT_FILE} (created by an older version). "
+            f"Assuming they were built from the current input file. "
+            f"If you replaced the source file, delete {temp_dir}/ and re-run."
+        )
+
+    for key in ("sha256", "size"):
+        if stored.get(key) != current_fingerprint.get(key):
+            return 'mismatch', (
+                f"{temp_dir}/ was created from different source bytes "
+                f"(cached sha256 {str(stored.get('sha256', ''))[:12]}..., "
+                f"current {current_fingerprint['sha256'][:12]}...). "
+                f"Reusing its chunks would translate the wrong book."
+            )
+    return None, None
+
+
+def _abort_on_source_cache_mismatch(status, message, temp_dir):
+    if status == 'mismatch':
+        print(f"Error: {message}")
+        print(f"Delete {temp_dir}/ (or use a fresh --temp-root) and re-run.")
+        sys.exit(1)
+    if status == 'adopt':
+        print(f"Warning: {message}")
 
 
 def setup_temp_directory(input_file, html_file, images_dir, temp_root=None):
@@ -615,16 +716,10 @@ def split_markdown_structured(md_file, temp_dir, target_size=6000):
 
 
 def _find_existing_chunk_files(temp_dir):
-    """Find existing chunk source files (excluding output_ prefixed).
-
-    Returns (filenames_list, is_legacy=False).
-    """
+    """Find existing chunk source filenames (excluding output_ prefixed), sorted."""
     chunk_files = glob.glob(os.path.join(temp_dir, 'chunk*.md'))
     chunk_files = [os.path.basename(f) for f in chunk_files if not os.path.basename(f).startswith('output_')]
-
-    if chunk_files:
-        return sorted(chunk_files), False
-    return [], False
+    return sorted(chunk_files)
 
 
 def create_config_file(temp_dir, input_file, input_lang, output_lang, metadata=None):
@@ -661,9 +756,9 @@ conversion_method=calibre_htmlz
 
 def _do_split_and_manifest(temp_dir, input_md, chunk_size):
     """Split markdown and create manifest. Returns chunk count or 0 on failure."""
-    existing, is_legacy = _find_existing_chunk_files(temp_dir)
+    existing = _find_existing_chunk_files(temp_dir)
     if existing:
-        print(f"Skipping markdown splitting - found {len(existing)} existing {'page' if is_legacy else 'chunk'} files")
+        print(f"Skipping markdown splitting - found {len(existing)} existing chunk files")
         # Create/update manifest for existing files
         create_manifest(temp_dir, existing, input_md)
         return len(existing)
@@ -759,6 +854,10 @@ def main():
 
     try:
         temp_dir = build_temp_dir(input_file, args.temp_root)
+        current_fingerprint = source_fingerprint(input_file)
+        _abort_on_source_cache_mismatch(
+            *check_source_cache(temp_dir, current_fingerprint), temp_dir=temp_dir
+        )
         input_html_path = os.path.join(temp_dir, "input.html")
 
         if os.path.exists(input_html_path):
@@ -799,6 +898,7 @@ def main():
                 sys.exit(1)
 
             create_config_file(temp_dir, input_file, args.ilang, args.olang, metadata)
+            _write_source_fingerprint(temp_dir, current_fingerprint)
             print("Conversion completed successfully!")
             print(f"Temp directory: {temp_dir}")
             return
@@ -835,6 +935,7 @@ def main():
                 sys.exit(1)
 
             create_config_file(temp_dir, input_file, args.ilang, args.olang, metadata)
+            _write_source_fingerprint(temp_dir, current_fingerprint)
 
             print("Conversion completed successfully!")
             print(f"Temp directory: {temp_dir}")
