@@ -90,6 +90,27 @@ class RunStateTests(unittest.TestCase):
 
         self.assertIn("chunk0002", plan["translation_chunk_ids"])
 
+    def test_blank_output_needs_translation(self):
+        # Whitespace-only output has bytes on disk but no usable translation;
+        # planning must treat it like a missing output, not record it.
+        tmp, temp_dir = self._workspace()
+        with tmp:
+            self._write(temp_dir / "output_chunk0002.md", "\n   \n\t\n")
+            plan = run_state.plan(str(temp_dir))
+            reasons = {
+                item["chunk_id"]: item["reasons"] for item in plan["chunks"]
+            }
+
+        self.assertIn("chunk0002", plan["translation_chunk_ids"])
+        self.assertIn("blank_output", reasons["chunk0002"])
+
+    def test_record_rejects_blank_output(self):
+        tmp, temp_dir = self._workspace()
+        with tmp:
+            self._write(temp_dir / "output_chunk0001.md", "   \n")
+            with self.assertRaises(ValueError):
+                run_state.record_chunks(str(temp_dir), ["chunk0001"])
+
     def test_source_hash_change_needs_translation_after_record(self):
         tmp, temp_dir = self._workspace()
         with tmp:
@@ -111,6 +132,33 @@ class RunStateTests(unittest.TestCase):
 
         self.assertIn("chunk0001", plan["translation_chunk_ids"])
         self.assertNotIn("chunk0002", plan["translation_chunk_ids"])
+
+    def test_alias_change_on_selected_term_needs_translation(self):
+        # chunk0001 contains the source "Tai", so the term is already selected
+        # before AND after the alias edit — selection alone cannot detect the
+        # change. The injected term table's 别名 column changed, so term_hash
+        # must flag the chunk for re-translation.
+        tmp, temp_dir = self._workspace()
+        with tmp:
+            run_state.record_chunks(str(temp_dir), ["chunk0001", "chunk0002"])
+            self._write(
+                temp_dir / "glossary.json",
+                json.dumps(glossary_doc(aliases=["Taig"]), ensure_ascii=False),
+            )
+            plan = run_state.plan(str(temp_dir))
+            reasons = {
+                item["chunk_id"]: item["reasons"] for item in plan["chunks"]
+            }
+
+        self.assertIn("chunk0001", plan["translation_chunk_ids"])
+        self.assertNotIn("chunk0002", plan["translation_chunk_ids"])
+        self.assertTrue(
+            any(
+                isinstance(r, dict) and r.get("code") == "glossary_term_hash_changed"
+                for r in reasons["chunk0001"]
+            ),
+            msg=f"expected glossary_term_hash_changed, got {reasons['chunk0001']}",
+        )
 
     def test_new_alias_that_hits_chunk_changes_term_selection(self):
         tmp = tempfile.TemporaryDirectory()

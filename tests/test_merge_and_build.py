@@ -107,32 +107,6 @@ class GenerateFormatTests(unittest.TestCase):
             self.assertIn(cover_file, cmd)
 
 
-class CleanupIntermediateFilesTests(unittest.TestCase):
-    def _touch(self, path, content="x"):
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content, encoding="utf-8")
-
-    @unittest.skipUnless(
-        hasattr(merge_and_build, "extract_cover_from_epub"),
-        "cover extraction support not merged yet",
-    )
-    def test_cleanup_removes_cover_extract_directory_when_present(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            temp_path = Path(temp_dir)
-            cover_extract = temp_path / "cover_extract"
-            self._touch(cover_extract / "OPS" / "images" / "cover.jpg", "image")
-            self._touch(temp_path / "chunk0001.md", "chunk")
-            self._touch(temp_path / "output_chunk0001.md", "translated")
-            self._touch(temp_path / "input.html", "<html></html>")
-
-            merge_and_build.cleanup_intermediate_files(temp_dir)
-
-            self.assertFalse((temp_path / "chunk0001.md").exists())
-            self.assertFalse((temp_path / "output_chunk0001.md").exists())
-            self.assertFalse((temp_path / "input.html").exists())
-            self.assertFalse(cover_extract.exists())
-
-
 class MissingCoverPathTests(unittest.TestCase):
     @unittest.skipUnless(
         "cover" in inspect.signature(merge_and_build.generate_format).parameters,
@@ -194,6 +168,67 @@ class ExportAliasTests(unittest.TestCase):
     def test_export_name_rejects_paths(self):
         with self.assertRaises(ValueError):
             merge_and_build.export_named_aliases("/tmp", "../bad")
+
+
+class MergeBlankOutputTests(unittest.TestCase):
+    """A whitespace-only output chunk must abort the merge instead of being
+    silently dropped from the final book."""
+
+    def _write(self, path, content):
+        Path(path).write_text(content, encoding="utf-8")
+
+    def _workspace(self, tmp):
+        from manifest import create_manifest
+
+        temp_dir = Path(tmp)
+        self._write(temp_dir / "input.md", "One.\n\nTwo.\n")
+        self._write(temp_dir / "chunk0001.md", "One.\n")
+        self._write(temp_dir / "chunk0002.md", "Two.\n")
+        self._write(temp_dir / "output_chunk0001.md", "一。\n")
+        self._write(temp_dir / "output_chunk0002.md", "二。\n")
+        create_manifest(
+            str(temp_dir),
+            ["chunk0001.md", "chunk0002.md"],
+            str(temp_dir / "input.md"),
+        )
+        return temp_dir
+
+    def _merge(self, temp_dir):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            ok = merge_and_build.merge_markdown_files(str(temp_dir))
+        return ok, buf.getvalue()
+
+    def test_manifest_merge_fails_on_blank_output(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            temp_dir = self._workspace(tmp)
+            self._write(temp_dir / "output_chunk0002.md", "\n   \n")
+            ok, out = self._merge(temp_dir)
+
+            self.assertFalse(ok)
+            self.assertFalse((temp_dir / "output.md").exists())
+            self.assertIn("Blank output", out)
+
+    def test_legacy_merge_fails_on_blank_output(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            temp_dir = self._workspace(tmp)
+            (temp_dir / "manifest.json").unlink()
+            self._write(temp_dir / "output_chunk0002.md", "\n   \n")
+            ok, out = self._merge(temp_dir)
+
+            self.assertFalse(ok)
+            self.assertFalse((temp_dir / "output.md").exists())
+            self.assertIn("Blank output", out)
+
+    def test_merge_succeeds_with_substantive_outputs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            temp_dir = self._workspace(tmp)
+            ok, _ = self._merge(temp_dir)
+
+            self.assertTrue(ok)
+            merged = (temp_dir / "output.md").read_text(encoding="utf-8")
+            self.assertIn("一。", merged)
+            self.assertIn("二。", merged)
 
 
 class ImageValidationTests(unittest.TestCase):

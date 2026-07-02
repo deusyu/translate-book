@@ -18,7 +18,7 @@ from collections import Counter
 from html.parser import HTMLParser
 from pathlib import Path
 
-from manifest import validate_for_merge
+from manifest import read_output_text, validate_for_merge
 
 
 # =============================================================================
@@ -325,13 +325,17 @@ def merge_markdown_files(temp_dir):
         print(f"Merging {len(ordered_files)} translated files (manifest-ordered)")
         merged_content = ""
         for file_path in ordered_files:
-            try:
-                with open(file_path, 'r', encoding='utf-8') as f:
-                    content = f.read().strip()
-                if content:
-                    merged_content += content + "\n\n"
-            except Exception as e:
-                print(f"Error reading {os.path.basename(file_path)}: {e}")
+            content = read_output_text(file_path)
+            if content is None:
+                print(f"ERROR: Cannot read {os.path.basename(file_path)} — aborting merge")
+                return False
+            content = content.strip()
+            if not content:
+                # validate_for_merge already rejects blank outputs; this is a
+                # last line of defense so a chunk can never vanish silently.
+                print(f"ERROR: Blank output {os.path.basename(file_path)} — aborting merge")
+                return False
+            merged_content += content + "\n\n"
     else:
         # Legacy fallback: glob-based merge (no manifest)
         print("WARNING: No manifest.json found — using legacy glob-based merge.")
@@ -366,10 +370,17 @@ def merge_markdown_files(temp_dir):
                 print(f"ERROR: Orphaned outputs (no matching source): {', '.join(sorted(orphaned, key=natural_sort_key))}")
             return False
 
-        # Verify no empty output files
+        # Verify no empty, unreadable, or whitespace-only output files
         for fp in output_files:
             if os.path.getsize(fp) == 0:
                 print(f"ERROR: Empty output file: {os.path.basename(fp)}")
+                return False
+            text = read_output_text(fp)
+            if text is None:
+                print(f"ERROR: Unreadable output file: {os.path.basename(fp)}")
+                return False
+            if not text.strip():
+                print(f"ERROR: Blank output file: {os.path.basename(fp)}")
                 return False
 
         # Use source order to determine merge order (via expected output names)
@@ -381,13 +392,15 @@ def merge_markdown_files(temp_dir):
 
         merged_content = ""
         for file_path in output_files:
-            try:
-                with open(file_path, 'r', encoding='utf-8') as f:
-                    content = f.read().strip()
-                if content:
-                    merged_content += content + "\n\n"
-            except Exception as e:
-                print(f"Error reading {os.path.basename(file_path)}: {e}")
+            content = read_output_text(file_path)
+            if content is None:
+                print(f"ERROR: Cannot read {os.path.basename(file_path)} — aborting merge")
+                return False
+            content = content.strip()
+            if not content:
+                print(f"ERROR: Blank output {os.path.basename(file_path)} — aborting merge")
+                return False
+            merged_content += content + "\n\n"
 
     try:
         with open(output_md, 'w', encoding='utf-8') as f:

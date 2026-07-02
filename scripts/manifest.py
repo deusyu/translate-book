@@ -17,6 +17,19 @@ def file_hash(filepath):
     return h.hexdigest()
 
 
+def read_output_text(filepath):
+    """Read a translated output chunk as UTF-8 text.
+
+    Returns None when the file cannot be read or decoded. Callers treat None
+    the same as blank content: the chunk has no usable translation.
+    """
+    try:
+        with open(filepath, 'r', encoding='utf-8') as f:
+            return f.read()
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
 def create_manifest(temp_dir, chunk_files, source_md_path):
     """Create manifest.json after splitting.
 
@@ -112,10 +125,25 @@ def validate_for_merge(temp_dir):
             errors.append(f"Missing output: {chunk['output_file']} (chunk {chunk['id']})")
             continue
 
-        # Check non-empty
+        # Check non-empty. Whitespace-only files have bytes on disk but merge
+        # to nothing after strip(), silently dropping the chunk's content —
+        # treat them exactly like empty files.
         output_size = os.path.getsize(output_path)
         if output_size == 0:
             errors.append(f"Empty output: {chunk['output_file']} (chunk {chunk['id']})")
+            continue
+        output_text = read_output_text(output_path)
+        if output_text is None:
+            errors.append(
+                f"Unreadable output: {chunk['output_file']} (chunk {chunk['id']}) — "
+                f"not valid UTF-8 text"
+            )
+            continue
+        if not output_text.strip():
+            errors.append(
+                f"Blank output: {chunk['output_file']} (chunk {chunk['id']}) — "
+                f"whitespace-only content would be silently dropped on merge"
+            )
             continue
 
         # Check abnormally short

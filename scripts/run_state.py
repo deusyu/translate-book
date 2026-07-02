@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import glossary as glossary_mod
-from manifest import file_hash, load_manifest
+from manifest import file_hash, load_manifest, read_output_text
 
 
 RUN_STATE_VERSION = 1
@@ -143,6 +143,11 @@ def build_chunk_record(temp_dir, chunk_id):
         raise FileNotFoundError(f"Output chunk not found: {output_path}")
     if os.path.getsize(output_path) == 0:
         raise ValueError(f"Output chunk is empty: {output_path}")
+    output_text = read_output_text(output_path)
+    if output_text is None:
+        raise ValueError(f"Output chunk is not readable UTF-8 text: {output_path}")
+    if not output_text.strip():
+        raise ValueError(f"Output chunk is blank (whitespace-only): {output_path}")
 
     glossary, glossary_hash, _, _ = _load_glossary(temp_dir)
     selected_terms = _selected_terms_for_chunk(glossary, source_path)
@@ -190,6 +195,7 @@ def plan(temp_dir, retranslate_untracked=False):
         "chunks": [],
         "decision_rules": [
             "missing_output_or_empty_output",
+            "blank_or_unreadable_output",
             "manifest_source_hash_changed",
             "untracked_existing_output",
             "source_hash_changed_since_record",
@@ -221,6 +227,14 @@ def plan(temp_dir, retranslate_untracked=False):
         elif os.path.getsize(output_path) == 0:
             item["action"] = "translate"
             _reason(item, "empty_output")
+        else:
+            output_text = read_output_text(output_path)
+            if output_text is None:
+                item["action"] = "translate"
+                _reason(item, "unreadable_output")
+            elif not output_text.strip():
+                item["action"] = "translate"
+                _reason(item, "blank_output")
 
         current_source_hash = file_hash(source_path) if os.path.exists(source_path) else ""
         manifest_source_hash = entry.get("manifest_source_hash", "")
