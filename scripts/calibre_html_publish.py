@@ -12,12 +12,7 @@ import argparse
 import tempfile
 import shutil
 from pathlib import Path
-import signal
 import re
-
-def timeout_handler(signum, frame):
-    """Handle timeout signal"""
-    raise TimeoutError("Conversion timed out")
 
 def find_calibre_convert():
     """Find ebook-convert command from Calibre installation"""
@@ -32,7 +27,7 @@ def find_calibre_convert():
         try:
             result = subprocess.run([path, "--version"], capture_output=True, text=True, timeout=10)
             if result.returncode == 0:
-                print(f"✓ Found Calibre ebook-convert: {path}")
+                print(f"Found Calibre ebook-convert: {path}")
                 return path
         except (FileNotFoundError, subprocess.TimeoutExpired):
             continue
@@ -154,7 +149,7 @@ a {{
         with open(work_html, 'w', encoding='utf-8') as f:
             f.write(content)
         
-        print("✓ Added font styling and removed underlines from HTML")
+        print("Added font styling and removed underlines from HTML")
         return work_html
         
     except Exception as e:
@@ -177,7 +172,7 @@ def copy_images_if_needed(html_file, temp_dir):
                 shutil.copytree(img_dir, target_dir, dirs_exist_ok=True)
                 image_count = len([f for f in os.listdir(target_dir) 
                                  if f.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.svg', '.webp', '.bmp'))])
-                print(f"✓ Copied {image_count} images from {img_dir_name}/")
+                print(f"Copied {image_count} images from {img_dir_name}/")
                 total_image_count += image_count
             except Exception as e:
                 print(f"Warning: Could not copy {img_dir_name}/: {e}")
@@ -190,14 +185,14 @@ def copy_images_if_needed(html_file, temp_dir):
                 dst_file = os.path.join(temp_dir, file)
                 shutil.copy2(src_file, dst_file)
                 total_image_count += 1
-                print(f"✓ Copied loose image file: {file}")
+                print(f"Copied loose image file: {file}")
     except Exception as e:
         print(f"Warning: Could not copy loose image files: {e}")
     
     if total_image_count == 0:
-        print("ℹ No images found")
+        print("No images found")
     else:
-        print(f"✓ Total images copied: {total_image_count}")
+        print(f"Total images copied: {total_image_count}")
     
     return total_image_count
 
@@ -233,7 +228,7 @@ def convert_html_with_calibre(html_file, output_file, format_type, timeout=600, 
         "--title", title,
         "--authors", author,
         "--language", lang,
-        "--book-producer", "Claude Translator",
+        "--book-producer", "translate-book",
         "--preserve-cover-aspect-ratio",
         "--smarten-punctuation"
     ]
@@ -261,40 +256,27 @@ def convert_html_with_calibre(html_file, output_file, format_type, timeout=600, 
         ])
     
     try:
-        # Set up timeout signal
-        signal.signal(signal.SIGALRM, timeout_handler)
-        signal.alarm(timeout)
-        
         print(f"Starting conversion (timeout: {timeout}s)...")
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-        
-        # Cancel timeout
-        signal.alarm(0)
         
         if result.returncode == 0:
             if os.path.exists(output_file):
                 file_size = os.path.getsize(output_file)
-                print(f"✓ {format_type.upper()} conversion successful: {output_file} ({file_size} bytes)")
+                print(f"{format_type.upper()} conversion successful: {output_file} ({file_size} bytes)")
                 return True
             else:
-                print(f"✗ {format_type.upper()} file was not created")
+                print(f"ERROR: {format_type.upper()} file was not created")
                 return False
         else:
-            print(f"✗ Calibre conversion failed: {result.stderr}")
+            print(f"ERROR: Calibre conversion failed: {result.stderr}")
             return False
             
     except subprocess.TimeoutExpired:
-        print(f"✗ Conversion timed out after {timeout} seconds")
-        return False
-    except TimeoutError:
-        print(f"✗ Conversion timed out after {timeout} seconds")
+        print(f"ERROR: Conversion timed out after {timeout} seconds")
         return False
     except Exception as e:
-        print(f"✗ Conversion error: {e}")
+        print(f"ERROR: Conversion error: {e}")
         return False
-    finally:
-        # Ensure timeout is cancelled
-        signal.alarm(0)
 
 def main():
     """Main function"""
@@ -355,64 +337,29 @@ def main():
         
         print(f"Working directory: {temp_dir}")
         
-        # Copy images if needed
-        image_count = copy_images_if_needed(input_html, temp_dir)
+        # Copy images into the working dir so Calibre can embed them
+        copy_images_if_needed(input_html, temp_dir)
         
         # Prepare HTML with styling
         work_html = prepare_html_for_conversion(input_html, temp_dir, args.lang)
         
-        # Convert to specified format
+        # Convert to specified format. DOCX/EPUB/PDF embed their images during
+        # conversion, so nothing from the working copy needs to be copied back.
         if convert_html_with_calibre(work_html, final_output, format_type, args.timeout, args.lang, cover=args.cover):
             print("\n" + "="*50)
-            print(f"✅ Conversion completed successfully!")
-            print(f"📁 File: {final_output}")
-            
-            # Copy images directory to the final output directory if they exist in temp
-            image_count = 0
-            if os.path.exists(temp_dir):
-                output_dir = os.path.dirname(final_output)
-                images_dirs = ['images', 'media', 'image', 'pics']
-                
-                for img_dir_name in images_dirs:
-                    temp_img_dir = os.path.join(temp_dir, img_dir_name)
-                    if os.path.exists(temp_img_dir):
-                        target_img_dir = os.path.join(output_dir, img_dir_name)
-                        try:
-                            if os.path.exists(target_img_dir):
-                                shutil.rmtree(target_img_dir)
-                            shutil.copytree(temp_img_dir, target_img_dir)
-                            img_count = len([f for f in os.listdir(target_img_dir) 
-                                           if f.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.svg', '.webp', '.bmp'))])
-                            print(f"✓ Copied {img_count} images from {img_dir_name}/ directory to output location")
-                            image_count += img_count
-                        except Exception as e:
-                            print(f"Warning: Could not copy {img_dir_name}/ to output: {e}")
-                
-                # Also copy loose image files
-                try:
-                    for file in os.listdir(temp_dir):
-                        if file.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.svg', '.webp', '.bmp')):
-                            src_file = os.path.join(temp_dir, file)
-                            dst_file = os.path.join(output_dir, file)
-                            shutil.copy2(src_file, dst_file)
-                            image_count += 1
-                            print(f"✓ Copied loose image file: {file}")
-                except Exception as e:
-                    print(f"Warning: Could not copy loose images to output: {e}")
-            
+            print("Conversion completed successfully!")
+            print(f"File: {final_output}")
             if os.path.exists(final_output):
                 file_size = os.path.getsize(final_output)
-                print(f"💾 Size: {file_size:,} bytes")
-            print(f"🖼️  Images: {image_count} files")
-            print("🔤 Font: 仿宋体 (FangSong)")
+                print(f"Size: {file_size:,} bytes")
         else:
-            print(f"\n❌ Conversion to {format_type.upper()} failed!")
+            print(f"\nERROR: Conversion to {format_type.upper()} failed!")
             sys.exit(1)
         
         # Clean up temp directory
         try:
             shutil.rmtree(temp_dir)
-            print(f"🧹 Cleaned up temporary directory: {temp_dir}")
+            print(f"Cleaned up temporary directory: {temp_dir}")
         except Exception as e:
             print(f"Warning: Could not clean up temp directory: {e}")
                 
