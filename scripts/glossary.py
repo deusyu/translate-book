@@ -74,8 +74,19 @@ def glossary_hash(glossary):
 
 
 def term_hash(term):
-    """SHA-256 of a single term's identifying fields."""
+    """SHA-256 of a single term's prompt-affecting fields.
+
+    Aliases participate because they are injected into the per-chunk term
+    table (别名 column): adding or editing an alias changes the prompt
+    contract for chunks that already selected this term, so run_state must
+    see a different hash and plan a re-translation. The alias segment is
+    appended only when aliases exist, so alias-less terms keep their
+    historical hash and existing run_state.json records stay valid.
+    """
     payload = f"{term.get('source', '')}→{term.get('target', '')}|{term.get('category', '')}"
+    aliases = sorted(term.get('aliases', []) or [])
+    if aliases:
+        payload += '|aliases=' + json.dumps(aliases, ensure_ascii=False)
     return hashlib.sha256(payload.encode('utf-8')).hexdigest()
 
 

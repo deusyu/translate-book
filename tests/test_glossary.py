@@ -625,6 +625,34 @@ class HashTests(unittest.TestCase):
         t2 = {'source': 'Apple', 'target': '苹果', 'category': 'company'}
         self.assertNotEqual(glossary.term_hash(t1), glossary.term_hash(t2))
 
+    def test_term_hash_changes_when_alias_added(self):
+        # Aliases are part of the injected term table; adding one must change
+        # the hash so run_state plans a re-translation for affected chunks.
+        t1 = {'source': 'Tai', 'target': '太一', 'category': 'person', 'aliases': []}
+        t2 = {'source': 'Tai', 'target': '太一', 'category': 'person', 'aliases': ['Taig']}
+        self.assertNotEqual(glossary.term_hash(t1), glossary.term_hash(t2))
+
+    def test_term_hash_changes_when_alias_edited(self):
+        t1 = {'source': 'Tai', 'target': '太一', 'category': 'person', 'aliases': ['Taig']}
+        t2 = {'source': 'Tai', 'target': '太一', 'category': 'person', 'aliases': ['Taighi']}
+        self.assertNotEqual(glossary.term_hash(t1), glossary.term_hash(t2))
+
+    def test_term_hash_ignores_alias_order(self):
+        t1 = {'source': 'Tai', 'target': '太一', 'category': 'person', 'aliases': ['A', 'B']}
+        t2 = {'source': 'Tai', 'target': '太一', 'category': 'person', 'aliases': ['B', 'A']}
+        self.assertEqual(glossary.term_hash(t1), glossary.term_hash(t2))
+
+    def test_term_hash_without_aliases_keeps_historical_value(self):
+        # Backwards compatibility: alias-less terms must hash exactly as the
+        # pre-alias format did, so old run_state.json records stay valid and
+        # upgrading does not force a whole-book re-translation.
+        import hashlib
+        t = {'source': 'Manhattan', 'target': '曼哈顿', 'category': 'place'}
+        legacy = hashlib.sha256('Manhattan→曼哈顿|place'.encode('utf-8')).hexdigest()
+        self.assertEqual(glossary.term_hash(t), legacy)
+        t_empty = {'source': 'Manhattan', 'target': '曼哈顿', 'category': 'place', 'aliases': []}
+        self.assertEqual(glossary.term_hash(t_empty), legacy)
+
 
 class FormatTermsForPromptTests(unittest.TestCase):
     def test_empty_terms_returns_empty_string(self):
