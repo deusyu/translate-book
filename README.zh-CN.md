@@ -2,9 +2,9 @@
 
 [English](README.md) | 中文
 
-Claude Code Skill，使用并行 subagent 将整本书（PDF/DOCX/EPUB）翻译成任意语言。
+面向 Codex、Claude Code 和 OpenClaw 的 Agent Skill，使用并行 subagent 将整本书（PDF/DOCX/EPUB）翻译成任意语言。
 
-> 本项目受 [claude_translater](https://github.com/wizlijun/claude_translater) 启发。原项目以 shell 脚本为入口，配合 Claude CLI 和多个步骤脚本完成分块翻译；本项目则将流程重构为 Claude Code Skill，使用 subagent 按 chunk 并行翻译，并引入 manifest 驱动的完整性校验，将续跑和多格式输出整合为更统一的流水线。由于项目结构和实现方式均与原项目不同，本项目为独立实现，而非 fork。
+> 本项目受 [claude_translater](https://github.com/wizlijun/claude_translater) 启发。原项目以 shell 脚本为入口，配合 Claude CLI 和多个步骤脚本完成分块翻译；本项目则将流程重构为可在 Codex、Claude Code 和 OpenClaw 中使用的 Agent Skill，使用 subagent 按 chunk 并行翻译，并引入 manifest 驱动的完整性校验，将续跑和多格式输出整合为更统一的流水线。由于项目结构和实现方式均与原项目不同，本项目为独立实现，而非 fork。
 
 ---
 
@@ -45,7 +45,7 @@ Calibre ebook-convert → HTMLZ → HTML → Markdown
 
 ## 前置要求
 
-- **Claude Code CLI** — 已安装并完成认证
+- **Agent 运行环境** — Codex、Claude Code 或 OpenClaw，已安装并可运行 Skill
 - **Calibre** — `ebook-convert` 命令可用（[下载](https://calibre-ebook.com/)）
 - **Pandoc** — 用于 HTML↔Markdown 转换（[下载](https://pandoc.org/)）
 - **Python 3**，需要：
@@ -56,36 +56,63 @@ Calibre ebook-convert → HTMLZ → HTML → Markdown
 
 ### 1. 安装 Skill
 
-**方式 A：npx（推荐）**
+#### Codex
+
+```bash
+npx skills add deusyu/translate-book -a codex -g
+```
+
+或手动安装：
+
+```bash
+mkdir -p ~/.agents/skills
+git clone https://github.com/deusyu/translate-book.git ~/.agents/skills/translate-book
+```
+
+如果新安装的 Skill 没有出现，请重启 Codex。
+
+#### Claude Code
 
 ```bash
 npx skills add deusyu/translate-book -a claude-code -g
 ```
 
-**方式 B：ClawHub**
+或手动安装：
 
 ```bash
-clawhub install translate-book
-```
-
-**方式 C：Git 克隆**
-
-```bash
+mkdir -p ~/.claude/skills
 git clone https://github.com/deusyu/translate-book.git ~/.claude/skills/translate-book
 ```
 
+#### OpenClaw
+
+```bash
+openclaw skills install @deusyu/translate-book
+```
 
 ### 2. 翻译一本书
 
-在 Claude Code 中直接说：
+#### Codex
 
+在 Codex CLI 或 IDE 扩展中输入：
+
+```text
+$translate-book Translate /path/to/book.pdf into Chinese.
 ```
+
+当请求与 Skill 描述匹配时，Codex 也可以自动选择该 Skill。
+
+#### Claude Code 和 OpenClaw
+
+直接告诉 Agent：
+
+```text
 translate /path/to/book.pdf to Chinese
 ```
 
-或使用斜杠命令：
+在 Claude Code 中也可以使用斜杠命令：
 
-```
+```text
 /translate-book translate /path/to/book.pdf to Japanese
 ```
 
@@ -211,7 +238,7 @@ python3 scripts/merge_and_build.py --temp-dir book_temp --title "《译后书名
 
 | 文件 | 用途 |
 |------|------|
-| `SKILL.md` | Claude Code Skill 定义 — 编排完整流程 |
+| `SKILL.md` | Agent Skill 定义 — 编排完整流程 |
 | `scripts/convert.py` | PDF/DOCX/EPUB → Markdown chunks（经 Calibre HTMLZ） |
 | `scripts/manifest.py` | Chunk manifest：SHA-256 追踪与合并校验 |
 | `scripts/glossary.py` | 术语表管理：为每个 chunk 生成专属术语对照表，保证全书译名一致 |
