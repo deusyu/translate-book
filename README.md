@@ -4,6 +4,10 @@ English | [中文](README.zh-CN.md)
 
 An agent skill for Codex, Claude Code, and OpenClaw that translates entire books (PDF/DOCX/EPUB) into any language using parallel subagents.
 
+<p align="center">
+  <img src="assets/poster/translate-book-poster-en.jpg" alt="translate-book — a whole book, translated in parallel: split into chunks, translated by 8 parallel sub-agents, verified and merged into a complete book" width="480">
+</p>
+
 > Inspired by [claude_translater](https://github.com/wizlijun/claude_translater). The original project uses shell scripts as its entry point, coordinating the Claude CLI with multiple step scripts to perform chunked translation. This project restructures the workflow as an agent skill for Codex, Claude Code, and OpenClaw, using subagents to translate chunks in parallel, with manifest-driven integrity checks, resumable runs, and multi-format output unified into a single pipeline. As the project structure and implementation differ significantly from the original, this is an independent project rather than a fork.
 
 ---

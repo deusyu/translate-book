@@ -16,3 +16,13 @@
 - 信息密度、留白与对齐:中央流场保持大量纸面呼吸;密度集中在左轨与页脚;所有文字左缘对齐 56px 网格,图区轴线 x=436。
 - 要避免的套路:圆角卡片墙、荧光科技风、黑底霓虹仪表盘、无意义图标矩阵、假出版物档案编号。
 - 最可能退化成的样子(质检时对照):普通技术报告流程图(一排圆角框 + 细箭头)。若缩略图只剩标题和方框,重构流场而不是微调字号。
+
+## 英文版变体(README 用)
+
+`translate-book-poster-en.pptd` + `pages/poster-en.page`,几何布局与中文版一致,差异仅在文案与头部排版:
+
+- 标题改为两行 Oranienbaum 44px:"A whole book, / translated in parallel.",与黑书上的"A"呼应;描述压成单行 11.5px。
+- 输入格式标签("PDF · DOCX · EPUB")从书上方的独立说明移到黑书内部。
+- 左轨标题为动词序列:Convert · split / Translate ×8 / Verify · resume / Merge · build(13px,规线加宽到 144,虚线轨起点右移到 212,避免与英文标题尾部相碰)。
+- 红书保留巨字《译》与印章——对英文读者直观传达"翻译成另一种语言",副标 "WHOLE BOOK · TRANSLATED"。
+- 英文海报嵌入 `README.md`,中文海报嵌入 `README.zh-CN.md`(两个 README 需同步维护)。

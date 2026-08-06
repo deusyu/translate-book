@@ -1,0 +1,799 @@
+pageType: content
+background:
+  type: solid
+  color: "$paper"
+elements:
+  - elementId: rail-num-01
+    elementType: text
+    bounds: [56, 352, 32, 22]
+    content:
+      style: "$railNum"
+      wrap: false
+      align: [left, middle]
+      text: "01"
+  - elementId: rail-head-01
+    elementType: text
+    bounds: [94, 354, 112, 18]
+    content:
+      style: "$railHead"
+      wrap: false
+      align: [left, middle]
+      text: "Convert · split"
+  - elementId: rail-rule-01
+    elementType: shape
+    bounds: [56, 379, 144, 1]
+    shapeName: rect
+    fill: {type: solid, color: "$faint"}
+  - elementId: rail-body-01
+    elementType: text
+    bounds: [56, 386, 136, 66]
+    content:
+      style: "$railBody"
+      text: |
+        Calibre → Markdown
+        ~6,000 chars per chunk
+        SHA-256 → manifest
+  - elementId: rail-num-02
+    elementType: text
+    bounds: [56, 470, 32, 22]
+    content:
+      style: "$railNum"
+      wrap: false
+      align: [left, middle]
+      text: "02"
+  - elementId: rail-head-02
+    elementType: text
+    bounds: [94, 472, 112, 18]
+    content:
+      style: "$railHead"
+      wrap: false
+      align: [left, middle]
+      text: "Translate ×8"
+  - elementId: rail-rule-02
+    elementType: shape
+    bounds: [56, 497, 144, 1]
+    shapeName: rect
+    fill: {type: solid, color: "$faint"}
+  - elementId: rail-body-02
+    elementType: text
+    bounds: [56, 504, 136, 66]
+    content:
+      style: "$railBody"
+      text: |
+        8 sub-agents per batch
+        isolated contexts
+        shared glossary + context
+  - elementId: rail-num-03
+    elementType: text
+    bounds: [56, 588, 32, 22]
+    content:
+      style: "$railNum"
+      wrap: false
+      align: [left, middle]
+      text: "03"
+  - elementId: rail-head-03
+    elementType: text
+    bounds: [94, 590, 112, 18]
+    content:
+      style: "$railHead"
+      wrap: false
+      align: [left, middle]
+      text: "Verify · resume"
+  - elementId: rail-rule-03
+    elementType: shape
+    bounds: [56, 615, 144, 1]
+    shapeName: rect
+    fill: {type: solid, color: "$faint"}
+  - elementId: rail-body-03
+    elementType: text
+    bounds: [56, 622, 136, 66]
+    content:
+      style: "$railBody"
+      text: |
+        1:1 source ↔ output
+        hash-checked merge
+        selective re-translation
+  - elementId: rail-num-04
+    elementType: text
+    bounds: [56, 706, 32, 22]
+    content:
+      style: "$railNum"
+      wrap: false
+      align: [left, middle]
+      text: "04"
+  - elementId: rail-head-04
+    elementType: text
+    bounds: [94, 708, 112, 18]
+    content:
+      style: "$railHead"
+      wrap: false
+      align: [left, middle]
+      text: "Merge · build"
+  - elementId: rail-rule-04
+    elementType: shape
+    bounds: [56, 733, 144, 1]
+    shapeName: rect
+    fill: {type: solid, color: "$faint"}
+  - elementId: rail-body-04
+    elementType: text
+    bounds: [56, 740, 136, 66]
+    content:
+      style: "$railBody"
+      text: |
+        output.md → HTML + TOC
+        DOCX · EPUB · PDF
+  - elementId: meta-top
+    elementType: text
+    bounds: [56, 34, 420, 16]
+    content:
+      style: "$microCaps"
+      wrap: false
+      text: "AGENT SKILL · OPEN SOURCE · MIT"
+  - elementId: seal
+    elementType: shape
+    bounds: [638, 26, 26, 26]
+    shapeName: roundRect
+    adjustments: [12000]
+    fill: {type: solid, color: "$vermilion"}
+  - elementId: seal-glyph
+    elementType: text
+    bounds: [638, 26, 26, 26]
+    content:
+      fontFamily: "思源宋体"
+      fontSize: 13
+      color: "$white"
+      bold: true
+      align: [center, middle]
+      wrap: false
+      text: "译"
+  - elementId: kicker
+    elementType: text
+    bounds: [56, 62, 520, 24]
+    content:
+      style: "$kicker"
+      wrap: false
+      text: "RAINMAN · TRANSLATE BOOK"
+  - elementId: title
+    elementType: text
+    bounds: [54, 88, 580, 104]
+    content:
+      style: "$titleEn"
+      align: [left, middle]
+      text: |
+        <p>A whole book,</p>
+        <p>translated in parallel.</p>
+  - elementId: desc
+    elementType: text
+    bounds: [56, 200, 580, 20]
+    content:
+      style: "$subDesc"
+      wrap: false
+      text: "An agent skill for Codex, Claude Code & OpenClaw — resumable runs, book-wide glossary consistency."
+  - elementId: glossary-rail
+    elementType: line
+    bounds: [212, 489, 452, 2]
+    viewBox: [452, 2]
+    points: "0,1 452,1"
+    curve: sharp
+    opacity: 0.8
+    border: {width: 1, color: "$vermilion", style: dash}
+  - elementId: fan-0
+    elementType: line
+    bounds: [224, 346, 144, 28]
+    viewBox: [144, 28]
+    points: "144,0 144,14 0,14 0,28"
+    curve: smooth
+    opacity: 0.5
+    border: {width: 1, color: "$ink"}
+  - elementId: fan-1
+    elementType: line
+    bounds: [284.6, 346, 102.9, 28]
+    viewBox: [102.9, 28]
+    points: "102.9,0 102.9,14 0,14 0,28"
+    curve: smooth
+    opacity: 0.5
+    border: {width: 1, color: "$ink"}
+  - elementId: fan-2
+    elementType: line
+    bounds: [345.1, 346, 61.7, 28]
+    viewBox: [61.7, 28]
+    points: "61.7,0 61.7,14 0,14 0,28"
+    curve: smooth
+    opacity: 0.5
+    border: {width: 1, color: "$ink"}
+  - elementId: fan-3
+    elementType: line
+    bounds: [405.7, 346, 20.6, 28]
+    viewBox: [20.6, 28]
+    points: "20.6,0 20.6,14 0,14 0,28"
+    curve: smooth
+    opacity: 0.5
+    border: {width: 1, color: "$ink"}
+  - elementId: fan-4
+    elementType: line
+    bounds: [445.7, 346, 20.6, 28]
+    viewBox: [20.6, 28]
+    points: "0,0 0,14 20.6,14 20.6,28"
+    curve: smooth
+    opacity: 0.5
+    border: {width: 1, color: "$ink"}
+  - elementId: fan-5
+    elementType: line
+    bounds: [465.1, 346, 61.7, 28]
+    viewBox: [61.7, 28]
+    points: "0,0 0,14 61.7,14 61.7,28"
+    curve: smooth
+    opacity: 0.5
+    border: {width: 1, color: "$ink"}
+  - elementId: fan-6
+    elementType: line
+    bounds: [484.6, 346, 102.8, 28]
+    viewBox: [102.8, 28]
+    points: "0,0 0,14 102.8,14 102.8,28"
+    curve: smooth
+    opacity: 0.5
+    border: {width: 1, color: "$ink"}
+  - elementId: fan-7
+    elementType: line
+    bounds: [504, 346, 144, 28]
+    viewBox: [144, 28]
+    points: "0,0 0,14 144,14 144,28"
+    curve: smooth
+    opacity: 0.5
+    border: {width: 1, color: "$ink"}
+  - elementId: tile-ink-0a
+    elementType: shape
+    bounds: [213, 380, 16, 22]
+    shapeName: rect
+    rotation: -3
+    opacity: 1
+    fill: {type: solid, color: "$ink"}
+  - elementId: tile-ink-0b
+    elementType: shape
+    bounds: [218, 412, 16, 22]
+    shapeName: rect
+    rotation: 3
+    opacity: 0.68
+    fill: {type: solid, color: "$ink"}
+  - elementId: tile-ink-1a
+    elementType: shape
+    bounds: [278.6, 380, 16, 22]
+    shapeName: rect
+    rotation: 4
+    opacity: 1
+    fill: {type: solid, color: "$ink"}
+  - elementId: tile-ink-1b
+    elementType: shape
+    bounds: [273.6, 412, 16, 22]
+    shapeName: rect
+    rotation: -3
+    opacity: 0.68
+    fill: {type: solid, color: "$ink"}
+  - elementId: tile-ink-1c
+    elementType: shape
+    bounds: [276.6, 444, 16, 22]
+    shapeName: rect
+    rotation: 2
+    opacity: 0.4
+    fill: {type: solid, color: "$ink"}
+  - elementId: tile-ink-2a
+    elementType: shape
+    bounds: [335.1, 380, 16, 22]
+    shapeName: rect
+    rotation: -4
+    opacity: 1
+    fill: {type: solid, color: "$ink"}
+  - elementId: tile-ink-2b
+    elementType: shape
+    bounds: [340.1, 412, 16, 22]
+    shapeName: rect
+    rotation: 4
+    opacity: 0.68
+    fill: {type: solid, color: "$ink"}
+  - elementId: tile-ink-3a
+    elementType: shape
+    bounds: [400.7, 380, 16, 22]
+    shapeName: rect
+    rotation: 3
+    opacity: 1
+    fill: {type: solid, color: "$ink"}
+  - elementId: tile-ink-3b
+    elementType: shape
+    bounds: [395.7, 412, 16, 22]
+    shapeName: rect
+    rotation: -4
+    opacity: 0.68
+    fill: {type: solid, color: "$ink"}
+  - elementId: tile-ink-4a
+    elementType: shape
+    bounds: [457.3, 380, 16, 22]
+    shapeName: rect
+    rotation: -2
+    opacity: 1
+    fill: {type: solid, color: "$ink"}
+  - elementId: tile-ink-4b
+    elementType: shape
+    bounds: [460.3, 412, 16, 22]
+    shapeName: rect
+    rotation: 3
+    opacity: 0.68
+    fill: {type: solid, color: "$ink"}
+  - elementId: tile-ink-4c
+    elementType: shape
+    bounds: [458.3, 444, 16, 22]
+    shapeName: rect
+    rotation: -1
+    opacity: 0.4
+    fill: {type: solid, color: "$ink"}
+  - elementId: tile-ink-5a
+    elementType: shape
+    bounds: [520.9, 380, 16, 22]
+    shapeName: rect
+    rotation: 4
+    opacity: 1
+    fill: {type: solid, color: "$ink"}
+  - elementId: tile-ink-5b
+    elementType: shape
+    bounds: [517.9, 412, 16, 22]
+    shapeName: rect
+    rotation: -2
+    opacity: 0.68
+    fill: {type: solid, color: "$ink"}
+  - elementId: tile-ink-6a
+    elementType: shape
+    bounds: [576.4, 380, 16, 22]
+    shapeName: rect
+    rotation: -3
+    opacity: 1
+    fill: {type: solid, color: "$ink"}
+  - elementId: tile-ink-6b
+    elementType: shape
+    bounds: [580.4, 412, 16, 22]
+    shapeName: rect
+    rotation: 2
+    opacity: 0.68
+    fill: {type: solid, color: "$ink"}
+  - elementId: tile-ink-6c
+    elementType: shape
+    bounds: [579.4, 444, 16, 22]
+    shapeName: rect
+    rotation: -2
+    opacity: 0.4
+    fill: {type: solid, color: "$ink"}
+  - elementId: tile-ink-7a
+    elementType: shape
+    bounds: [641, 380, 16, 22]
+    shapeName: rect
+    rotation: 2
+    opacity: 1
+    fill: {type: solid, color: "$ink"}
+  - elementId: tile-ink-7b
+    elementType: shape
+    bounds: [637, 412, 16, 22]
+    shapeName: rect
+    rotation: -4
+    opacity: 0.68
+    fill: {type: solid, color: "$ink"}
+  - elementId: src-book
+    elementType: shape
+    bounds: [356, 232, 160, 116]
+    shapeName: rect
+    fill: {type: solid, color: "$ink"}
+    shadow: {blur: 16, color: "#00000026", offset: [0, 6]}
+  - elementId: src-A
+    elementType: text
+    bounds: [356, 240, 160, 62]
+    content:
+      fontFamily: {latin: "Oranienbaum", ea: "思源宋体"}
+      fontSize: 54
+      color: "$white"
+      align: [center, middle]
+      wrap: false
+      text: "A"
+  - elementId: src-line-0
+    elementType: shape
+    bounds: [390, 306, 92, 1.5]
+    shapeName: rect
+    fill: {type: solid, color: "#FFFFFF5C"}
+  - elementId: src-line-1
+    elementType: shape
+    bounds: [397, 315, 78, 1.5]
+    shapeName: rect
+    fill: {type: solid, color: "#FFFFFF5C"}
+  - elementId: src-formats
+    elementType: text
+    bounds: [356, 324, 160, 14]
+    content:
+      fontFamily: "思源宋体"
+      fontSize: 8
+      color: "#FFFFFFB3"
+      letterSpacing: 2
+      align: [center, middle]
+      wrap: false
+      text: "PDF · DOCX · EPUB"
+  - elementId: node-0
+    elementType: shape
+    bounds: [208, 474, 32, 32]
+    shapeName: ellipse
+    fill: {type: solid, color: "$nodeFill"}
+    border: {width: 1.5, color: "$ink"}
+  - elementId: node-core-0
+    elementType: shape
+    bounds: [219, 485, 10, 10]
+    shapeName: ellipse
+    fill: {type: solid, color: "$vermilion"}
+  - elementId: node-1
+    elementType: shape
+    bounds: [268.6, 474, 32, 32]
+    shapeName: ellipse
+    fill: {type: solid, color: "$nodeFill"}
+    border: {width: 1.5, color: "$ink"}
+  - elementId: node-core-1
+    elementType: shape
+    bounds: [279.6, 485, 10, 10]
+    shapeName: ellipse
+    fill: {type: solid, color: "$vermilion"}
+  - elementId: node-2
+    elementType: shape
+    bounds: [329.1, 474, 32, 32]
+    shapeName: ellipse
+    fill: {type: solid, color: "$nodeFill"}
+    border: {width: 1.5, color: "$ink"}
+  - elementId: node-core-2
+    elementType: shape
+    bounds: [340.1, 485, 10, 10]
+    shapeName: ellipse
+    fill: {type: solid, color: "$vermilion"}
+  - elementId: node-3
+    elementType: shape
+    bounds: [389.7, 474, 32, 32]
+    shapeName: ellipse
+    fill: {type: solid, color: "$nodeFill"}
+    border: {width: 1.5, color: "$ink"}
+  - elementId: node-core-3
+    elementType: shape
+    bounds: [400.7, 485, 10, 10]
+    shapeName: ellipse
+    fill: {type: solid, color: "$vermilion"}
+  - elementId: node-4
+    elementType: shape
+    bounds: [450.3, 474, 32, 32]
+    shapeName: ellipse
+    fill: {type: solid, color: "$nodeFill"}
+    border: {width: 1.5, color: "$ink"}
+  - elementId: node-core-4
+    elementType: shape
+    bounds: [461.3, 485, 10, 10]
+    shapeName: ellipse
+    fill: {type: solid, color: "$vermilion"}
+  - elementId: node-5
+    elementType: shape
+    bounds: [510.9, 474, 32, 32]
+    shapeName: ellipse
+    fill: {type: solid, color: "$nodeFill"}
+    border: {width: 1.5, color: "$ink"}
+  - elementId: node-core-5
+    elementType: shape
+    bounds: [521.9, 485, 10, 10]
+    shapeName: ellipse
+    fill: {type: solid, color: "$vermilion"}
+  - elementId: node-6
+    elementType: shape
+    bounds: [571.4, 474, 32, 32]
+    shapeName: ellipse
+    fill: {type: solid, color: "$nodeFill"}
+    border: {width: 1.5, color: "$ink"}
+  - elementId: node-core-6
+    elementType: shape
+    bounds: [582.4, 485, 10, 10]
+    shapeName: ellipse
+    fill: {type: solid, color: "$vermilion"}
+  - elementId: node-7
+    elementType: shape
+    bounds: [632, 474, 32, 32]
+    shapeName: ellipse
+    fill: {type: solid, color: "$nodeFill"}
+    border: {width: 1.5, color: "$ink"}
+  - elementId: node-core-7
+    elementType: shape
+    bounds: [643, 485, 10, 10]
+    shapeName: ellipse
+    fill: {type: solid, color: "$vermilion"}
+  - elementId: tile-verm-0a
+    elementType: shape
+    bounds: [218, 522, 16, 22]
+    shapeName: rect
+    rotation: 3
+    opacity: 1
+    fill: {type: solid, color: "$vermilion"}
+  - elementId: tile-verm-0b
+    elementType: shape
+    bounds: [213, 552, 16, 22]
+    shapeName: rect
+    rotation: -3
+    opacity: 0.62
+    fill: {type: solid, color: "$vermilion"}
+  - elementId: tile-verm-1a
+    elementType: shape
+    bounds: [273.6, 522, 16, 22]
+    shapeName: rect
+    rotation: -3
+    opacity: 1
+    fill: {type: solid, color: "$vermilion"}
+  - elementId: tile-verm-1b
+    elementType: shape
+    bounds: [278.6, 552, 16, 22]
+    shapeName: rect
+    rotation: 4
+    opacity: 0.62
+    fill: {type: solid, color: "$vermilion"}
+  - elementId: tile-verm-2a
+    elementType: shape
+    bounds: [340.1, 522, 16, 22]
+    shapeName: rect
+    rotation: 4
+    opacity: 1
+    fill: {type: solid, color: "$vermilion"}
+  - elementId: tile-verm-2b
+    elementType: shape
+    bounds: [335.1, 552, 16, 22]
+    shapeName: rect
+    rotation: -4
+    opacity: 0.62
+    fill: {type: solid, color: "$vermilion"}
+  - elementId: tile-verm-3a
+    elementType: shape
+    bounds: [395.7, 522, 16, 22]
+    shapeName: rect
+    rotation: -4
+    opacity: 1
+    fill: {type: solid, color: "$vermilion"}
+  - elementId: tile-verm-3b
+    elementType: shape
+    bounds: [400.7, 552, 16, 22]
+    shapeName: rect
+    rotation: 3
+    opacity: 0.62
+    fill: {type: solid, color: "$vermilion"}
+  - elementId: tile-verm-4a
+    elementType: shape
+    bounds: [460.3, 522, 16, 22]
+    shapeName: rect
+    rotation: 3
+    opacity: 1
+    fill: {type: solid, color: "$vermilion"}
+  - elementId: tile-verm-4b
+    elementType: shape
+    bounds: [457.3, 552, 16, 22]
+    shapeName: rect
+    rotation: -2
+    opacity: 0.62
+    fill: {type: solid, color: "$vermilion"}
+  - elementId: tile-verm-5a
+    elementType: shape
+    bounds: [517.9, 522, 16, 22]
+    shapeName: rect
+    rotation: -2
+    opacity: 1
+    fill: {type: solid, color: "$vermilion"}
+  - elementId: tile-verm-5b
+    elementType: shape
+    bounds: [520.9, 552, 16, 22]
+    shapeName: rect
+    rotation: 4
+    opacity: 0.62
+    fill: {type: solid, color: "$vermilion"}
+  - elementId: tile-verm-6a
+    elementType: shape
+    bounds: [580.4, 522, 16, 22]
+    shapeName: rect
+    rotation: 2
+    opacity: 1
+    fill: {type: solid, color: "$vermilion"}
+  - elementId: tile-verm-6b
+    elementType: shape
+    bounds: [576.4, 552, 16, 22]
+    shapeName: rect
+    rotation: -3
+    opacity: 0.62
+    fill: {type: solid, color: "$vermilion"}
+  - elementId: tile-verm-7a
+    elementType: shape
+    bounds: [637, 522, 16, 22]
+    shapeName: rect
+    rotation: -4
+    opacity: 1
+    fill: {type: solid, color: "$vermilion"}
+  - elementId: tile-verm-7b
+    elementType: shape
+    bounds: [641, 552, 16, 22]
+    shapeName: rect
+    rotation: 2
+    opacity: 0.62
+    fill: {type: solid, color: "$vermilion"}
+  - elementId: conv-0
+    elementType: line
+    bounds: [224, 580, 200, 58]
+    viewBox: [200, 58]
+    points: "0,0 0,29 200,29 200,58"
+    curve: smooth
+    opacity: 0.6
+    border: {width: 1.25, color: "$vermilion"}
+  - elementId: conv-1
+    elementType: line
+    bounds: [284.6, 580, 142.9, 58]
+    viewBox: [142.9, 58]
+    points: "0,0 0,29 142.9,29 142.9,58"
+    curve: smooth
+    opacity: 0.6
+    border: {width: 1.25, color: "$vermilion"}
+  - elementId: conv-2
+    elementType: line
+    bounds: [345.1, 580, 85.7, 58]
+    viewBox: [85.7, 58]
+    points: "0,0 0,29 85.7,29 85.7,58"
+    curve: smooth
+    opacity: 0.6
+    border: {width: 1.25, color: "$vermilion"}
+  - elementId: conv-3
+    elementType: line
+    bounds: [405.7, 580, 28.6, 58]
+    viewBox: [28.6, 58]
+    points: "0,0 0,29 28.6,29 28.6,58"
+    curve: smooth
+    opacity: 0.6
+    border: {width: 1.25, color: "$vermilion"}
+  - elementId: conv-4
+    elementType: line
+    bounds: [437.7, 580, 28.6, 58]
+    viewBox: [28.6, 58]
+    points: "28.6,0 28.6,29 0,29 0,58"
+    curve: smooth
+    opacity: 0.6
+    border: {width: 1.25, color: "$vermilion"}
+  - elementId: conv-5
+    elementType: line
+    bounds: [441.1, 580, 85.7, 58]
+    viewBox: [85.7, 58]
+    points: "85.7,0 85.7,29 0,29 0,58"
+    curve: smooth
+    opacity: 0.6
+    border: {width: 1.25, color: "$vermilion"}
+  - elementId: conv-6
+    elementType: line
+    bounds: [444.6, 580, 142.8, 58]
+    viewBox: [142.8, 58]
+    points: "142.8,0 142.8,29 0,29 0,58"
+    curve: smooth
+    opacity: 0.6
+    border: {width: 1.25, color: "$vermilion"}
+  - elementId: conv-7
+    elementType: line
+    bounds: [448, 580, 200, 58]
+    viewBox: [200, 58]
+    points: "200,0 200,29 0,29 0,58"
+    curve: smooth
+    opacity: 0.6
+    border: {width: 1.25, color: "$vermilion"}
+  - elementId: gate-l
+    elementType: shape
+    bounds: [408, 636, 12, 34]
+    shapeName: rect
+    fill: {type: solid, color: "$ink"}
+  - elementId: gate-r
+    elementType: shape
+    bounds: [452, 636, 12, 34]
+    shapeName: rect
+    fill: {type: solid, color: "$ink"}
+  - elementId: gate-caption
+    elementType: text
+    bounds: [478, 640, 170, 30]
+    content:
+      fontFamily: "思源宋体"
+      fontSize: 9
+      color: "$mute"
+      lineHeight: 1.55
+      text: |
+        manifest validation
+        SHA-256 · 1:1 match
+  - elementId: flow-arrow
+    elementType: line
+    bounds: [432, 674, 8, 20]
+    viewBox: [8, 20]
+    points: "4,0 4,20"
+    curve: sharp
+    border: {width: 2, color: "$vermilion"}
+    arrow: [null, stealth]
+  - elementId: dst-book
+    elementType: shape
+    bounds: [316, 700, 240, 156]
+    shapeName: rect
+    fill: {type: solid, color: "$vermilion"}
+    shadow: {blur: 18, color: "#00000030", offset: [0, 7]}
+  - elementId: dst-spine
+    elementType: shape
+    bounds: [316, 700, 12, 156]
+    shapeName: rect
+    fill: {type: solid, color: "$vermDeep"}
+  - elementId: dst-glyph
+    elementType: text
+    bounds: [330, 704, 224, 118]
+    content:
+      fontFamily: "思源宋体"
+      fontSize: 92
+      color: "$white"
+      bold: true
+      align: [center, middle]
+      wrap: false
+      text: "译"
+  - elementId: dst-sub
+    elementType: text
+    bounds: [330, 828, 224, 16]
+    content:
+      fontFamily: "思源宋体"
+      fontSize: 9
+      color: "#FFFFFFB3"
+      letterSpacing: 3
+      align: [center, middle]
+      wrap: false
+      text: "WHOLE BOOK · TRANSLATED"
+  - elementId: formats
+    elementType: text
+    bounds: [206, 866, 460, 18]
+    content:
+      fontFamily: "思源宋体"
+      fontSize: 12
+      color: "$ink"
+      bold: true
+      letterSpacing: 2
+      align: [center, middle]
+      wrap: false
+      text: |
+        <p style="text-align:center">HTML<span style="color:$vermilion"> · </span>DOCX<span style="color:$vermilion"> · </span>EPUB<span style="color:$vermilion"> · </span>PDF</p>
+  - elementId: cmd-band
+    elementType: shape
+    bounds: [56, 896, 608, 38]
+    shapeName: roundRect
+    adjustments: [14000]
+    fill: {type: solid, color: "$ink"}
+  - elementId: cmd-text
+    elementType: text
+    bounds: [78, 896, 430, 38]
+    content:
+      style: "$cmd"
+      align: [left, middle]
+      wrap: false
+      text: "$ npx skills add deusyu/translate-book"
+  - elementId: cmd-note
+    elementType: text
+    bounds: [470, 896, 174, 38]
+    content:
+      fontFamily: "思源宋体"
+      fontSize: 9
+      color: "#F4EFE499"
+      letterSpacing: 1
+      align: [right, middle]
+      wrap: false
+      text: "one command · any agent"
+  - elementId: footer-left
+    elementType: text
+    bounds: [56, 942, 330, 14]
+    content:
+      fontFamily: {latin: "Oranienbaum", ea: "思源宋体"}
+      fontSize: 11
+      color: "$mute"
+      letterSpacing: 1
+      align: [left, middle]
+      wrap: false
+      text: "github.com/deusyu/translate-book"
+  - elementId: footer-right
+    elementType: text
+    bounds: [384, 942, 280, 14]
+    content:
+      fontFamily: {latin: "Oranienbaum", ea: "思源宋体"}
+      fontSize: 10
+      color: "$mute"
+      letterSpacing: 1
+      align: [right, middle]
+      wrap: false
+      text: "ZH · EN · JA · KO · FR · DE · ES — MIT"
