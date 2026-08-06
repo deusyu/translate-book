@@ -1,0 +1,56 @@
+version: v2
+title: translate-book · 一整本书,并行翻译
+size: [720, 960]
+theme:
+  colors:
+    paper: "#F4EFE4"
+    ink: "#211B14"
+    vermilion: "#BF3A25"
+    vermDeep: "#8E2A17"
+    mute: "#857964"
+    faint: "#D9CFBA"
+    nodeFill: "#FBF8F0"
+    white: "#FFFFFF"
+  textStyles:
+    kicker:
+      fontFamily: {latin: "Oranienbaum", ea: "思源宋体"}
+      fontSize: 17
+      color: "$vermilion"
+      letterSpacing: 5
+    titleZh:
+      fontFamily: "思源宋体"
+      fontSize: 46
+      color: "$ink"
+      bold: true
+      letterSpacing: 2
+    desc:
+      fontFamily: "思源宋体"
+      fontSize: 13
+      color: "$mute"
+      lineHeight: 1.8
+    railNum:
+      fontFamily: {latin: "Oranienbaum", ea: "思源宋体"}
+      fontSize: 20
+      color: "$vermilion"
+    railHead:
+      fontFamily: "思源宋体"
+      fontSize: 14
+      color: "$ink"
+      bold: true
+      letterSpacing: 1
+    railBody:
+      fontFamily: "思源宋体"
+      fontSize: 10
+      color: "$mute"
+      lineHeight: 1.6
+    microCaps:
+      fontFamily: "思源宋体"
+      fontSize: 9
+      color: "$mute"
+      letterSpacing: 2.5
+    cmd:
+      fontFamily: "MiSans"
+      fontSize: 15
+      color: "$paper"
+pages:
+  - pages/poster.page
