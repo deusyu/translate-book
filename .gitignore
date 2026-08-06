@@ -16,6 +16,10 @@ __pycache__/
 # Calibre intermediates
 *.htmlz
 
+# Poster build outputs (regenerate from assets/poster/*.pptd via open-kimi-ppt skill)
+assets/poster/.qa-images/
+assets/poster/*.pptx
+
 # Local AI agent / tooling configs and caches
 .agents/
 .claude/*

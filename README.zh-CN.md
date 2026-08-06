@@ -4,6 +4,10 @@
 
 面向 Codex、Claude Code 和 OpenClaw 的 Agent Skill，使用并行 subagent 将整本书（PDF/DOCX/EPUB）翻译成任意语言。
 
+<p align="center">
+  <img src="assets/poster/translate-book-poster.jpg" alt="translate-book 项目海报——一整本书,并行翻译:拆块后由 8 个并行子代理同时翻译,校验合并成完整译本" width="480">
+</p>
+
 > 本项目受 [claude_translater](https://github.com/wizlijun/claude_translater) 启发。原项目以 shell 脚本为入口，配合 Claude CLI 和多个步骤脚本完成分块翻译；本项目则将流程重构为可在 Codex、Claude Code 和 OpenClaw 中使用的 Agent Skill，使用 subagent 按 chunk 并行翻译，并引入 manifest 驱动的完整性校验，将续跑和多格式输出整合为更统一的流水线。由于项目结构和实现方式均与原项目不同，本项目为独立实现，而非 fork。
 
 ---
