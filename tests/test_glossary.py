@@ -661,7 +661,7 @@ class FormatTermsForPromptTests(unittest.TestCase):
     def test_renders_three_col_table(self):
         terms = [{'source': 'Manhattan', 'target': '曼哈顿'}]
         out = glossary.format_terms_for_prompt(terms)
-        self.assertIn('| 原文 | 别名 | 译文 |', out)
+        self.assertIn('| Source | Aliases | Translation |', out)
         self.assertIn('| Manhattan |  | 曼哈顿 |', out)
 
     def test_renders_aliases_joined_with_comma(self):

@@ -77,7 +77,7 @@ def term_hash(term):
     """SHA-256 of a single term's prompt-affecting fields.
 
     Aliases participate because they are injected into the per-chunk term
-    table (别名 column): adding or editing an alias changes the prompt
+    table (Aliases column): adding or editing an alias changes the prompt
     contract for chunks that already selected this term, so run_state must
     see a different hash and plan a re-translation. The alias segment is
     appended only when aliases exist, so alias-less terms keep their
@@ -510,15 +510,15 @@ def select_terms_for_chunk(glossary, chunk_text, top_n=None, max_terms=DEFAULT_M
 
 
 def format_terms_for_prompt(terms):
-    """Render a 3-col markdown table: 原文 | 别名 | 译文.
+    """Render a 3-col markdown table: Source | Aliases | Translation.
 
     Empty input yields empty string so the caller can omit the rule line
-    entirely. The 别名 column is empty for terms without aliases. Pipes in
+    entirely. The Aliases column is empty for terms without aliases. Pipes in
     any field escape to \\|.
     """
     if not terms:
         return ''
-    rows = ['| 原文 | 别名 | 译文 |', '|------|------|------|']
+    rows = ['| Source | Aliases | Translation |', '|--------|---------|-------------|']
     for t in terms:
         source = t.get('source', '').replace('|', '\\|')
         aliases = t.get('aliases', []) or []

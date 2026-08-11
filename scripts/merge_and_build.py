@@ -189,6 +189,13 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 # =============================================================================
 
 LANG_CONFIG = {
+    'vi': {
+        'lang_attr': 'vi',
+        'font_family': "'Times New Roman', 'Noto Serif', 'DejaVu Serif', serif",
+        'font_family_ebook': '"Times New Roman", "Noto Serif", "DejaVu Serif", serif',
+        'toc_label': 'Mục lục',
+        'pdf_font': 'Times New Roman',
+    },
     'zh': {
         'lang_attr': 'zh-CN',
         'font_family': "'FangSong', '仿宋', 'STFangSong', '华文仿宋', serif",
@@ -240,7 +247,10 @@ LANG_CONFIG = {
     },
 }
 
-# Default fallback for unknown languages
+# Default fallback for unknown languages. Stays 'en' on purpose: when the
+# language is unknown we must not guess a script or a font with limited glyph
+# coverage. This is NOT the pipeline default language — 'vi' is, and it has its
+# own LANG_CONFIG entry above, so it never falls through to here.
 _DEFAULT_LANG_CONFIG = {
     'lang_attr': 'en',
     'font_family': "Georgia, 'Times New Roman', Times, serif",
@@ -1058,7 +1068,7 @@ def main():
     # Load config as base, CLI args override
     config = load_config(temp_dir)
 
-    lang_code = args.lang or config.get('output_lang', 'zh')
+    lang_code = args.lang or config.get('output_lang', 'vi')
     lang_cfg = get_lang_config(lang_code)
 
     title = args.title or config.get('original_title', 'Translated Book')

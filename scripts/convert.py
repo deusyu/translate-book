@@ -807,12 +807,12 @@ def _abort_on_strip_cache_conflict(blockers, temp_dir):
     sys.exit(1)
 
 
-def main():
-    """Main conversion function"""
+def build_arg_parser():
+    """Build the CLI parser. Split out of main() so defaults are testable."""
     parser = argparse.ArgumentParser(description="Convert PDF/DOCX/EPUB to markdown chunks via HTMLZ")
     parser.add_argument("input_file", help="Input file (PDF, DOCX, or EPUB)")
     parser.add_argument("-l", "--ilang", default="auto", help="Input language (default: auto)")
-    parser.add_argument("--olang", default="zh", help="Output language (default: zh)")
+    parser.add_argument("--olang", default="vi", help="Output language (default: vi)")
     parser.add_argument("--chunk-size", type=int, default=6000, help="Target chunk size in characters (default: 6000)")
     parser.add_argument(
         "--temp-root",
@@ -825,8 +825,12 @@ def main():
         help="Aggressively delete every standalone-digit line (legacy behavior). "
              "Default is off: standalone digits are preserved unless adjacent to Calibre noise.",
     )
+    return parser
 
-    args = parser.parse_args()
+
+def main():
+    """Main conversion function"""
+    args = build_arg_parser().parse_args()
     input_file = args.input_file
 
     if not os.path.exists(input_file):

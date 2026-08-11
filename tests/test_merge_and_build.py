@@ -35,7 +35,7 @@ class GenerateFormatTests(unittest.TestCase):
 
             with mock.patch.object(merge_and_build.subprocess, "run") as run_mock:
                 result = merge_and_build.generate_format(
-                    html_file, temp_dir, ".epub", "zh-CN"
+                    html_file, temp_dir, ".epub", "vi"
                 )
 
             self.assertEqual(result, output_file)
@@ -97,7 +97,7 @@ class GenerateFormatTests(unittest.TestCase):
                 return_value=SimpleNamespace(stdout="", stderr=""),
             ) as run_mock:
                 result = merge_and_build.generate_format(
-                    html_file, temp_dir, ".epub", "zh-CN", cover=cover_file
+                    html_file, temp_dir, ".epub", "vi", cover=cover_file
                 )
 
             self.assertEqual(result, output_file)
@@ -539,6 +539,60 @@ class ImageValidationTests(unittest.TestCase):
 
             sanity_ok, sanity_out = self._run_html_sanity(str(html_file))
             self.assertTrue(sanity_ok, msg=sanity_out)
+
+
+class LangConfigTests(unittest.TestCase):
+    def test_vietnamese_config(self):
+        cfg = merge_and_build.get_lang_config("vi")
+
+        self.assertEqual(cfg["lang_attr"], "vi")
+        self.assertEqual(cfg["toc_label"], "Mục lục")
+        # Noto Serif carries full Vietnamese diacritic coverage and is the
+        # realistic fallback on Linux, where Times New Roman is often absent.
+        self.assertIn("Noto Serif", cfg["font_family"])
+        self.assertIn("Noto Serif", cfg["font_family_ebook"])
+
+    def test_chinese_config_unchanged(self):
+        cfg = merge_and_build.get_lang_config("zh")
+
+        self.assertEqual(cfg["lang_attr"], "zh-CN")
+        self.assertEqual(cfg["toc_label"], "目录")
+
+    def test_unknown_language_falls_back_to_english(self):
+        cfg = merge_and_build.get_lang_config("xx")
+
+        self.assertEqual(cfg["lang_attr"], "en")
+        self.assertEqual(cfg["toc_label"], "Contents")
+
+    def test_vietnamese_does_not_hit_the_fallback(self):
+        self.assertIn("vi", merge_and_build.LANG_CONFIG)
+        self.assertIsNot(
+            merge_and_build.get_lang_config("vi"),
+            merge_and_build._DEFAULT_LANG_CONFIG,
+        )
+
+
+class DefaultOutputLangTests(unittest.TestCase):
+    def test_main_defaults_to_vietnamese_when_config_has_no_output_lang(self):
+        recorded = {}
+
+        def fake_get_lang_config(lang_code):
+            recorded["lang_code"] = lang_code
+            return merge_and_build.LANG_CONFIG["vi"]
+
+        with tempfile.TemporaryDirectory() as temp_dir, mock.patch.object(
+            merge_and_build, "load_config", return_value={}
+        ), mock.patch.object(
+            merge_and_build, "get_lang_config", side_effect=fake_get_lang_config
+        ), mock.patch.object(
+            merge_and_build, "merge_markdown_files", return_value=False
+        ), mock.patch.object(
+            sys, "argv", ["merge_and_build.py", "--temp-dir", temp_dir]
+        ):
+            with contextlib.suppress(SystemExit), contextlib.redirect_stdout(io.StringIO()):
+                merge_and_build.main()
+
+        self.assertEqual(recorded.get("lang_code"), "vi")
 
 
 if __name__ == "__main__":

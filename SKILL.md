@@ -1,6 +1,6 @@
 ---
 name: translate-book
-description: Translate books (PDF/DOCX/EPUB) into any language using parallel sub-agents. Converts input -> Markdown chunks -> translated chunks -> HTML/DOCX/EPUB/PDF.
+description: Translate books (PDF/DOCX/EPUB) into any language — Vietnamese by default — using parallel sub-agents. Converts input -> Markdown chunks -> translated chunks -> HTML/DOCX/EPUB/PDF.
 allowed-tools: Read, Write, Edit, Bash, Glob, Grep, Agent, AskUserQuestion
 metadata: {"openclaw":{"requires":{"bins":["python3","pandoc","ebook-convert"],"anyBins":["calibre","ebook-convert"]},"homepage":"https://github.com/deusyu/translate-book"}}
 ---
@@ -15,7 +15,7 @@ You are a book translation assistant. You translate entire books from one langua
 
 Determine the following from the user's message:
 - **file_path**: Path to the input file (PDF, DOCX, or EPUB) — REQUIRED
-- **target_lang**: Target language code (default: `zh`) — e.g. zh, en, ja, ko, fr, de, es
+- **target_lang**: Target language code (default: `vi`) — e.g. vi, zh, en, ja, ko, fr, de, es
 - **concurrency**: Number of parallel sub-agents per batch (default: `8`)
 - **temp_root**: Optional directory under which `{filename}_temp/` should be created
 - **epub_cover**: Optional explicit cover image path for EPUB output
@@ -69,13 +69,15 @@ Otherwise:
 
 1. **Sample chunks**: read `chunk0001.md`, the last chunk, and 3 evenly-spaced middle chunks. If `chunk_count < 5`, sample all of them.
 2. **Extract terms**: from the samples, identify proper nouns and recurring domain terms that need consistent translation across the book — typically people, places, organizations, technical concepts. Translate each into the target language. Skip generic vocabulary that any translator would render the same way.
+
+   **For `target_lang == vi`, proper nouns default to their source form**: set `target` equal to `source` for names of people, places, organizations, and brands. Record a different `target` only when a conventional Vietnamese form is well established (`London` → `Luân Đôn`, `Russia` → `Nga`). Do **not** invent a transliteration. Keeping the identity row in the glossary is the point: the `target` column is the anchor that stops individual sub-agents from each inventing their own spelling of the same name.
 3. **Write `glossary.json`** in the temp dir, matching this v2 schema:
 
    ```json
    {
      "version": 2,
      "terms": [
-       {"id": "Manhattan", "source": "Manhattan", "target": "曼哈顿",
+       {"id": "Manhattan", "source": "Manhattan", "target": "Manhattan",
         "category": "place", "aliases": [], "gender": "unknown",
         "confidence": "medium", "frequency": 0,
         "evidence_refs": [], "notes": ""}
@@ -158,7 +160,7 @@ Each sub-agent receives:
 python3 {baseDir}/scripts/glossary.py print-terms-for-chunk "<temp_dir>" "chunk<NNNN>.md"
 ```
 
-Capture stdout. The CLI emits a 3-column markdown table (`原文 | 别名 | 译文`) of every term that either appears in this chunk (by source OR any alias) OR is in the top-N most-frequent terms book-wide. Inject the table as `{TERM_TABLE}` in rule #13 of the translation prompt. **If stdout is empty (no glossary, or no relevant terms), omit rule #13 from this chunk's prompt entirely** — do not leave a dangling `{TERM_TABLE}` placeholder.
+Capture stdout. The CLI emits a 3-column markdown table (`Source | Aliases | Translation`) of every term that either appears in this chunk (by source OR any alias) OR is in the top-N most-frequent terms book-wide. Inject the table as `{TERM_TABLE}` in rule #13 of the translation prompt. **If stdout is empty (no glossary, or no relevant terms), omit rule #13 from this chunk's prompt entirely** — do not leave a dangling `{TERM_TABLE}` placeholder.
 
 **Neighbor context assembly** — before spawning a sub-agent, run:
 
@@ -212,7 +214,91 @@ The meta file is read by the main agent later and merged into `glossary.json` (s
 
 #### Translation Prompt for Sub-Agents
 
-Include this translation prompt in each sub-agent's instructions (replace `{TARGET_LANGUAGE}` with the actual language name, e.g. "Chinese"):
+Two prompts are maintained. **Route by `target_lang`:**
+
+- `target_lang == zh` → use the **Chinese prompt**.
+- **every other `target_lang`, including the default `vi`** → use the **English prompt**.
+
+In either case, replace `{TARGET_LANGUAGE}` with the actual language name (e.g. "Vietnamese", "Chinese", "Japanese").
+
+When `target_lang == vi`, append the **Vietnamese style rules** block to the English prompt (it is rule #14; skip it for every other language).
+
+##### Translation Prompt (English — default)
+
+---
+
+Translate this markdown file into {TARGET_LANGUAGE}.
+IMPORTANT REQUIREMENTS:
+1. Preserve the Markdown formatting exactly — headings, links, image references, and everything else.
+2. Translate the text content only. Keep all Markdown syntax and all filenames as they are.
+3. Remove empty links, stray characters, and artifacts such as a trailing `\\` at end of line. Page numbers were already handled upstream by convert.py — do **not** delete standalone number lines (they may be body content: a year like 1984, a chapter number, a citation number, etc.).
+4. Keep the formatting and the meaning accurate; the translation must read naturally.
+5. Output the translated body content only — no explanations, no notes, no commentary, no conversation.
+6. Express things clearly and concisely; avoid convoluted sentence structures. Translate strictly in order and do not skip any content.
+7. All image references MUST be preserved:
+   - Every `![alt](path)` image reference must be kept intact
+   - Do not modify image filenames or paths (e.g. `media/image-001.png`)
+   - Image alt text may be translated, but the image reference structure must be preserved
+   - Do not delete, filter, or ignore any image-related content
+   - Example: `![Figure 1: Data Flow](media/image-001.png)` -> `![Hình 1: Luồng dữ liệu](media/image-001.png)`
+   - **Raw HTML tags (e.g. `<img alt="..." />`, `<a title="...">`) must stay well-formed**: when translating the text inside attribute values such as `alt` or `title`, the characters below would break the HTML structure and must be replaced with a safe form (this applies **only inside raw HTML tag attribute values** — do not proactively escape anything in ordinary Markdown body text, code blocks, or URLs):
+
+     | Character | Risk inside an attribute value | Replace with |
+     |-----------|-------------------------------|--------------|
+     | `"` | Closes `attr="..."` | Curly quotes appropriate to the target language (e.g. `“` `”`) or `&quot;` |
+     | `'` | Closes `attr='...'` | Curly quotes appropriate to the target language (e.g. `‘` `’`) or `&#39;` |
+     | `<` | Parsed as a new tag | `&lt;` |
+     | `>` | Parsed as a tag close | `&gt;` |
+     | `&` | Parsed as the start of an entity (unless already `&xxx;`) | `&amp;` |
+
+     Do not modify the values of structural attributes such as `src` or `href` — translate only the visible text attributes (`alt`, `title`).
+
+     - Wrong: `alt="Alice cầm chai dán nhãn "Uống tôi đi""` ← the inner `"` breaks out of the outer alt attribute
+     - Right: `alt="Alice cầm chai dán nhãn “Uống tôi đi”"` or `alt="Alice cầm chai dán nhãn &quot;Uống tôi đi&quot;"`
+8. Intelligently recognize and handle multi-level headings, adding markdown markers per these rules:
+   - Main title (book title, chapter name, etc.) uses `#`
+   - Level-1 heading (major section) uses `##`
+   - Level-2 heading (subsection) uses `###`
+   - Level-3 heading (sub-subsection) uses `####`
+   - Level-4 and below use `#####`
+9. Heading recognition rules:
+   - Short text standing on its own line (usually under 50 characters)
+   - Summarizing or generalizing statements
+   - Text that separates and organizes the document structure
+   - Text with a noticeably different font size or special formatting
+   - Section text starting with a number (e.g. "1.1 Overview", "Chapter Three")
+10. Judging heading level:
+    - Judge the level from context and the importance of the content
+    - Chapter-type headings are usually high level (`#` or `##`)
+    - Sections and subsections step down accordingly (`###`, `####`, `#####`)
+    - Keep heading levels consistent within the same document
+11. Cautions:
+    - Do not over-apply heading markers — mark only text that is genuinely a heading
+    - Do not add heading markers to body paragraphs
+    - If the source already has markdown heading markers, preserve their level structure
+12. {CUSTOM_INSTRUCTIONS if provided}
+13. Term consistency: the terms below MUST use exactly the specified translation — do not vary them on your own. Whenever a form from the "Source" column **or** the "Aliases" column appears in the text, it must be translated as the corresponding "Translation" column form.
+
+{TERM_TABLE}
+
+Neighbor context (read-only — do NOT translate it, do NOT write it into the output; use it only to resolve pronouns, gender, aliases, and cross-chunk references. Omitted when empty):
+
+{NEIGHBOR_CONTEXT}
+
+Markdown file body:
+
+---
+
+###### Vietnamese style rules (append as rule #14 when `target_lang == vi`)
+
+14. Vietnamese style rules:
+    - **Proper nouns keep their original Latin form.** Names of people, places, organizations, and brands — `Sherlock Holmes`, `Manhattan`, `Google` — are neither transliterated nor translated. Translate one only when a conventional Vietnamese form is well established (`London` → `Luân Đôn`, `Russia` → `Nga`) or when the term table specifies one. When in doubt, keep the source form.
+    - **Always write full tone marks and diacritics.** Never emit unaccented Vietnamese text.
+    - **Consistent forms of address (xưng hô).** Choose a pronoun pair that fits the characters' relationship and social distance, and hold it throughout. When the current chunk lacks the evidence, use `{NEIGHBOR_CONTEXT}` to infer gender and relative status.
+    - **Vietnamese punctuation.** Use `“ ”` or `« »` for dialogue, following the source text's own convention. **Never** use the CJK book-title marks `《》`, and never use CJK full-width punctuation.
+    - **Natural prose.** Prefer idiomatic Vietnamese sentences over word-by-word tracking of the source structure.
+
+##### Translation Prompt (Chinese — `target_lang == zh` only)
 
 ---
 
@@ -266,7 +352,7 @@ IMPORTANT REQUIREMENTS:
     - 正文段落不要添加标题标记
     - 如果原文已有markdown标题标记，保持其层级结构
 12. {CUSTOM_INSTRUCTIONS if provided}
-13. 术语一致性：以下术语必须严格使用指定译法，不要自行变换。表格中"原文"列**或"别名"列**任一形式出现在正文中时，都必须翻译为"译文"列对应的形式。
+13. 术语一致性：以下术语必须严格使用指定译法，不要自行变换。表格中 "Source" 列**或 "Aliases" 列**任一形式出现在正文中时，都必须翻译为 "Translation" 列对应的形式。
 
 {TERM_TABLE}
 
@@ -374,7 +460,11 @@ Report any chunks that failed translation after retry.
 
 Read `config.txt` from the temp directory to get the `original_title` field.
 
-Translate the title to the target language. For Chinese, wrap in 书名号: `《translated_title》`.
+Translate the title to the target language, following the target language's own convention:
+
+- `vi` — leave the title bare, with no wrapping marks. Capitalize per Vietnamese convention: the first word and proper nouns only, **not** English-style title case.
+- `zh` — wrap in 书名号: `《translated_title》`.
+- any other language — leave the title bare unless that language has an established title convention.
 
 ### 7. Post-process — Merge and Build
 

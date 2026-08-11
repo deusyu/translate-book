@@ -136,7 +136,7 @@ class RunStateTests(unittest.TestCase):
     def test_alias_change_on_selected_term_needs_translation(self):
         # chunk0001 contains the source "Tai", so the term is already selected
         # before AND after the alias edit — selection alone cannot detect the
-        # change. The injected term table's 别名 column changed, so term_hash
+        # change. The injected term table's Aliases column changed, so term_hash
         # must flag the chunk for re-translation.
         tmp, temp_dir = self._workspace()
         with tmp:

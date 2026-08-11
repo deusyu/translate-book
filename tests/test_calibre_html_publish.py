@@ -86,5 +86,48 @@ class ConvertHtmlWithCalibreTests(unittest.TestCase):
             self.assertIn(str(cover_file), cmd)
 
 
+class LanguageFontTests(unittest.TestCase):
+    def test_vietnamese_font_family(self):
+        family = calibre_html_publish._get_font_family_for_lang("vi")
+
+        self.assertIn("Times New Roman", family)
+        self.assertIn("Noto Serif", family)
+        self.assertIn("DejaVu Serif", family)
+
+    def test_vietnamese_pdf_font(self):
+        self.assertEqual(calibre_html_publish._get_pdf_font_for_lang("vi"), "Times New Roman")
+
+    def test_vietnamese_matching_is_case_insensitive(self):
+        self.assertEqual(
+            calibre_html_publish._get_font_family_for_lang("VI"),
+            calibre_html_publish._get_font_family_for_lang("vi"),
+        )
+
+    def test_vietnamese_does_not_fall_through_to_generic_default(self):
+        self.assertNotEqual(
+            calibre_html_publish._get_font_family_for_lang("vi"),
+            calibre_html_publish._get_font_family_for_lang("xx"),
+        )
+        self.assertNotEqual(
+            calibre_html_publish._get_pdf_font_for_lang("vi"),
+            calibre_html_publish._get_pdf_font_for_lang("xx"),
+        )
+
+    def test_other_languages_unchanged(self):
+        self.assertEqual(calibre_html_publish._get_pdf_font_for_lang("zh-CN"), "FangSong")
+        self.assertEqual(calibre_html_publish._get_pdf_font_for_lang("ko"), "Nanum Myeongjo")
+        self.assertEqual(calibre_html_publish._get_pdf_font_for_lang("xx"), "Georgia")
+
+    def test_cli_lang_default_is_vietnamese(self):
+        # Callers may invoke the CLI without --lang, so the parser default is
+        # what lands in the exported metadata.
+        args = calibre_html_publish.build_arg_parser().parse_args(["in.html", "-o", "out.epub"])
+        self.assertEqual(args.lang, "vi")
+
+    def test_default_lang_resolves_to_the_vietnamese_font_stack(self):
+        args = calibre_html_publish.build_arg_parser().parse_args(["in.html", "-o", "out.epub"])
+        self.assertIn("Noto Serif", calibre_html_publish._get_font_family_for_lang(args.lang))
+
+
 if __name__ == "__main__":
     unittest.main()

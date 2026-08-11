@@ -459,5 +459,24 @@ class SourceFingerprintCacheTests(unittest.TestCase):
         self.assertEqual(status, "adopt")
 
 
+class DefaultOutputLangTests(unittest.TestCase):
+    def test_olang_defaults_to_vietnamese(self):
+        args = convert.build_arg_parser().parse_args(["book.pdf"])
+        self.assertEqual(args.olang, "vi")
+
+    def test_explicit_olang_still_wins(self):
+        args = convert.build_arg_parser().parse_args(["book.pdf", "--olang", "zh"])
+        self.assertEqual(args.olang, "zh")
+
+    def test_config_file_records_the_default_output_lang(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            args = convert.build_arg_parser().parse_args(["book.pdf"])
+            convert.create_config_file(temp_dir, "book.pdf", args.ilang, args.olang)
+
+            config_text = Path(temp_dir, "config.txt").read_text(encoding="utf-8")
+
+        self.assertIn("output_lang=vi", config_text)
+
+
 if __name__ == "__main__":
     unittest.main()

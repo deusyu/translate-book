@@ -44,7 +44,7 @@ Calibre ebook-convert → HTMLZ → HTML → Markdown
 - **Manifest 校验** — SHA-256 hash 追踪，防止过时或损坏的输出被合并
 - **多格式输出** — HTML（含浮动目录）、DOCX、EPUB、PDF
 - **可选输出控制** — 显式 EPUB 封面、自定义 temp root、面向用户的导出别名
-- **多语言** — zh、en、ja、ko、fr、de、es（可扩展）
+- **多语言** — vi（默认）、zh、en、ja、ko、fr、de、es（可扩展）
 - **多格式输入** — PDF/DOCX/EPUB，Calibre 负责格式转换
 
 ## 前置要求
@@ -101,7 +101,7 @@ openclaw skills install @deusyu/translate-book
 在 Codex CLI 或 IDE 扩展中输入：
 
 ```text
-$translate-book Translate /path/to/book.pdf into Chinese.
+$translate-book Translate /path/to/book.pdf into Vietnamese.
 ```
 
 当请求与 Skill 描述匹配时，Codex 也可以自动选择该 Skill。
@@ -111,7 +111,7 @@ $translate-book Translate /path/to/book.pdf into Chinese.
 直接告诉 Agent：
 
 ```text
-translate /path/to/book.pdf to Chinese
+translate /path/to/book.pdf to Vietnamese
 ```
 
 在 Claude Code 中也可以使用斜杠命令：
@@ -145,7 +145,7 @@ Skill 自动处理完整流程 — 转换、拆分、并行翻译、校验、合
 ```bash
 mkdir -p tests/.artifacts
 cd tests/.artifacts
-python3 ../../scripts/convert.py ../baselines/standard-alice/standard-alice.epub --olang zh
+python3 ../../scripts/convert.py ../baselines/standard-alice/standard-alice.epub --olang vi
 # 然后通过 skill 完成翻译
 python3 ../../scripts/merge_and_build.py --temp-dir standard-alice_temp --title "test"
 ```
@@ -168,7 +168,7 @@ Pull request 不是首选贡献入口，可能会被关闭并转为 issue 继续
 ### 第一步：转换
 
 ```bash
-python3 scripts/convert.py /path/to/book.pdf --olang zh
+python3 scripts/convert.py /path/to/book.pdf --olang vi
 ```
 
 Calibre 将输入文件转为 HTMLZ，解压后转为 Markdown，再拆分为 chunk（每个约 6000 字符）。`manifest.json` 记录每个源 chunk 的 SHA-256 hash，用于后续校验；`source_fingerprint.json` 则把 temp 目录与生成它的源文件字节绑定 — 若源文件被替换后重跑，会直接报错中止，而不是静默复用过时的 chunk。指纹机制之前创建的 temp 目录会在首次重跑时打印警告并被接管。
@@ -183,7 +183,7 @@ Calibre 将输入文件转为 HTMLZ，解压后转为 Markdown，再拆分为 ch
 2. 提取专有名词和反复出现的领域术语，给每个术语确定一个标准译法。
 3. 写入 `<temp_dir>/glossary.json`（schema 见下，可手动编辑）。
 4. 运行 `python3 scripts/glossary.py count-frequencies <temp_dir>`，统计每个术语在全书的出现次数（ASCII 术语用单词边界正则，避免 `cat` 误匹配 `category`；中日韩术语用子串匹配；单字汉字术语会被拒绝以防过度匹配；别名也计入所属术语的频次）。
-5. 翻译每个 chunk 之前，主 agent 调用 `python3 scripts/glossary.py print-terms-for-chunk <temp_dir> chunkNNNN.md`，将输出的 3 列（`原文 | 别名 | 译文`）markdown 表格作为硬性约束注入到该 chunk 的 prompt。术语选取 = (本 chunk 中出现原文或任一别名的术语) ∪ (全书出现频率 top-N 的术语)。
+5. 翻译每个 chunk 之前，主 agent 调用 `python3 scripts/glossary.py print-terms-for-chunk <temp_dir> chunkNNNN.md`，将输出的 3 列（`Source | Aliases | Translation`）markdown 表格作为硬性约束注入到该 chunk 的 prompt。术语选取 = (本 chunk 中出现原文或任一别名的术语) ∪ (全书出现频率 top-N 的术语)。
 
 ```json
 {

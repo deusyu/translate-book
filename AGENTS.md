@@ -25,7 +25,7 @@ Use a small file for quick checks, or the checked-in baseline book for the repos
 Quick smoke test:
 
 ```bash
-python3 scripts/convert.py /path/to/small.pdf --olang zh
+python3 scripts/convert.py /path/to/small.pdf --olang vi
 # then run translation via the skill
 python3 scripts/merge_and_build.py --temp-dir <name>_temp --title "test"
 ```
@@ -35,7 +35,7 @@ Full baseline test:
 ```bash
 mkdir -p tests/.artifacts
 cd tests/.artifacts
-python3 ../../scripts/convert.py ../baselines/standard-alice/standard-alice.epub --olang zh
+python3 ../../scripts/convert.py ../baselines/standard-alice/standard-alice.epub --olang vi
 # then run translation via the skill
 python3 ../../scripts/merge_and_build.py --temp-dir standard-alice_temp --title "test"
 ```
@@ -49,6 +49,13 @@ Verify: all output_chunk*.md files exist, manifest validation passes, output for
 - Script paths in SKILL.md use `{baseDir}` not hardcoded paths
 - Subagent instructions in SKILL.md must be platform-neutral (work on Codex, OpenClaw, Codex)
 - Checked-in baseline inputs live under `tests/baselines/<book-id>/`; generated full-pipeline outputs live under `tests/.artifacts/`
+- This fork's default target language is `vi` (Vietnamese), not `zh` — it is the
+  default in `convert.py --olang`, `merge_and_build.py`'s `output_lang` fallback,
+  `calibre_html_publish.py --lang`, and SKILL.md's `target_lang`. Do not "fix" it
+  back to `zh`; other languages including `zh` remain fully supported
+- Sub-agents get the English translation prompt for every language except `zh`,
+  which keeps the original Chinese prompt. The `vi` path appends a Vietnamese
+  style block (proper nouns keep their Latin form, full diacritics, no 书名号)
 - README changes must be synced to both README.md and README.zh-CN.md
 - Releases follow `.claude/commands/release.md` — three commands in order: `git push origin main`, `git tag vX.Y.Z && git push --tags`, `npx clawhub@latest publish ./ --version X.Y.Z`. Do not skip the git tag; it's the only version anchor in the repo
 
@@ -78,7 +85,7 @@ Run from `tests/.artifacts/` to keep generated files out of the repo root:
 
 ```bash
 mkdir -p tests/.artifacts && cd tests/.artifacts
-python3 ../../scripts/convert.py ../baselines/standard-alice/standard-alice.epub --olang zh
+python3 ../../scripts/convert.py ../baselines/standard-alice/standard-alice.epub --olang vi
 # Create mock output_chunk*.md files (copy source chunks) since actual translation requires LLM subagents
 for f in standard-alice_temp/chunk*.md; do cp "$f" "standard-alice_temp/output_$(basename $f)"; done
 python3 ../../scripts/merge_and_build.py --temp-dir standard-alice_temp --title "test"

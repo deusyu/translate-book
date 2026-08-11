@@ -68,7 +68,9 @@ def extract_html_metadata(html_file):
 def _get_font_family_for_lang(lang):
     """Get appropriate font family CSS for the given language."""
     lang_lower = lang.lower()
-    if lang_lower.startswith('zh'):
+    if lang_lower.startswith('vi'):
+        return '"Times New Roman", "Noto Serif", "DejaVu Serif", serif'
+    elif lang_lower.startswith('zh'):
         return '"FangSong", "FangSong_GB2312", "仿宋", "仿宋_GB2312", "STFangSong", "SimSun", serif'
     elif lang_lower.startswith('ja'):
         return '"Hiragino Mincho ProN", "Yu Mincho", "MS Mincho", serif'
@@ -81,7 +83,9 @@ def _get_font_family_for_lang(lang):
 def _get_pdf_font_for_lang(lang):
     """Get PDF font name for the given language."""
     lang_lower = lang.lower()
-    if lang_lower.startswith('zh'):
+    if lang_lower.startswith('vi'):
+        return 'Times New Roman'
+    elif lang_lower.startswith('zh'):
         return 'FangSong'
     elif lang_lower.startswith('ja'):
         return 'Hiragino Mincho ProN'
@@ -91,7 +95,7 @@ def _get_pdf_font_for_lang(lang):
         return 'Georgia'
 
 
-def prepare_html_for_conversion(input_html, temp_dir, lang="zh-CN"):
+def prepare_html_for_conversion(input_html, temp_dir, lang="vi"):
     """Prepare HTML file for conversion with font styling"""
 
     # Create working copy
@@ -206,7 +210,7 @@ def get_output_format(output_file):
     }
     return format_map.get(ext)
 
-def convert_html_with_calibre(html_file, output_file, format_type, timeout=600, lang="zh-CN", cover=None):
+def convert_html_with_calibre(html_file, output_file, format_type, timeout=600, lang="vi", cover=None):
     """Convert HTML to specified format using Calibre with timeout protection"""
     
     calibre_path = find_calibre_convert()
@@ -278,20 +282,25 @@ def convert_html_with_calibre(html_file, output_file, format_type, timeout=600, 
         print(f"ERROR: Conversion error: {e}")
         return False
 
-def main():
-    """Main function"""
+def build_arg_parser():
+    """Build the CLI parser. Split out of main() so defaults are testable."""
     parser = argparse.ArgumentParser(description='Convert HTML to DOCX/EPUB/PDF using Calibre')
     parser.add_argument('input_html', help='Input HTML file')
     parser.add_argument('-o', '--output', required=True, help='Output file (.docx, .epub, or .pdf)')
     parser.add_argument('-t', '--timeout', type=int, default=600,
                        help='Conversion timeout in seconds (default: 600)')
-    parser.add_argument('--lang', default='zh-CN',
-                       help='Language code for output metadata (default: zh-CN)')
+    parser.add_argument('--lang', default='vi',
+                       help='Language code for output metadata (default: vi)')
     parser.add_argument('--cover', default=None,
                        help='Cover image path for EPUB output')
-    
-    args = parser.parse_args()
-    
+
+    return parser
+
+
+def main():
+    """Main function"""
+    args = build_arg_parser().parse_args()
+
     input_html = args.input_html
     output_file = args.output
     

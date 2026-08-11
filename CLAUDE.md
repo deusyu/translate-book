@@ -23,7 +23,7 @@ translate-book is a Claude Code Skill that translates books (PDF/DOCX/EPUB) into
 Test with a small PDF to verify the full pipeline:
 
 ```bash
-python3 scripts/convert.py /path/to/small.pdf --olang zh
+python3 scripts/convert.py /path/to/small.pdf --olang vi
 # then run translation via the skill
 python3 scripts/merge_and_build.py --temp-dir <name>_temp --title "test"
 ```
@@ -37,6 +37,13 @@ Verify: all output_chunk*.md files exist, manifest validation passes, output for
 - SKILL.md frontmatter must stay single-line per field (OpenClaw parser requirement)
 - Script paths in SKILL.md use `{baseDir}` not hardcoded paths
 - Subagent instructions in SKILL.md must be platform-neutral (work on Claude Code, OpenClaw, Codex)
+- This fork's default target language is `vi` (Vietnamese), not `zh` — it is the
+  default in `convert.py --olang`, `merge_and_build.py`'s `output_lang` fallback,
+  `calibre_html_publish.py --lang`, and SKILL.md's `target_lang`. Do not "fix" it
+  back to `zh`; other languages including `zh` remain fully supported
+- Sub-agents get the English translation prompt for every language except `zh`,
+  which keeps the original Chinese prompt. The `vi` path appends a Vietnamese
+  style block (proper nouns keep their Latin form, full diacritics, no 书名号)
 - README changes must be synced to both README.md and README.zh-CN.md
 - Releases follow `.claude/commands/release.md` — three commands in order: `git push origin main`, `git tag vX.Y.Z && git push --tags`, `npx clawhub@latest publish ./ --version X.Y.Z`. Do not skip the git tag; it's the only version anchor in the repo
 

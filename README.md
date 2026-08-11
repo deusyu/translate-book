@@ -44,7 +44,7 @@ Each chunk gets its own independent subagent with a fresh context window. This p
 - **Manifest validation** — SHA-256 hash tracking prevents stale or corrupt outputs from being merged
 - **Multi-format output** — HTML (with floating TOC), DOCX, EPUB, PDF
 - **Optional output controls** — explicit EPUB cover, custom temp root, and user-facing export aliases
-- **Multi-language** — zh, en, ja, ko, fr, de, es (extensible)
+- **Multi-language** — vi (default), zh, en, ja, ko, fr, de, es (extensible)
 - **PDF/DOCX/EPUB input** — Calibre handles the conversion heavy lifting
 
 ## Prerequisites
@@ -101,7 +101,7 @@ openclaw skills install @deusyu/translate-book
 In the Codex CLI or IDE extension, enter:
 
 ```text
-$translate-book Translate /path/to/book.pdf into Chinese.
+$translate-book Translate /path/to/book.pdf into Vietnamese.
 ```
 
 Codex can also select the skill automatically when your request matches its description.
@@ -111,7 +111,7 @@ Codex can also select the skill automatically when your request matches its desc
 Ask the agent:
 
 ```text
-translate /path/to/book.pdf to Chinese
+translate /path/to/book.pdf to Vietnamese
 ```
 
 In Claude Code, you can also use the slash command:
@@ -145,7 +145,7 @@ All files are in `{book_name}_temp/`:
 ```bash
 mkdir -p tests/.artifacts
 cd tests/.artifacts
-python3 ../../scripts/convert.py ../baselines/standard-alice/standard-alice.epub --olang zh
+python3 ../../scripts/convert.py ../baselines/standard-alice/standard-alice.epub --olang vi
 # then run translation via the skill
 python3 ../../scripts/merge_and_build.py --temp-dir standard-alice_temp --title "test"
 ```
@@ -168,7 +168,7 @@ A useful issue should include:
 ### Step 1: Convert
 
 ```bash
-python3 scripts/convert.py /path/to/book.pdf --olang zh
+python3 scripts/convert.py /path/to/book.pdf --olang vi
 ```
 
 Calibre converts the input to HTMLZ, which is extracted and converted to Markdown, then split into chunks (~6000 chars each). A `manifest.json` records the SHA-256 hash of each source chunk for later validation, and a `source_fingerprint.json` ties the temp dir to the exact source bytes it was built from — re-running against a replaced source file aborts instead of silently reusing stale chunks. Temp dirs created before fingerprinting are adopted with a warning on first re-run.
@@ -183,7 +183,7 @@ Each chunk is translated by a fresh-context sub-agent, which means the same prop
 2. Extract proper nouns and recurring domain terms; pick canonical translations.
 3. Write `<temp_dir>/glossary.json` (hand-editable schema below).
 4. Run `python3 scripts/glossary.py count-frequencies <temp_dir>` to populate per-term frequencies (ASCII terms use word-boundary regex so `cat` doesn't match `category`; CJK terms use substring; single-CJK-char terms are rejected; aliases count toward the term they belong to).
-5. For each chunk, the orchestrator calls `python3 scripts/glossary.py print-terms-for-chunk <temp_dir> chunkNNNN.md` and injects the resulting 3-column (`原文 | 别名 | 译文`) markdown table into that chunk's prompt as a hard constraint. Term selection = (terms whose source OR any alias appears in this chunk) ∪ (top-N most-frequent book-wide).
+5. For each chunk, the orchestrator calls `python3 scripts/glossary.py print-terms-for-chunk <temp_dir> chunkNNNN.md` and injects the resulting 3-column (`Source | Aliases | Translation`) markdown table into that chunk's prompt as a hard constraint. Term selection = (terms whose source OR any alias appears in this chunk) ∪ (top-N most-frequent book-wide).
 
 ```json
 {
