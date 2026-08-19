@@ -315,7 +315,7 @@ Phase 1 让术语表按批次增长,因此第一批看到的术语表最小,drif
 
 如果这个项目对您有帮助，请考虑为其点亮一颗 Star ⭐！
 
-[![Star History Chart](https://api.star-history.com/svg?repos=deusyu/translate-book&type=Date)](https://star-history.com/#deusyu/translate-book&Date)
+[![Star History Chart](https://star-history.dera.page/svg?repos=deusyu/translate-book&type=Date)](https://star-history.dera.page/#deusyu/translate-book&Date)
 
 ## 赞助
 

@@ -315,7 +315,7 @@ Recent PR discussions also surfaced several useful workflow improvements, but th
 
 If you find this project helpful, please consider giving it a Star ⭐!
 
-[![Star History Chart](https://api.star-history.com/svg?repos=deusyu/translate-book&type=Date)](https://star-history.com/#deusyu/translate-book&Date)
+[![Star History Chart](https://star-history.dera.page/svg?repos=deusyu/translate-book&type=Date)](https://star-history.dera.page/#deusyu/translate-book&Date)
 
 ## Sponsor
 
