@@ -2,11 +2,11 @@
 
 ## Project
 
-translate-book is a Codex Skill that translates books (PDF/DOCX/EPUB) into any language using parallel subagents. Published on ClawHub as `translate-book` and on GitHub as `deusyu/translate-book`.
+translate-book is an agent skill for Codex, Claude Code, and OpenClaw that translates books (PDF/DOCX/EPUB) into any language using parallel subagents. Published on ClawHub as `translate-book` and on GitHub as `deusyu/translate-book`.
 
 ## Structure
 
-- `SKILL.md` — Skill definition, the orchestration logic that Codex / OpenClaw follows
+- `SKILL.md` — Skill definition, the orchestration logic that Codex / Claude Code / OpenClaw follows
 - `scripts/convert.py` — PDF/DOCX/EPUB → Markdown chunks (via Calibre HTMLZ)
 - `scripts/manifest.py` — SHA-256 chunk tracking and merge validation
 - `scripts/glossary.py` — Term-consistency glossary; per-chunk term tables injected into sub-agent prompts
@@ -45,9 +45,10 @@ Verify: all output_chunk*.md files exist, manifest validation passes, output for
 ## Conventions
 
 - Only `chunk*.md` naming — no `page*` legacy support
+- Pipeline output artifacts use the canonical names `book.html`, `book_doc.html`, `book.docx`, `book.epub`, `book.pdf`. Internal scripts and skip/cache logic depend on these names; if title-based filenames are added later they must be optional aliases/copies, not silent replacements
 - SKILL.md frontmatter must stay single-line per field (OpenClaw parser requirement)
 - Script paths in SKILL.md use `{baseDir}` not hardcoded paths
-- Subagent instructions in SKILL.md must be platform-neutral (work on Codex, OpenClaw, Codex)
+- Subagent instructions in SKILL.md must be platform-neutral (work on Codex, Claude Code, OpenClaw)
 - Checked-in baseline inputs live under `tests/baselines/<book-id>/`; generated full-pipeline outputs live under `tests/.artifacts/`
 - README changes must be synced to both README.md and README.zh-CN.md
 - Releases follow `.claude/commands/release.md` — three commands in order: `git push origin main`, `git tag vX.Y.Z && git push --tags`, `npx clawhub@latest publish ./ --version X.Y.Z`. Do not skip the git tag; it's the only version anchor in the repo
@@ -55,7 +56,7 @@ Verify: all output_chunk*.md files exist, manifest validation passes, output for
 ## Do not
 
 - Do not reintroduce `page*` file support — it was intentionally removed
-- Do not hardcode `~/.Codex/skills/` paths in SKILL.md — use `{baseDir}`
+- Do not hardcode per-runtime skill paths (`~/.agents/skills/`, `~/.claude/skills/`) in SKILL.md — use `{baseDir}`
 - Do not put platform-specific tool names (Agent, sessions_spawn) in `allowed-tools` as the only option — keep the whitelist cross-platform
 - Do not add mtime-based incremental rebuild for HTML/format generation — the current skip logic is intentionally simple (existence check). Metadata/template changes require manual cleanup. This is documented in the README.
 
