@@ -434,7 +434,10 @@ def convert_with_pandoc(md_file, html_file, title, lang_attr):
         '--metadata', f'title={title}',
         '--metadata', f'lang={lang_attr}',
         '--from', 'markdown+smart+east_asian_line_breaks',
-        '--to', 'html5'
+        '--to', 'html5',
+        # Without this, pandoc emits any TeX it cannot approximate in plain
+        # HTML (fractions, roots, display math) as raw `$...$` text.
+        '--mathml'
     ]
 
     try:

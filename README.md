@@ -19,6 +19,7 @@ Input (PDF/DOCX/EPUB)
   │
   ▼
 Calibre ebook-convert → HTMLZ → HTML → Markdown
+  (or Markdown input, e.g. from MinerU / Marker, skipping Calibre)
   │
   ▼
 Split into chunks (chunk0001.md, chunk0002.md, ...)
@@ -45,7 +46,7 @@ Each chunk gets its own independent subagent with a fresh context window. This p
 - **Multi-format output** — HTML (with floating TOC), DOCX, EPUB, PDF
 - **Optional output controls** — explicit EPUB cover, custom temp root, and user-facing export aliases
 - **Multi-language** — zh, en, ja, ko, fr, de, es (extensible)
-- **PDF/DOCX/EPUB input** — Calibre handles the conversion heavy lifting
+- **PDF/DOCX/EPUB/Markdown input** — Calibre handles the conversion heavy lifting; formula- and table-heavy PDFs can be pre-extracted to Markdown with MinerU or Marker
 
 ## Prerequisites
 
@@ -55,6 +56,7 @@ Each chunk gets its own independent subagent with a fresh context window. This p
 - **Python 3** with:
   - `pypandoc` — required (`pip install pypandoc`)
   - `beautifulsoup4` — optional, for better TOC generation (`pip install beautifulsoup4`)
+- **MinerU or Marker** — optional, only to pre-extract formula- and table-heavy PDFs to Markdown (see [Step 1](#step-1-convert))
 
 ## Quick Start
 
@@ -175,6 +177,21 @@ Calibre converts the input to HTMLZ, which is extracted and converted to Markdow
 
 By default the working directory is `{book_name}_temp/` under the current directory. Use `--temp-root /path/to/work` to keep the same leaf directory name under a different parent.
 
+#### Formula- and table-heavy PDFs: convert Markdown instead (optional)
+
+Calibre reflows PDF text by coordinate heuristics. That works for plain prose, but academic and technical PDFs lose their structure: formulas break into fragments, tables flatten into one cell per line, and multi-column pages interleave. For those PDFs, extract them with a layout-aware parser first and give `convert.py` the Markdown it writes. `.md` / `.markdown` input skips Calibre entirely:
+
+```bash
+pip install -U "mineru>=4.0,<5"                # or: pip install marker-pdf
+mineru-kit parse paper.pdf -o paper.md         # MinerU >= 4 (CPU-only basic tier: ~0.8 GB of models)
+# marker_single paper.pdf --output_dir out/    # Marker: writes out/paper/paper.md
+python3 scripts/convert.py paper.md --olang zh
+```
+
+The parsers keep formulas as `$...$` / `$$...$$` LaTeX and tables as tables. `convert.py` copies images referenced next to the Markdown file, and decodes the base64 images MinerU inlines, into `{book_name}_temp/images/`, so chunks never carry image payloads. Display-math blocks (`$$ ... $$`) are never split across chunks. YAML front matter (`title`, `author`, `lang`) fills `config.txt` and is not sent for translation; without it, a leading `#` heading becomes `original_title`. The temp dir is named after the Markdown file, so `paper.md` maps to `paper_temp/`. If that dir was built from `paper.pdf`, `convert.py` aborts on the source-fingerprint mismatch, so delete it first. Both parsers download ML models on first run. `--strip-page-numbers` only applies to Calibre input.
+
+At build time Pandoc renders `$...$` / `$$...$$` as MathML, so formulas are typeset in `book.html` and `book.pdf`, and in `book.epub` on readers that support MathML. Calibre's DOCX output cannot typeset MathML: formulas appear there as flattened text followed by their TeX source.
+
 ### Step 1.5: Glossary (term consistency across chunks)
 
 Each chunk is translated by a fresh-context sub-agent, which means the same proper noun can drift across multiple translations on a 100-chunk book. To fix this, the skill builds a glossary before translation:
@@ -243,7 +260,7 @@ Then: merge → Pandoc HTML → inject TOC → Calibre generates DOCX, EPUB, PDF
 | File | Purpose |
 |------|---------|
 | `SKILL.md` | Agent skill definition — orchestrates the full pipeline |
-| `scripts/convert.py` | PDF/DOCX/EPUB → Markdown chunks via Calibre HTMLZ |
+| `scripts/convert.py` | PDF/DOCX/EPUB → Markdown chunks via Calibre HTMLZ; Markdown input skips Calibre |
 | `scripts/manifest.py` | Chunk manifest: SHA-256 tracking and merge validation |
 | `scripts/glossary.py` | Glossary management: per-chunk term tables for consistent terminology |
 | `scripts/chunk_context.py` | Read-only previous/next chunk excerpts for sub-agent prompts |
@@ -264,6 +281,7 @@ Then: merge → Pandoc HTML → inject TOC → Calibre generates DOCX, EPUB, PDF
 | `Calibre ebook-convert not found` | Install Calibre and ensure `ebook-convert` is in PATH |
 | `Manifest validation failed` | Source chunks changed since splitting — re-run `convert.py` |
 | `was created from different source bytes` | The temp dir belongs to a different source file — delete the temp dir or use a fresh `--temp-root` |
+| PDF formulas/tables garbled after conversion | Extract the PDF with MinerU or Marker, delete the old temp dir, and run `convert.py` on the `.md` (see [Step 1](#step-1-convert)) |
 | `Blank output` / `Empty output` | A subagent wrote a whitespace-only or empty chunk — re-run the skill to re-translate it |
 | `Missing source chunk` | Source file deleted — re-run `convert.py` to regenerate |
 | Incomplete translation | Re-run the skill — it resumes from where it stopped |

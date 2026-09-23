@@ -2,6 +2,11 @@
 """
 convert.py - Convert PDF/DOCX/EPUB to Markdown chunks via Calibre HTMLZ
 Combines the original steps 1-2 into a single script.
+
+Markdown input (.md/.markdown) skips Calibre entirely. Use it for PDFs that
+Calibre's coordinate-heuristic reflow mangles (formulas, tables, multi-column
+layouts): extract them with a layout-aware parser such as MinerU or Marker
+first, then pass the resulting Markdown here.
 """
 
 import os
@@ -11,10 +16,14 @@ import zipfile
 import shutil
 import tempfile
 import argparse
+import base64
+import binascii
 import bisect
 import glob
+import hashlib
 import json
 import re
+import urllib.parse
 
 from manifest import create_manifest, file_hash
 
@@ -459,6 +468,198 @@ def clean_calibre_markers(content, strip_page_numbers=False):
 
 
 # =============================================================================
+# Markdown input: pre-extracted Markdown (e.g. from MinerU / Marker) skips Calibre
+# =============================================================================
+
+MARKDOWN_EXTENSIONS = ('.md', '.markdown')
+CALIBRE_CONVERSION_METHOD = "calibre_htmlz"
+MARKDOWN_CONVERSION_METHOD = "markdown"
+
+_MD_IMG_RE = re.compile(r'(!\[[^\]]*\]\(\s*)(<[^>]+>|[^)\s]+)')
+_HTML_IMG_RE = re.compile(r'(<img\b[^>]*?\bsrc\s*=\s*)(["\'])(.*?)\2', re.IGNORECASE | re.DOTALL)
+_DATA_URI_RE = re.compile(r'^data:image/([A-Za-z0-9.+-]+);base64,(.*)$', re.DOTALL)
+_URI_SCHEME_RE = re.compile(r'^[A-Za-z][A-Za-z0-9+.-]*:')
+_DATA_URI_EXTENSIONS = {
+    "jpeg": ".jpg", "jpg": ".jpg", "png": ".png", "gif": ".gif",
+    "webp": ".webp", "svg+xml": ".svg", "bmp": ".bmp",
+}
+
+_FRONT_MATTER_RE = re.compile(r'\A---[ \t]*\n(.*?)\n(?:---|\.\.\.)[ \t]*(?:\n|\Z)', re.DOTALL)
+_FRONT_MATTER_KEYS = {
+    "title": "title",
+    "author": "creator",
+    "creator": "creator",
+    "publisher": "publisher",
+    "lang": "language",
+    "language": "language",
+}
+
+
+def _unquote_yaml_scalar(value):
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+        return value[1:-1]
+    return value
+
+
+def split_front_matter(content):
+    """Split a leading YAML front matter block off content.
+
+    Returns (metadata, body). Only flat `key: value` scalars and `- item`
+    lists for the keys in _FRONT_MATTER_KEYS are read; anything fancier is
+    ignored. A leading `---` block without any `key:` line is left alone,
+    since it is more likely a thematic break than metadata.
+    """
+    match = _FRONT_MATTER_RE.match(content)
+    if not match:
+        return {}, content
+    lines = match.group(1).split('\n')
+    if not any(re.match(r'^[A-Za-z_][\w-]*\s*:', line) for line in lines):
+        return {}, content
+
+    metadata = {}
+    current_key = None
+    for line in lines:
+        key_match = re.match(r'^([A-Za-z_][\w-]*)\s*:\s*(.*)$', line)
+        if key_match:
+            key = _FRONT_MATTER_KEYS.get(key_match.group(1).lower())
+            value = _unquote_yaml_scalar(key_match.group(2))
+            current_key = None
+            if key and key not in metadata:
+                if value:
+                    metadata[key] = value
+                else:
+                    current_key = key  # value follows as a `- item` list
+            continue
+        item_match = re.match(r'^\s+-\s+(.+)$', line)
+        if current_key and item_match:
+            item = _unquote_yaml_scalar(item_match.group(1))
+            if item:
+                existing = metadata.get(current_key)
+                metadata[current_key] = f"{existing}, {item}" if existing else item
+    return metadata, content[match.end():]
+
+
+def _first_h1_title(content):
+    """Return the text of the document's first heading if it is level 1.
+
+    Layout parsers put a paper's title first, as `# Title`. If the first
+    heading is deeper than H1 it is a section, not the title, so return None.
+    """
+    in_fence = False
+    for line in content.split('\n'):
+        stripped = line.strip()
+        if stripped.startswith('```'):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        heading = re.match(r'^(#{1,6})\s+(.*?)\s*#*\s*$', stripped)
+        if heading:
+            if len(heading.group(1)) != 1:
+                return None
+            title = re.sub(r'\s*\{[^}]*\}$', '', heading.group(2)).strip()
+            return title or None
+    return None
+
+
+def markdown_metadata(content):
+    """Book metadata for Markdown input: front matter first, then the first H1."""
+    metadata, body = split_front_matter(content.replace('﻿', ''))
+    if 'title' not in metadata:
+        title = _first_h1_title(body)
+        if title:
+            metadata['title'] = title
+    return metadata
+
+
+def import_markdown(md_path, temp_dir):
+    """Return Markdown content ready for chunking, with images moved under temp_dir/images/.
+
+    Relative image paths are resolved against the Markdown file's directory
+    and copied in; base64 data URIs (MinerU inlines images that way) are
+    decoded to files so chunks handed to translators never carry image
+    payloads. Remote URLs stay untouched. YAML front matter is dropped from
+    the body — its metadata goes to config.txt via markdown_metadata().
+    """
+    with open(md_path, 'r', encoding='utf-8') as f:
+        content = f.read()
+    content = content.replace('﻿', '').replace(' ', ' ')
+    _, content = split_front_matter(content)
+
+    md_dir = os.path.dirname(os.path.abspath(md_path))
+    images_dir = os.path.join(temp_dir, "images")
+    refs = {}
+    stored = {}
+    embedded_count = 0
+
+    def store(name, data):
+        base, ext = os.path.splitext(name)
+        digest = hashlib.sha256(data).hexdigest()
+        candidate, n = name, 1
+        while candidate in stored and stored[candidate] != digest:
+            n += 1
+            candidate = f"{base}-{n}{ext}"
+        if candidate not in stored:
+            os.makedirs(images_dir, exist_ok=True)
+            with open(os.path.join(images_dir, candidate), 'wb') as out:
+                out.write(data)
+            stored[candidate] = digest
+        return f"images/{candidate}"
+
+    def localize(target):
+        nonlocal embedded_count
+        raw = target[1:-1] if target.startswith('<') and target.endswith('>') else target
+        if raw in refs:
+            return refs[raw]
+        new_ref = target
+        data_uri = _DATA_URI_RE.match(raw)
+        if data_uri:
+            try:
+                data = base64.b64decode(data_uri.group(2))
+            except (binascii.Error, ValueError):
+                data = b''
+            if data:
+                subtype = data_uri.group(1).lower()
+                ext = _DATA_URI_EXTENSIONS.get(subtype, '.' + re.sub(r'[^a-z0-9]', '', subtype))
+                embedded_count += 1
+                new_ref = store(f"embedded-{embedded_count:04d}{ext}", data)
+            else:
+                print("Warning: could not decode an embedded data-URI image; left inline")
+        elif not _URI_SCHEME_RE.match(raw) and not raw.startswith('#'):
+            src = os.path.normpath(os.path.join(md_dir, urllib.parse.unquote(raw)))
+            if os.path.isfile(src):
+                with open(src, 'rb') as f:
+                    new_ref = store(os.path.basename(src), f.read())
+            else:
+                print(f"Warning: image not found next to the Markdown file, reference kept as-is: {raw}")
+        refs[raw] = new_ref
+        return new_ref
+
+    content = _MD_IMG_RE.sub(lambda m: m.group(1) + localize(m.group(2)), content)
+    content = _HTML_IMG_RE.sub(
+        lambda m: f"{m.group(1)}{m.group(2)}{localize(m.group(3))}{m.group(2)}", content
+    )
+
+    if stored:
+        print(f"Localized {len(stored)} image(s) into {images_dir}/")
+    return content
+
+
+def import_markdown_input(input_file, input_md, temp_dir):
+    """Copy a Markdown source into temp_dir/input.md with its images localized."""
+    os.makedirs(temp_dir, exist_ok=True)
+    content = import_markdown(input_file, temp_dir)
+    if not content.strip():
+        print(f"Error: {input_file} has no content to translate")
+        return False
+    with open(input_md, 'w', encoding='utf-8') as f:
+        f.write(content)
+    print(f"Markdown import successful: {input_md}")
+    return True
+
+
+# =============================================================================
 # Structural block parsing and chunk splitting (Step 3)
 # =============================================================================
 
@@ -466,7 +667,7 @@ def parse_structural_blocks(content):
     """Parse markdown into structural blocks that should not be split.
 
     Returns list of (text, block_type) tuples where block_type is one of:
-    'heading', 'code_block', 'table', 'list', 'blockquote', 'image', 'paragraph'
+    'heading', 'code_block', 'math_block', 'table', 'list', 'blockquote', 'image', 'paragraph'
     """
     blocks = []
     lines = content.split('\n')
@@ -488,6 +689,28 @@ def parse_structural_blocks(content):
                 i += 1
             blocks.append(('\n'.join(block_lines), 'code_block'))
             continue
+
+        # Display math ($$ ... $$). Lines inside may look like list items or
+        # tables, so the block must be kept whole. Like pandoc, never pair
+        # delimiters across a blank line — an unclosed $$ must not swallow
+        # the rest of the chapter.
+        if stripped.startswith('$$'):
+            if len(stripped) >= 4 and stripped.endswith('$$'):
+                blocks.append((line, 'math_block'))
+                i += 1
+                continue
+            end = None
+            for j in range(i + 1, len(lines)):
+                s = lines[j].strip()
+                if not s:
+                    break
+                if s.endswith('$$'):
+                    end = j
+                    break
+            if end is not None:
+                blocks.append(('\n'.join(lines[i:end + 1]), 'math_block'))
+                i = end + 1
+                continue
 
         # Heading
         if re.match(r'^#{1,6}\s', stripped):
@@ -558,7 +781,7 @@ def parse_structural_blocks(content):
         i += 1
         while i < len(lines):
             s = lines[i].strip()
-            if (s == '' or s.startswith('```') or re.match(r'^#{1,6}\s', s) or
+            if (s == '' or s.startswith('```') or s.startswith('$$') or re.match(r'^#{1,6}\s', s) or
                     s.startswith('>') or s.startswith('|') or
                     re.match(r'^[-*+]\s', s) or re.match(r'^\d+\.\s', s) or
                     re.match(r'!\[', s)):
@@ -722,7 +945,8 @@ def _find_existing_chunk_files(temp_dir):
     return sorted(chunk_files)
 
 
-def create_config_file(temp_dir, input_file, input_lang, output_lang, metadata=None):
+def create_config_file(temp_dir, input_file, input_lang, output_lang, metadata=None,
+                       conversion_method=CALIBRE_CONVERSION_METHOD):
     """Create config.txt file for the pipeline"""
     try:
         config_file = os.path.join(temp_dir, "config.txt")
@@ -731,7 +955,7 @@ def create_config_file(temp_dir, input_file, input_lang, output_lang, metadata=N
 input_file={input_file}
 input_lang={input_lang}
 output_lang={output_lang}
-conversion_method=calibre_htmlz
+conversion_method={conversion_method}
 """
         if metadata:
             config_content += f"\n# Book Metadata\n"
@@ -809,8 +1033,14 @@ def _abort_on_strip_cache_conflict(blockers, temp_dir):
 
 def main():
     """Main conversion function"""
-    parser = argparse.ArgumentParser(description="Convert PDF/DOCX/EPUB to markdown chunks via HTMLZ")
-    parser.add_argument("input_file", help="Input file (PDF, DOCX, or EPUB)")
+    parser = argparse.ArgumentParser(
+        description="Convert PDF/DOCX/EPUB (via Calibre HTMLZ) or Markdown to markdown chunks"
+    )
+    parser.add_argument(
+        "input_file",
+        help="Input file: PDF, DOCX, or EPUB (converted by Calibre), or Markdown (.md/.markdown), "
+             "e.g. the output of a layout-aware PDF parser such as MinerU or Marker",
+    )
     parser.add_argument("-l", "--ilang", default="auto", help="Input language (default: auto)")
     parser.add_argument("--olang", default="zh", help="Output language (default: zh)")
     parser.add_argument("--chunk-size", type=int, default=6000, help="Target chunk size in characters (default: 6000)")
@@ -834,21 +1064,22 @@ def main():
         sys.exit(1)
 
     file_ext = os.path.splitext(input_file)[1].lower()
-    if file_ext not in ['.pdf', '.docx', '.epub']:
+    is_markdown = file_ext in MARKDOWN_EXTENSIONS
+    if file_ext not in ['.pdf', '.docx', '.epub'] and not is_markdown:
         print(f"Error: Unsupported file type: {file_ext}")
         sys.exit(1)
+    if is_markdown and args.strip_page_numbers:
+        print("Error: --strip-page-numbers only cleans Calibre output; it does not apply to Markdown input.")
+        sys.exit(1)
 
-    print("=== File Conversion via Calibre HTMLZ ===")
+    if is_markdown:
+        print("=== Markdown Import (no Calibre) ===")
+    else:
+        print("=== File Conversion via Calibre HTMLZ ===")
     print(f"Input file: {input_file}")
     print(f"Target chunk size: {args.chunk_size} characters")
     if args.temp_root:
         print(f"Temp root: {args.temp_root}")
-
-    calibre_path = find_calibre_convert()
-    if not calibre_path:
-        print("Error: Calibre ebook-convert not found")
-        print("Please install Calibre: https://calibre-ebook.com/")
-        sys.exit(1)
 
     htmlz_file = f"{os.path.splitext(input_file)[0]}.htmlz"
 
@@ -858,6 +1089,34 @@ def main():
         _abort_on_source_cache_mismatch(
             *check_source_cache(temp_dir, current_fingerprint), temp_dir=temp_dir
         )
+
+        if is_markdown:
+            input_md = os.path.join(temp_dir, "input.md")
+            with open(input_file, 'r', encoding='utf-8') as f:
+                metadata = markdown_metadata(f.read())
+            if os.path.exists(input_md):
+                print("Skipping Markdown import - input.md already exists")
+            elif not import_markdown_input(input_file, input_md, temp_dir):
+                sys.exit(1)
+
+            chunk_count = _do_split_and_manifest(temp_dir, input_md, args.chunk_size)
+            if chunk_count == 0:
+                sys.exit(1)
+
+            create_config_file(temp_dir, input_file, args.ilang, args.olang, metadata,
+                               conversion_method=MARKDOWN_CONVERSION_METHOD)
+            _write_source_fingerprint(temp_dir, current_fingerprint)
+            print("Conversion completed successfully!")
+            print(f"Temp directory: {temp_dir}")
+            print(f"Markdown chunks: {chunk_count} files")
+            return
+
+        calibre_path = find_calibre_convert()
+        if not calibre_path:
+            print("Error: Calibre ebook-convert not found")
+            print("Please install Calibre: https://calibre-ebook.com/")
+            sys.exit(1)
+
         input_html_path = os.path.join(temp_dir, "input.html")
 
         if os.path.exists(input_html_path):
