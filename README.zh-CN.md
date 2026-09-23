@@ -19,6 +19,7 @@
   │
   ▼
 Calibre ebook-convert → HTMLZ → HTML → Markdown
+  （PDF 可选：MinerU / Marker → Markdown，绕过 Calibre）
   │
   ▼
 拆分为 chunk（chunk0001.md, chunk0002.md, ...）
@@ -45,7 +46,7 @@ Calibre ebook-convert → HTMLZ → HTML → Markdown
 - **多格式输出** — HTML（含浮动目录）、DOCX、EPUB、PDF
 - **可选输出控制** — 显式 EPUB 封面、自定义 temp root、面向用户的导出别名
 - **多语言** — zh、en、ja、ko、fr、de、es（可扩展）
-- **多格式输入** — PDF/DOCX/EPUB，Calibre 负责格式转换
+- **多格式输入** — PDF/DOCX/EPUB，Calibre 负责格式转换；公式、表格密集的 PDF 可选用 MinerU 或 Marker
 
 ## 前置要求
 
@@ -55,6 +56,7 @@ Calibre ebook-convert → HTMLZ → HTML → Markdown
 - **Python 3**，需要：
   - `pypandoc` — 必需（`pip install pypandoc`）
   - `beautifulsoup4` — 可选，用于更好的目录生成（`pip install beautifulsoup4`）
+- **MinerU 或 Marker** — 可选，仅 `--pdf-engine` 需要（见[第一步](#第一步转换)）
 
 ## 快速开始
 
@@ -175,6 +177,25 @@ Calibre 将输入文件转为 HTMLZ，解压后转为 Markdown，再拆分为 ch
 
 默认工作目录是当前目录下的 `{book_name}_temp/`。如果要换父目录，可使用 `--temp-root /path/to/work`；叶子目录名仍保持 `{book_name}_temp/`。
 
+#### 版面感知的 PDF 解析（可选）
+
+Calibre 靠坐标启发式重排 PDF 文本，对普通正文够用，但学术、技术类 PDF 会丢失结构：公式被拆成碎片，表格被拍平成一行一个单元格，多栏版面相互交错。对这类 PDF，可以绕过 Calibre，改用直接输出 Markdown 的版面感知解析器：
+
+```bash
+pip install -U "mineru>=4.0,<5"      # 或：pip install marker-pdf
+python3 scripts/convert.py paper.pdf --olang zh --pdf-engine mineru
+python3 scripts/convert.py paper.pdf --olang zh --pdf-engine mineru --pdf-engine-args "--tier standard"
+python3 scripts/convert.py paper.pdf --olang zh --pdf-engine marker
+```
+
+| `--pdf-engine` | 调用的 CLI | 说明 |
+|---|---|---|
+| `calibre`（默认） | `ebook-convert` | 行为不变；DOCX/EPUB 只走这条路径 |
+| `mineru` | `mineru-kit parse`（MinerU >= 4.0） | 公式输出为 `$...$` / `$$...$$` LaTeX，表格输出为 Markdown 表格。纯 CPU 的 `basic` 档约需 0.8 GB 模型 |
+| `marker` | `marker_single` | 公式输出为 LaTeX，表格输出为 Markdown |
+
+`--pdf-engine-args` 会原样传给引擎 CLI。引擎提取的图片（包括 MinerU 以 base64 内嵌的图片）会写入 `{book_name}_temp/images/`，chunk 中不会夹带图片数据。公式块（`$$ ... $$`）不会被拆到两个 chunk 中。`config.txt` 用 `conversion_method` 记录所用引擎；若 temp 目录由另一个引擎生成，重跑会直接报错中止，切换引擎需先删除 temp 目录。两个引擎首次运行都会下载模型；`--strip-page-numbers` 只对 Calibre 生效，因为它们本身会去掉页眉页脚。
+
 ### 第一步半：术语表（保证全书译名一致）
 
 每个 chunk 由独立的 fresh-context subagent 翻译 — 这意味着同一个专有名词在 100 个 chunk 之间可能出现多种译法。为此，skill 在翻译前会先构建术语表：
@@ -243,7 +264,7 @@ python3 scripts/merge_and_build.py --temp-dir book_temp --title "《译后书名
 | 文件 | 用途 |
 |------|------|
 | `SKILL.md` | Agent Skill 定义 — 编排完整流程 |
-| `scripts/convert.py` | PDF/DOCX/EPUB → Markdown chunks（经 Calibre HTMLZ） |
+| `scripts/convert.py` | PDF/DOCX/EPUB → Markdown chunks（经 Calibre HTMLZ；PDF 可选 MinerU / Marker） |
 | `scripts/manifest.py` | Chunk manifest：SHA-256 追踪与合并校验 |
 | `scripts/glossary.py` | 术语表管理：为每个 chunk 生成专属术语对照表，保证全书译名一致 |
 | `scripts/chunk_context.py` | 为 subagent prompt 提供上一/下一 chunk 的只读摘录 |
@@ -264,6 +285,9 @@ python3 scripts/merge_and_build.py --temp-dir book_temp --title "《译后书名
 | `Calibre ebook-convert not found` | 安装 Calibre，确保 `ebook-convert` 在 PATH 中 |
 | `Manifest validation failed` | 源 chunk 在拆分后被修改 — 重新运行 `convert.py` |
 | `was created from different source bytes` | temp 目录属于另一个源文件 — 删除 temp 目录或换一个 `--temp-root` |
+| PDF 转换后公式、表格错乱 | 在新的 temp 目录中用 `--pdf-engine mineru` 或 `--pdf-engine marker` 重新转换（见[第一步](#第一步转换)） |
+| `mineru-kit not found` / `marker_single not found` | 把引擎安装到 PATH 可见的环境中（`pip install -U "mineru>=4.0,<5"` / `pip install marker-pdf`） |
+| `holds conversion artifacts produced by '...'` | temp 目录是用另一个 `--pdf-engine` 转换的 — 删除它或换一个 `--temp-root` |
 | `Blank output` / `Empty output` | 某个 subagent 写出了空白或空的 chunk — 重新运行 skill 让它重译 |
 | `Missing source chunk` | 源文件被删除 — 重新运行 `convert.py` 重新生成 |
 | 翻译不完整 | 重新运行 Skill，会从中断处继续 |

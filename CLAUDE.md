@@ -7,7 +7,7 @@ translate-book is an agent skill for Codex, Claude Code, and OpenClaw that trans
 ## Structure
 
 - `SKILL.md` — Skill definition, the orchestration logic that Codex / Claude Code / OpenClaw follows
-- `scripts/convert.py` — PDF/DOCX/EPUB → Markdown chunks (via Calibre HTMLZ)
+- `scripts/convert.py` — PDF/DOCX/EPUB → Markdown chunks (via Calibre HTMLZ; PDFs optionally via MinerU/Marker with `--pdf-engine`)
 - `scripts/manifest.py` — SHA-256 chunk tracking and merge validation
 - `scripts/glossary.py` — Term-consistency glossary; per-chunk term tables injected into sub-agent prompts
 - `scripts/chunk_context.py` — Read-only previous/next chunk excerpts injected into sub-agent prompts

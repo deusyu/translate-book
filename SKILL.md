@@ -18,6 +18,7 @@ Determine the following from the user's message:
 - **target_lang**: Target language code (default: `zh`) — e.g. zh, en, ja, ko, fr, de, es
 - **concurrency**: Number of parallel sub-agents per batch (default: `8`)
 - **temp_root**: Optional directory under which `{filename}_temp/` should be created
+- **pdf_engine**: Optional PDF extraction engine: `calibre` (default), `mineru`, or `marker`. Ignored for DOCX/EPUB
 - **epub_cover**: Optional explicit cover image path for EPUB output
 - **export_name**: Optional filename stem for user-facing output aliases
 - **custom_instructions**: Any additional translation instructions from the user (optional)
@@ -36,8 +37,19 @@ If the user provided `temp_root`, add `--temp-root "<temp_root>"`. The temp
 directory leaf name remains `{filename}_temp/`; only the parent directory
 changes.
 
+For PDFs, Calibre reflows text by coordinate heuristics, which shatters math
+formulas, flattens tables, and breaks multi-column layouts. If the user
+requested `pdf_engine`, or the PDF is an academic/technical document and the
+`mineru-kit` (MinerU >= 4) or `marker_single` (Marker) CLI is already on PATH,
+add `--pdf-engine mineru` or `--pdf-engine marker`. These layout-aware parsers
+emit Markdown directly, with formulas as LaTeX and tables kept as tables. Pass
+engine-specific options through `--pdf-engine-args`, e.g.
+`--pdf-engine-args "--tier standard"`. Do not install an engine without the
+user's consent — they download large models. If the temp dir was converted
+with a different engine, `convert.py` aborts; delete the temp dir to switch.
+
 This creates a `{filename}_temp/` directory containing:
-- `input.html`, `input.md` — intermediate files
+- `input.html` (Calibre only), `input.md` — intermediate files
 - `chunk0001.md`, `chunk0002.md`, ... — source chunks for translation
 - `manifest.json` — chunk manifest for tracking and validation
 - `source_fingerprint.json` — SHA-256 identity of the source bytes this temp dir was built from
@@ -220,6 +232,8 @@ Include this translation prompt in each sub-agent's instructions (replace `{TARG
 IMPORTANT REQUIREMENTS:
 1. 严格保持 Markdown 格式不变，包括标题、链接、图片引用等
 2. 仅翻译文字内容，保留所有 Markdown 语法和文件名
+   - 数学公式（行内 `$...$`、公式块 `$$...$$`）内的 LaTeX 原样保留，不要翻译、改写或删除其中任何字符
+   - 表格（Markdown `| ... |` 表格或 HTML `<table>`）保持行列结构不变，只翻译单元格中的文字
 3. 删除空链接、不必要的字符和如: 行末的'\\'。页码已由 convert.py 上游处理，不要再删除独立的数字行（可能是年份 1984、章节编号、引用编号等正文内容）。
 4. 保证格式和语义准确翻译内容自然流畅
 5. 只输出翻译后的正文内容，不要有任何说明、提示、注释或对话内容。
