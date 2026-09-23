@@ -196,6 +196,8 @@ python3 scripts/convert.py paper.pdf --olang zh --pdf-engine marker
 
 `--pdf-engine-args` is passed verbatim to the engine CLI. Images the engine extracts, including base64 images that MinerU inlines, are written to `{book_name}_temp/images/`, so chunks never carry image payloads. Display-math blocks (`$$ ... $$`) are never split across chunks. `config.txt` records the engine as `conversion_method`; re-running against a temp dir built by a different engine aborts, so delete the temp dir to switch. Both engines download ML models on first run, and `--strip-page-numbers` is Calibre-only because they already drop running headers and footers.
 
+At build time Pandoc renders `$...$` / `$$...$$` as MathML, so formulas are typeset in `book.html` and `book.pdf`, and in `book.epub` on readers that support MathML. Calibre's DOCX output cannot typeset MathML: formulas appear there as flattened text followed by their TeX source.
+
 ### Step 1.5: Glossary (term consistency across chunks)
 
 Each chunk is translated by a fresh-context sub-agent, which means the same proper noun can drift across multiple translations on a 100-chunk book. To fix this, the skill builds a glossary before translation:

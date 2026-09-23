@@ -17,6 +17,18 @@ if str(SCRIPT_DIR) not in sys.path:
 import merge_and_build  # noqa: E402
 
 
+class ConvertWithPandocTests(unittest.TestCase):
+    def test_renders_tex_math_as_mathml(self):
+        with mock.patch.object(merge_and_build.subprocess, "run") as run_mock:
+            with contextlib.redirect_stdout(io.StringIO()):
+                ok = merge_and_build.convert_with_pandoc("in.md", "out.html", "Title", "zh-CN")
+
+        self.assertTrue(ok)
+        cmd = run_mock.call_args.args[0]
+        self.assertIn("--mathml", cmd)
+        self.assertEqual(cmd[cmd.index("--to") + 1], "html5")
+
+
 class GenerateFormatTests(unittest.TestCase):
     def _write_file(self, path, content="data"):
         Path(path).write_text(content, encoding="utf-8")

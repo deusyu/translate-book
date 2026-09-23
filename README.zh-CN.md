@@ -196,6 +196,8 @@ python3 scripts/convert.py paper.pdf --olang zh --pdf-engine marker
 
 `--pdf-engine-args` 会原样传给引擎 CLI。引擎提取的图片（包括 MinerU 以 base64 内嵌的图片）会写入 `{book_name}_temp/images/`，chunk 中不会夹带图片数据。公式块（`$$ ... $$`）不会被拆到两个 chunk 中。`config.txt` 用 `conversion_method` 记录所用引擎；若 temp 目录由另一个引擎生成，重跑会直接报错中止，切换引擎需先删除 temp 目录。两个引擎首次运行都会下载模型；`--strip-page-numbers` 只对 Calibre 生效，因为它们本身会去掉页眉页脚。
 
+生成成品时，Pandoc 会把 `$...$` / `$$...$$` 渲染为 MathML，因此 `book.html`、`book.pdf` 中的公式会被正确排版，`book.epub` 在支持 MathML 的阅读器中同样如此。Calibre 生成的 DOCX 无法排版 MathML，其中的公式会显示为压平的文本加上对应的 TeX 源码。
+
 ### 第一步半：术语表（保证全书译名一致）
 
 每个 chunk 由独立的 fresh-context subagent 翻译 — 这意味着同一个专有名词在 100 个 chunk 之间可能出现多种译法。为此，skill 在翻译前会先构建术语表：
