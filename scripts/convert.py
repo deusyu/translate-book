@@ -2,6 +2,10 @@
 """
 convert.py - Convert PDF/DOCX/EPUB to Markdown chunks via Calibre HTMLZ
 Combines the original steps 1-2 into a single script.
+
+PDFs can optionally bypass Calibre with --pdf-engine mineru|marker, which run a
+layout-aware parser that emits Markdown directly (formulas as LaTeX, tables as
+tables) instead of Calibre's coordinate-heuristic text reflow.
 """
 
 import os
@@ -11,10 +15,15 @@ import zipfile
 import shutil
 import tempfile
 import argparse
+import base64
+import binascii
 import bisect
 import glob
+import hashlib
 import json
 import re
+import shlex
+import urllib.parse
 
 from manifest import create_manifest, file_hash
 
@@ -459,6 +468,237 @@ def clean_calibre_markers(content, strip_page_numbers=False):
 
 
 # =============================================================================
+# Layout-aware PDF engines (MinerU / Marker): PDF -> Markdown without Calibre
+# =============================================================================
+
+CALIBRE_CONVERSION_METHOD = "calibre_htmlz"
+
+
+def _run_engine_command(cmd):
+    print(f"Running: {shlex.join(cmd)}")
+    try:
+        result = subprocess.run(cmd)
+    except OSError as e:
+        print(f"Failed to start {cmd[0]}: {e}")
+        return False
+    if result.returncode != 0:
+        print(f"{os.path.basename(cmd[0])} exited with status {result.returncode}")
+        return False
+    return True
+
+
+def _run_mineru(executable, input_file, work_dir, extra_args):
+    """MinerU >= 4.0. Zip output keeps images as files (markdown output inlines
+    them as base64 data URIs)."""
+    zip_path = os.path.join(work_dir, "mineru.zip")
+    cmd = [executable, "parse", input_file, "-o", zip_path, "-f", "zip", *extra_args]
+    if not _run_engine_command(cmd):
+        return None
+    if not os.path.isfile(zip_path):
+        print(f"MinerU did not produce {zip_path}")
+        return None
+    out_dir = os.path.join(work_dir, "mineru")
+    with zipfile.ZipFile(zip_path) as zf:
+        zf.extractall(out_dir)
+    return out_dir
+
+
+def _run_marker(executable, input_file, work_dir, extra_args):
+    out_dir = os.path.join(work_dir, "marker")
+    os.makedirs(out_dir, exist_ok=True)
+    cmd = [executable, input_file, "--output_dir", out_dir, "--output_format", "markdown", *extra_args]
+    if not _run_engine_command(cmd):
+        return None
+    return out_dir
+
+
+PDF_ENGINES = {
+    "mineru": {
+        "executable": "mineru-kit",
+        "install_hint": 'pip install -U "mineru>=4.0,<5"  (https://github.com/opendatalab/MinerU)',
+        "run": _run_mineru,
+    },
+    "marker": {
+        "executable": "marker_single",
+        "install_hint": "pip install marker-pdf  (https://github.com/datalab-to/marker)",
+        "run": _run_marker,
+    },
+}
+
+
+def conversion_method_for(engine):
+    return CALIBRE_CONVERSION_METHOD if engine == "calibre" else engine
+
+
+def find_engine_markdown(output_dir, input_stem):
+    """Locate the Markdown file an engine wrote somewhere under output_dir.
+
+    Engines nest output differently across versions, so search recursively and
+    prefer {input_stem}.md, then MinerU's markdown.md, then the largest file.
+    """
+    candidates = sorted(glob.glob(os.path.join(output_dir, "**", "*.md"), recursive=True))
+    if not candidates:
+        return None
+    for preferred in (f"{input_stem}.md", "markdown.md"):
+        for path in candidates:
+            if os.path.basename(path) == preferred:
+                return path
+    return max(candidates, key=os.path.getsize)
+
+
+_ENGINE_MD_IMG_RE = re.compile(r'(!\[[^\]]*\]\(\s*)(<[^>]+>|[^)\s]+)')
+_ENGINE_HTML_IMG_RE = re.compile(r'(<img\b[^>]*?\bsrc\s*=\s*)(["\'])(.*?)\2', re.IGNORECASE | re.DOTALL)
+_DATA_URI_RE = re.compile(r'^data:image/([A-Za-z0-9.+-]+);base64,(.*)$', re.DOTALL)
+_URI_SCHEME_RE = re.compile(r'^[A-Za-z][A-Za-z0-9+.-]*:')
+_DATA_URI_EXTENSIONS = {
+    "jpeg": ".jpg", "jpg": ".jpg", "png": ".png", "gif": ".gif",
+    "webp": ".webp", "svg+xml": ".svg", "bmp": ".bmp",
+}
+
+
+def import_engine_markdown(md_path, temp_dir):
+    """Return engine Markdown with every local image moved under temp_dir/images/.
+
+    Relative paths are resolved against the Markdown file's directory and
+    copied in; base64 data URIs are decoded to files so chunks handed to
+    translators never carry inline image payloads. Remote URLs stay untouched.
+    """
+    with open(md_path, 'r', encoding='utf-8') as f:
+        content = f.read()
+
+    md_dir = os.path.dirname(os.path.abspath(md_path))
+    images_dir = os.path.join(temp_dir, "images")
+    refs = {}
+    stored = {}
+    embedded_count = 0
+
+    def store(name, data):
+        base, ext = os.path.splitext(name)
+        digest = hashlib.sha256(data).hexdigest()
+        candidate, n = name, 1
+        while candidate in stored and stored[candidate] != digest:
+            n += 1
+            candidate = f"{base}-{n}{ext}"
+        if candidate not in stored:
+            os.makedirs(images_dir, exist_ok=True)
+            with open(os.path.join(images_dir, candidate), 'wb') as out:
+                out.write(data)
+            stored[candidate] = digest
+        return f"images/{candidate}"
+
+    def localize(target):
+        nonlocal embedded_count
+        raw = target[1:-1] if target.startswith('<') and target.endswith('>') else target
+        if raw in refs:
+            return refs[raw]
+        new_ref = target
+        data_uri = _DATA_URI_RE.match(raw)
+        if data_uri:
+            try:
+                data = base64.b64decode(data_uri.group(2))
+            except (binascii.Error, ValueError):
+                data = b''
+            if data:
+                subtype = data_uri.group(1).lower()
+                ext = _DATA_URI_EXTENSIONS.get(subtype, '.' + re.sub(r'[^a-z0-9]', '', subtype))
+                embedded_count += 1
+                new_ref = store(f"embedded-{embedded_count:04d}{ext}", data)
+            else:
+                print("Warning: could not decode an embedded data-URI image; left inline")
+        elif not _URI_SCHEME_RE.match(raw) and not raw.startswith('#'):
+            src = os.path.normpath(os.path.join(md_dir, urllib.parse.unquote(raw)))
+            if os.path.isfile(src):
+                with open(src, 'rb') as f:
+                    new_ref = store(os.path.basename(src), f.read())
+            else:
+                print(f"Warning: image not found in engine output, reference kept as-is: {raw}")
+        refs[raw] = new_ref
+        return new_ref
+
+    content = _ENGINE_MD_IMG_RE.sub(lambda m: m.group(1) + localize(m.group(2)), content)
+    content = _ENGINE_HTML_IMG_RE.sub(
+        lambda m: f"{m.group(1)}{m.group(2)}{localize(m.group(3))}{m.group(2)}", content
+    )
+    content = content.replace('\ufeff', '').replace('\u00a0', ' ')
+
+    if stored:
+        print(f"Localized {len(stored)} image(s) into {images_dir}/")
+    return content
+
+
+def convert_pdf_with_engine(engine, input_file, input_md, temp_dir, extra_args=()):
+    """Run a layout-aware engine on input_file and write the result to input_md."""
+    spec = PDF_ENGINES[engine]
+    executable = shutil.which(spec["executable"])
+    if not executable:
+        print(f"Error: {spec['executable']} not found in PATH (required by --pdf-engine {engine})")
+        print(f"Install it with: {spec['install_hint']}")
+        return False
+
+    stem = os.path.splitext(os.path.basename(input_file))[0]
+    os.makedirs(temp_dir, exist_ok=True)
+    with tempfile.TemporaryDirectory() as work_dir:
+        output_dir = spec["run"](executable, os.path.abspath(input_file), work_dir, list(extra_args))
+        if not output_dir:
+            return False
+        md_path = find_engine_markdown(output_dir, stem)
+        if not md_path:
+            print(f"Error: {engine} finished but produced no Markdown file")
+            return False
+        content = import_engine_markdown(md_path, temp_dir)
+
+    if not content.strip():
+        print(f"Error: {engine} produced an empty Markdown file")
+        return False
+
+    with open(input_md, 'w', encoding='utf-8') as f:
+        f.write(content)
+    print(f"Markdown conversion successful ({engine}): {input_md}")
+    return True
+
+
+def _load_cached_conversion_method(temp_dir):
+    config_file = os.path.join(temp_dir, "config.txt")
+    if not os.path.exists(config_file):
+        return None
+    try:
+        with open(config_file, 'r', encoding='utf-8') as f:
+            for line in f:
+                key, sep, value = line.strip().partition('=')
+                if sep and key == 'conversion_method':
+                    return value
+    except OSError:
+        return None
+    return None
+
+
+def check_conversion_method_cache(temp_dir, method):
+    """Return an error message if cached artifacts came from a different engine.
+
+    Resuming would otherwise silently reuse chunks from the old engine and the
+    newly requested --pdf-engine would have no effect.
+    """
+    if not _has_reusable_source_cache(temp_dir):
+        return None
+    stored = _load_cached_conversion_method(temp_dir)
+    if stored is None and os.path.exists(os.path.join(temp_dir, "input.html")):
+        stored = CALIBRE_CONVERSION_METHOD
+    if stored is None or stored == method:
+        return None
+    return (
+        f"{temp_dir}/ holds conversion artifacts produced by '{stored}', "
+        f"but this run requested '{method}'. Reusing them would ignore the requested engine."
+    )
+
+
+def _abort_on_conversion_method_mismatch(message, temp_dir):
+    if message:
+        print(f"Error: {message}")
+        print(f"Delete {temp_dir}/ (or use a fresh --temp-root) and re-run.")
+        sys.exit(1)
+
+
+# =============================================================================
 # Structural block parsing and chunk splitting (Step 3)
 # =============================================================================
 
@@ -466,7 +706,7 @@ def parse_structural_blocks(content):
     """Parse markdown into structural blocks that should not be split.
 
     Returns list of (text, block_type) tuples where block_type is one of:
-    'heading', 'code_block', 'table', 'list', 'blockquote', 'image', 'paragraph'
+    'heading', 'code_block', 'math_block', 'table', 'list', 'blockquote', 'image', 'paragraph'
     """
     blocks = []
     lines = content.split('\n')
@@ -488,6 +728,19 @@ def parse_structural_blocks(content):
                 i += 1
             blocks.append(('\n'.join(block_lines), 'code_block'))
             continue
+
+        # Display math ($$ ... $$). Lines inside may look like list items,
+        # tables or blank separators, so the block must be kept whole.
+        if stripped.startswith('$$'):
+            if len(stripped) >= 4 and stripped.endswith('$$'):
+                blocks.append((line, 'math_block'))
+                i += 1
+                continue
+            end = next((j for j in range(i + 1, len(lines)) if lines[j].strip().endswith('$$')), None)
+            if end is not None:
+                blocks.append(('\n'.join(lines[i:end + 1]), 'math_block'))
+                i = end + 1
+                continue
 
         # Heading
         if re.match(r'^#{1,6}\s', stripped):
@@ -558,7 +811,7 @@ def parse_structural_blocks(content):
         i += 1
         while i < len(lines):
             s = lines[i].strip()
-            if (s == '' or s.startswith('```') or re.match(r'^#{1,6}\s', s) or
+            if (s == '' or s.startswith('```') or s.startswith('$$') or re.match(r'^#{1,6}\s', s) or
                     s.startswith('>') or s.startswith('|') or
                     re.match(r'^[-*+]\s', s) or re.match(r'^\d+\.\s', s) or
                     re.match(r'!\[', s)):
@@ -722,7 +975,8 @@ def _find_existing_chunk_files(temp_dir):
     return sorted(chunk_files)
 
 
-def create_config_file(temp_dir, input_file, input_lang, output_lang, metadata=None):
+def create_config_file(temp_dir, input_file, input_lang, output_lang, metadata=None,
+                       conversion_method=CALIBRE_CONVERSION_METHOD):
     """Create config.txt file for the pipeline"""
     try:
         config_file = os.path.join(temp_dir, "config.txt")
@@ -731,7 +985,7 @@ def create_config_file(temp_dir, input_file, input_lang, output_lang, metadata=N
 input_file={input_file}
 input_lang={input_lang}
 output_lang={output_lang}
-conversion_method=calibre_htmlz
+conversion_method={conversion_method}
 """
         if metadata:
             config_content += f"\n# Book Metadata\n"
@@ -825,6 +1079,20 @@ def main():
         help="Aggressively delete every standalone-digit line (legacy behavior). "
              "Default is off: standalone digits are preserved unless adjacent to Calibre noise.",
     )
+    parser.add_argument(
+        "--pdf-engine",
+        choices=["calibre", *PDF_ENGINES],
+        default="calibre",
+        help="PDF extraction engine (default: calibre). 'mineru' (mineru-kit) and 'marker' "
+             "(marker_single) are layout-aware parsers that keep formulas as LaTeX and tables "
+             "as tables; they must be installed separately. DOCX/EPUB always use Calibre.",
+    )
+    parser.add_argument(
+        "--pdf-engine-args",
+        default="",
+        help="Extra arguments passed verbatim to the --pdf-engine CLI, "
+             "e.g. \"--tier standard\" for MinerU or \"--use_llm\" for Marker",
+    )
 
     args = parser.parse_args()
     input_file = args.input_file
@@ -838,17 +1106,27 @@ def main():
         print(f"Error: Unsupported file type: {file_ext}")
         sys.exit(1)
 
-    print("=== File Conversion via Calibre HTMLZ ===")
+    engine = args.pdf_engine
+    if engine != "calibre" and file_ext != '.pdf':
+        print(f"Note: --pdf-engine {engine} only applies to PDF input; using Calibre for {file_ext}")
+        engine = "calibre"
+    if engine != "calibre" and args.strip_page_numbers:
+        print("Error: --strip-page-numbers only applies to Calibre output; "
+              f"{engine} already drops running page headers/footers.")
+        sys.exit(1)
+    engine_args = shlex.split(args.pdf_engine_args)
+    if engine_args and engine == "calibre":
+        print("Warning: --pdf-engine-args is ignored for the Calibre engine")
+    conversion_method = conversion_method_for(engine)
+
+    if engine == "calibre":
+        print("=== File Conversion via Calibre HTMLZ ===")
+    else:
+        print(f"=== File Conversion via {engine} (PDF -> Markdown) ===")
     print(f"Input file: {input_file}")
     print(f"Target chunk size: {args.chunk_size} characters")
     if args.temp_root:
         print(f"Temp root: {args.temp_root}")
-
-    calibre_path = find_calibre_convert()
-    if not calibre_path:
-        print("Error: Calibre ebook-convert not found")
-        print("Please install Calibre: https://calibre-ebook.com/")
-        sys.exit(1)
 
     htmlz_file = f"{os.path.splitext(input_file)[0]}.htmlz"
 
@@ -858,6 +1136,35 @@ def main():
         _abort_on_source_cache_mismatch(
             *check_source_cache(temp_dir, current_fingerprint), temp_dir=temp_dir
         )
+        _abort_on_conversion_method_mismatch(
+            check_conversion_method_cache(temp_dir, conversion_method), temp_dir
+        )
+
+        if engine != "calibre":
+            input_md = os.path.join(temp_dir, "input.md")
+            if os.path.exists(input_md):
+                print(f"Skipping {engine} conversion - input.md already exists")
+            elif not convert_pdf_with_engine(engine, input_file, input_md, temp_dir, engine_args):
+                sys.exit(1)
+
+            chunk_count = _do_split_and_manifest(temp_dir, input_md, args.chunk_size)
+            if chunk_count == 0:
+                sys.exit(1)
+
+            create_config_file(temp_dir, input_file, args.ilang, args.olang,
+                               conversion_method=conversion_method)
+            _write_source_fingerprint(temp_dir, current_fingerprint)
+            print("Conversion completed successfully!")
+            print(f"Temp directory: {temp_dir}")
+            print(f"Markdown chunks: {chunk_count} files")
+            return
+
+        calibre_path = find_calibre_convert()
+        if not calibre_path:
+            print("Error: Calibre ebook-convert not found")
+            print("Please install Calibre: https://calibre-ebook.com/")
+            sys.exit(1)
+
         input_html_path = os.path.join(temp_dir, "input.html")
 
         if os.path.exists(input_html_path):
