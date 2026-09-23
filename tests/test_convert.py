@@ -467,7 +467,6 @@ class DisplayMathBlockTests(unittest.TestCase):
                 "$$",
                 "\\begin{aligned}",
                 "- a &= b \\\\",
-                "",
                 "| c &= d",
                 "\\end{aligned}",
                 "$$",
@@ -495,6 +494,15 @@ class DisplayMathBlockTests(unittest.TestCase):
         self.assertNotIn("math_block", types)
         self.assertIn("heading", types)
 
+    def test_unclosed_dollar_line_does_not_pair_across_blank_line(self):
+        # pandoc never pairs $$ across a blank line; a stray opener must not
+        # swallow the following heading into one unsplittable block.
+        content = "$$ stray opener\n\n# Heading\n\nBody ends with $$"
+        blocks = convert.parse_structural_blocks(content)
+        types = [btype for _, btype in blocks]
+        self.assertNotIn("math_block", types)
+        self.assertIn(("# Heading", "heading"), blocks)
+
     def test_math_block_is_never_split_across_chunks(self):
         formula = "$$\n" + "\n".join(f"x_{i} = {i}" for i in range(40)) + "\n$$"
         content = "A" * 100 + "\n\n" + formula + "\n\n" + "B" * 100
@@ -503,32 +511,12 @@ class DisplayMathBlockTests(unittest.TestCase):
         self.assertEqual(sum(formula in chunk for chunk in chunks), 1)
 
 
-class FindEngineMarkdownTests(unittest.TestCase):
-    def test_prefers_input_stem_then_markdown_md_then_largest(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            (root / "a").mkdir()
-            (root / "a" / "big.md").write_text("x" * 100, encoding="utf-8")
-            (root / "small.md").write_text("x", encoding="utf-8")
-            self.assertEqual(convert.find_engine_markdown(tmp, "paper"), str(root / "a" / "big.md"))
-
-            (root / "markdown.md").write_text("x", encoding="utf-8")
-            self.assertEqual(convert.find_engine_markdown(tmp, "paper"), str(root / "markdown.md"))
-
-            (root / "a" / "paper.md").write_text("x", encoding="utf-8")
-            self.assertEqual(convert.find_engine_markdown(tmp, "paper"), str(root / "a" / "paper.md"))
-
-    def test_returns_none_without_markdown(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            self.assertIsNone(convert.find_engine_markdown(tmp, "paper"))
-
-
 PNG_BYTES = b"\x89PNG\r\n\x1a\nfake-png"
 
 
-class ImportEngineMarkdownTests(unittest.TestCase):
-    def _engine_output(self, root, markdown, files=()):
-        out = Path(root) / "engine"
+class ImportMarkdownTests(unittest.TestCase):
+    def _source(self, root, markdown, files=()):
+        out = Path(root) / "parser_out"
         out.mkdir()
         for rel, data in files:
             path = out / rel
@@ -543,17 +531,17 @@ class ImportEngineMarkdownTests(unittest.TestCase):
 
         payload = base64.b64encode(PNG_BYTES).decode("ascii")
         with tempfile.TemporaryDirectory() as tmp:
-            md = self._engine_output(tmp, f"![fig](data:image/png;base64,{payload})\n")
+            md = self._source(tmp, f"![fig](data:image/png;base64,{payload})\n")
             temp_dir = Path(tmp) / "book_temp"
 
-            content = convert.import_engine_markdown(str(md), str(temp_dir))
+            content = convert.import_markdown(str(md), str(temp_dir))
 
             self.assertEqual(content, "![fig](images/embedded-0001.png)\n")
             self.assertEqual((temp_dir / "images" / "embedded-0001.png").read_bytes(), PNG_BYTES)
 
     def test_copies_relative_markdown_and_html_images(self):
         with tempfile.TemporaryDirectory() as tmp:
-            md = self._engine_output(
+            md = self._source(
                 tmp,
                 "![a](_page_0_Picture_1.jpeg)\n\n"
                 '<img src="images/page_1_table_2.jpg" alt="t"/>\n\n'
@@ -566,7 +554,7 @@ class ImportEngineMarkdownTests(unittest.TestCase):
             )
             temp_dir = Path(tmp) / "book_temp"
 
-            content = convert.import_engine_markdown(str(md), str(temp_dir))
+            content = convert.import_markdown(str(md), str(temp_dir))
 
             self.assertIn("![a](images/_page_0_Picture_1.jpeg)", content)
             self.assertIn('<img src="images/page_1_table_2.jpg" alt="t"/>', content)
@@ -578,14 +566,14 @@ class ImportEngineMarkdownTests(unittest.TestCase):
 
     def test_same_basename_with_different_bytes_does_not_collide(self):
         with tempfile.TemporaryDirectory() as tmp:
-            md = self._engine_output(
+            md = self._source(
                 tmp,
                 "![](p1/fig.png)\n![](p2/fig.png)\n![](p1/fig.png)\n",
                 files=[("p1/fig.png", b"one"), ("p2/fig.png", b"two")],
             )
             temp_dir = Path(tmp) / "book_temp"
 
-            content = convert.import_engine_markdown(str(md), str(temp_dir))
+            content = convert.import_markdown(str(md), str(temp_dir))
 
             self.assertEqual(content, "![](images/fig.png)\n![](images/fig-2.png)\n![](images/fig.png)\n")
             self.assertEqual((temp_dir / "images" / "fig.png").read_bytes(), b"one")
@@ -594,170 +582,152 @@ class ImportEngineMarkdownTests(unittest.TestCase):
     def test_leaves_remote_and_missing_images_untouched(self):
         with tempfile.TemporaryDirectory() as tmp:
             text = "![r](https://example.com/x.png)\n![m](missing.png)\n"
-            md = self._engine_output(tmp, text)
+            md = self._source(tmp, text)
             temp_dir = Path(tmp) / "book_temp"
 
-            content = convert.import_engine_markdown(str(md), str(temp_dir))
+            content = convert.import_markdown(str(md), str(temp_dir))
 
             self.assertEqual(content, text)
             self.assertFalse((temp_dir / "images").exists())
 
-
-class ConversionMethodCacheTests(unittest.TestCase):
-    def test_fresh_temp_dir_has_no_conflict(self):
+    def test_strips_front_matter_from_body(self):
         with tempfile.TemporaryDirectory() as tmp:
-            self.assertIsNone(convert.check_conversion_method_cache(str(Path(tmp) / "x_temp"), "mineru"))
+            md = self._source(tmp, "---\ntitle: Paper\n---\n# Paper\n\nBody\n")
 
-    def test_legacy_calibre_cache_blocks_engine_switch(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            (Path(tmp) / "input.html").write_text("<html></html>", encoding="utf-8")
-            message = convert.check_conversion_method_cache(tmp, "mineru")
-            self.assertIn("calibre_htmlz", message)
-            self.assertIsNone(convert.check_conversion_method_cache(tmp, "calibre_htmlz"))
+            content = convert.import_markdown(str(md), str(Path(tmp) / "book_temp"))
 
-    def test_recorded_method_must_match(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            (Path(tmp) / "input.md").write_text("body", encoding="utf-8")
-            convert.create_config_file(tmp, "paper.pdf", "auto", "zh", conversion_method="mineru")
-            self.assertIsNone(convert.check_conversion_method_cache(tmp, "mineru"))
-            self.assertIn("'mineru'", convert.check_conversion_method_cache(tmp, "marker"))
-
-    def test_unrecorded_engine_cache_is_resumable(self):
-        # An engine run interrupted before config.txt was written leaves only
-        # input.md; resuming with the same engine must not be blocked.
-        with tempfile.TemporaryDirectory() as tmp:
-            (Path(tmp) / "input.md").write_text("body", encoding="utf-8")
-            self.assertIsNone(convert.check_conversion_method_cache(tmp, "mineru"))
+            self.assertEqual(content, "# Paper\n\nBody\n")
 
 
-FAKE_MINERU = r'''
-import sys, zipfile
-args = sys.argv[1:]
-assert args[0] == "parse", args
-out = args[args.index("-o") + 1]
-assert args[args.index("-f") + 1] == "zip", args
-with zipfile.ZipFile(out, "w") as zf:
-    zf.writestr("markdown.md", "## 3.2 Attention\n\n![](images/page_0_image_0.jpg)\n\n"
-                "$$\nA = \\mathrm{softmax}(QK^T)V\n$$\n\n| a | b |\n| --- | --- |\n| 1 | 2 |\n")
-    zf.writestr("images/page_0_image_0.jpg", b"jpg-bytes")
-    zf.writestr("middle_json.json", "{}")
-'''
-
-FAKE_MARKER = r'''
-import os, sys
-args = sys.argv[1:]
-out_dir = args[args.index("--output_dir") + 1]
-assert args[args.index("--output_format") + 1] == "markdown", args
-stem = os.path.splitext(os.path.basename(args[0]))[0]
-target = os.path.join(out_dir, stem)
-os.makedirs(target)
-open(os.path.join(target, stem + ".md"), "w").write("# Title\n\n![](_page_0_Picture_1.jpeg)\n\n$E=mc^2$\n")
-open(os.path.join(target, "_page_0_Picture_1.jpeg"), "wb").write(b"jpeg-bytes")
-open(os.path.join(target, stem + "_meta.json"), "w").write("{}")
-'''
-
-
-class PdfEngineEndToEndTests(unittest.TestCase):
-    CONVERT = str(SCRIPT_DIR / "convert.py")
-
-    def _run(self, workdir, bindir, *args):
-        import subprocess
-
-        env = dict(os.environ, PATH=f"{bindir}{os.pathsep}{os.environ.get('PATH', '')}")
-        return subprocess.run(
-            [sys.executable, self.CONVERT, *args],
-            cwd=workdir, env=env, capture_output=True, text=True,
+class MarkdownMetadataTests(unittest.TestCase):
+    def test_front_matter_scalars_and_lists(self):
+        content = "\n".join(
+            [
+                "---",
+                'title: "Attention Is All You Need"',
+                "author:",
+                "  - Ashish Vaswani",
+                "  - Noam Shazeer",
+                "lang: en",
+                "tags: [nlp]",
+                "---",
+                "# Ignored Heading",
+            ]
+        )
+        self.assertEqual(
+            convert.markdown_metadata(content),
+            {
+                "title": "Attention Is All You Need",
+                "creator": "Ashish Vaswani, Noam Shazeer",
+                "language": "en",
+            },
         )
 
-    def _install_fake(self, bindir, name, body):
-        path = Path(bindir) / name
-        path.write_text(f"#!{sys.executable}\n{body}", encoding="utf-8")
-        path.chmod(0o755)
+    def test_title_falls_back_to_first_h1(self):
+        content = "```\n# not a heading\n```\n\n# Deep Residual Learning {#title}\n\n# 1 Introduction\n"
+        self.assertEqual(convert.markdown_metadata(content), {"title": "Deep Residual Learning"})
+
+    def test_no_title_when_first_heading_is_a_section(self):
+        self.assertEqual(convert.markdown_metadata("## 1 Introduction\n\n# Later H1\n"), {})
+
+    def test_leading_rule_without_keys_is_not_front_matter(self):
+        content = "---\nJust a rule.\n---\n\nBody\n"
+        metadata, body = convert.split_front_matter(content)
+        self.assertEqual(metadata, {})
+        self.assertEqual(body, content)
+
+
+class MarkdownInputEndToEndTests(unittest.TestCase):
+    CONVERT = str(SCRIPT_DIR / "convert.py")
+
+    def _run(self, workdir, *args):
+        import subprocess
+
+        return subprocess.run(
+            [sys.executable, self.CONVERT, *args],
+            cwd=workdir, capture_output=True, text=True,
+        )
 
     def _setup(self, tmp):
+        import base64
+
         workdir = Path(tmp) / "work"
-        bindir = Path(tmp) / "bin"
-        workdir.mkdir()
-        bindir.mkdir()
-        (workdir / "paper.pdf").write_bytes(b"%PDF-1.5 fake")
-        return workdir, bindir
+        parser_out = workdir / "mineru_out"
+        (parser_out / "images").mkdir(parents=True)
+        (parser_out / "images" / "fig1.jpg").write_bytes(b"jpg-bytes")
+        payload = base64.b64encode(PNG_BYTES).decode("ascii")
+        md = parser_out / "paper.md"
+        md.write_text(
+            "# Attention Is All You Need\n\n"
+            "## 3.2 Attention\n\n"
+            "![](images/fig1.jpg)\n\n"
+            f"![](data:image/png;base64,{payload})\n\n"
+            "$$\nA = \\mathrm{softmax}(QK^T)V\n$$\n\n"
+            "<table><tr><td>a</td><td>b</td></tr></table>\n",
+            encoding="utf-8",
+        )
+        return workdir, md
 
-    def test_mineru_engine_produces_chunks_images_and_config(self):
+    def test_markdown_input_produces_chunks_images_and_config(self):
         with tempfile.TemporaryDirectory() as tmp:
-            workdir, bindir = self._setup(tmp)
-            self._install_fake(bindir, "mineru-kit", FAKE_MINERU)
+            workdir, md = self._setup(tmp)
 
-            result = self._run(workdir, bindir, "paper.pdf", "--pdf-engine", "mineru",
-                               "--pdf-engine-args", "--tier basic")
+            result = self._run(workdir, str(md.relative_to(workdir)), "--olang", "zh")
 
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("Markdown Import", result.stdout)
             temp_dir = workdir / "paper_temp"
             input_md = (temp_dir / "input.md").read_text(encoding="utf-8")
-            self.assertIn("![](images/page_0_image_0.jpg)", input_md)
+            self.assertIn("![](images/fig1.jpg)", input_md)
+            self.assertIn("![](images/embedded-0001.png)", input_md)
             self.assertIn("$$\nA = \\mathrm{softmax}(QK^T)V\n$$", input_md)
-            self.assertEqual((temp_dir / "images" / "page_0_image_0.jpg").read_bytes(), b"jpg-bytes")
+            self.assertEqual((temp_dir / "images" / "fig1.jpg").read_bytes(), b"jpg-bytes")
+            self.assertEqual((temp_dir / "images" / "embedded-0001.png").read_bytes(), PNG_BYTES)
             self.assertTrue(list(temp_dir.glob("chunk*.md")))
             self.assertTrue((temp_dir / "manifest.json").exists())
             self.assertTrue((temp_dir / convert.SOURCE_FINGERPRINT_FILE).exists())
             self.assertFalse((temp_dir / "input.html").exists())
-            self.assertIn("conversion_method=mineru",
-                          (temp_dir / "config.txt").read_text(encoding="utf-8"))
-            self.assertIn("-f zip --tier basic", result.stdout)
+            config = (temp_dir / "config.txt").read_text(encoding="utf-8")
+            self.assertIn("conversion_method=markdown", config)
+            self.assertIn("original_title=Attention Is All You Need", config)
 
-            rerun = self._run(workdir, bindir, "paper.pdf", "--pdf-engine", "mineru")
+            rerun = self._run(workdir, str(md.relative_to(workdir)))
             self.assertEqual(rerun.returncode, 0, rerun.stdout + rerun.stderr)
-            self.assertIn("Skipping mineru conversion", rerun.stdout)
-
-            switched = self._run(workdir, bindir, "paper.pdf", "--pdf-engine", "marker")
-            self.assertEqual(switched.returncode, 1)
-            self.assertIn("produced by 'mineru'", switched.stdout)
-
-    def test_marker_engine_localizes_sibling_images(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            workdir, bindir = self._setup(tmp)
-            self._install_fake(bindir, "marker_single", FAKE_MARKER)
-
-            result = self._run(workdir, bindir, "paper.pdf", "--pdf-engine", "marker")
-
-            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            temp_dir = workdir / "paper_temp"
-            input_md = (temp_dir / "input.md").read_text(encoding="utf-8")
-            self.assertIn("![](images/_page_0_Picture_1.jpeg)", input_md)
-            self.assertEqual((temp_dir / "images" / "_page_0_Picture_1.jpeg").read_bytes(), b"jpeg-bytes")
-            self.assertIn("conversion_method=marker",
+            self.assertIn("Skipping Markdown import", rerun.stdout)
+            self.assertIn("original_title=Attention Is All You Need",
                           (temp_dir / "config.txt").read_text(encoding="utf-8"))
 
-    def test_missing_engine_fails_with_install_hint(self):
+    def test_changed_source_markdown_aborts_instead_of_reusing_chunks(self):
         with tempfile.TemporaryDirectory() as tmp:
-            workdir, bindir = self._setup(tmp)
+            workdir, md = self._setup(tmp)
+            self.assertEqual(self._run(workdir, str(md)).returncode, 0)
 
-            result = self._run(workdir, bindir, "paper.pdf", "--pdf-engine", "marker")
+            md.write_text("# Different paper\n\nOther body\n", encoding="utf-8")
+            result = self._run(workdir, str(md))
 
             self.assertEqual(result.returncode, 1)
-            self.assertIn("marker_single not found", result.stdout)
-            self.assertIn("pip install marker-pdf", result.stdout)
+            self.assertIn("different source bytes", result.stdout)
+
+    def test_strip_page_numbers_rejected_for_markdown(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workdir, md = self._setup(tmp)
+
+            result = self._run(workdir, str(md), "--strip-page-numbers")
+
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("does not apply to Markdown input", result.stdout)
             self.assertFalse((workdir / "paper_temp").exists())
 
-    def test_engine_failure_exits_nonzero(self):
+    def test_empty_markdown_fails(self):
         with tempfile.TemporaryDirectory() as tmp:
-            workdir, bindir = self._setup(tmp)
-            self._install_fake(bindir, "mineru-kit", "import sys\nsys.exit(3)\n")
+            workdir = Path(tmp)
+            (workdir / "blank.markdown").write_text("---\ntitle: X\n---\n\n", encoding="utf-8")
 
-            result = self._run(workdir, bindir, "paper.pdf", "--pdf-engine", "mineru")
+            result = self._run(workdir, "blank.markdown")
 
             self.assertEqual(result.returncode, 1)
-            self.assertIn("exited with status 3", result.stdout)
-            self.assertFalse((workdir / "paper_temp" / "input.md").exists())
-
-    def test_strip_page_numbers_rejected_for_engine(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            workdir, bindir = self._setup(tmp)
-
-            result = self._run(workdir, bindir, "paper.pdf", "--pdf-engine", "mineru",
-                               "--strip-page-numbers")
-
-            self.assertEqual(result.returncode, 1)
-            self.assertIn("--strip-page-numbers only applies to Calibre", result.stdout)
+            self.assertIn("no content to translate", result.stdout)
+            self.assertFalse((workdir / "blank_temp" / "input.md").exists())
 
 
 if __name__ == "__main__":

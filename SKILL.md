@@ -14,11 +14,10 @@ You are a book translation assistant. You translate entire books from one langua
 ### 1. Collect Parameters
 
 Determine the following from the user's message:
-- **file_path**: Path to the input file (PDF, DOCX, or EPUB) — REQUIRED
+- **file_path**: Path to the input file (PDF, DOCX, EPUB, or Markdown) — REQUIRED
 - **target_lang**: Target language code (default: `zh`) — e.g. zh, en, ja, ko, fr, de, es
 - **concurrency**: Number of parallel sub-agents per batch (default: `8`)
 - **temp_root**: Optional directory under which `{filename}_temp/` should be created
-- **pdf_engine**: Optional PDF extraction engine: `calibre` (default), `mineru`, or `marker`. Ignored for DOCX/EPUB
 - **epub_cover**: Optional explicit cover image path for EPUB output
 - **export_name**: Optional filename stem for user-facing output aliases
 - **custom_instructions**: Any additional translation instructions from the user (optional)
@@ -38,18 +37,24 @@ directory leaf name remains `{filename}_temp/`; only the parent directory
 changes.
 
 For PDFs, Calibre reflows text by coordinate heuristics, which shatters math
-formulas, flattens tables, and breaks multi-column layouts. If the user
-requested `pdf_engine`, or the PDF is an academic/technical document and the
-`mineru-kit` (MinerU >= 4) or `marker_single` (Marker) CLI is already on PATH,
-add `--pdf-engine mineru` or `--pdf-engine marker`. These layout-aware parsers
-emit Markdown directly, with formulas as LaTeX and tables kept as tables. Pass
-engine-specific options through `--pdf-engine-args`, e.g.
-`--pdf-engine-args "--tier standard"`. Do not install an engine without the
-user's consent — they download large models. If the temp dir was converted
-with a different engine, `convert.py` aborts; delete the temp dir to switch.
+formulas, flattens tables, and interleaves multi-column layouts before
+translation starts. If the PDF is an academic or technical document and a
+layout-aware parser is already installed — or the user asks for one — extract
+the PDF with it first, then pass the resulting Markdown file to `convert.py`
+instead of the PDF. Markdown input (`.md` / `.markdown`) skips Calibre:
+
+- MinerU >= 4: `mineru-kit parse "<file_path>" -o "<name>.md"`
+- Marker: `marker_single "<file_path>" --output_dir "<dir>"`, then use `<dir>/<name>/<name>.md`
+
+Keep the PDF's file name stem for the Markdown file, because the temp
+directory is named after it. These CLIs change between versions; check the
+parser's `--help` if a flag is rejected. Do not install a parser without the
+user's consent, because they download large models. Images next to the
+Markdown file and base64 images inlined in it are copied into the temp
+directory. `--strip-page-numbers` does not apply to Markdown input.
 
 This creates a `{filename}_temp/` directory containing:
-- `input.html` (Calibre only), `input.md` — intermediate files
+- `input.html` (Calibre input only), `input.md` — intermediate files
 - `chunk0001.md`, `chunk0002.md`, ... — source chunks for translation
 - `manifest.json` — chunk manifest for tracking and validation
 - `source_fingerprint.json` — SHA-256 identity of the source bytes this temp dir was built from
@@ -387,6 +392,8 @@ Report any chunks that failed translation after retry.
 ### 6. Translate Book Title
 
 Read `config.txt` from the temp directory to get the `original_title` field.
+If it is missing (e.g. Markdown input with neither front matter nor a leading
+`#` title), use the source file name instead.
 
 Translate the title to the target language. For Chinese, wrap in 书名号: `《translated_title》`.
 
