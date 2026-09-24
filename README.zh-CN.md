@@ -165,6 +165,20 @@ Pull request 不是首选贡献入口，可能会被关闭并转为 issue 继续
 - 尽量小的复现步骤，或可公开使用的小样本文件
 - 能说明问题的日志、截图或生成文件名
 
+## 联系方式
+
+Bug 和功能需求请按上一节的要求提 [GitHub issue](https://github.com/deusyu/translate-book/issues)。使用上的疑问、想法或其他事情，可以通过下面这些方式找到我：
+
+| 渠道 | 链接 |
+|------|------|
+| X (Twitter) | [@0xdeusyu](https://x.com/0xdeusyu) |
+| Telegram | [@DeusThink](https://t.me/DeusThink) |
+| Telegram 交流群 | [@talkdeusyu](https://t.me/talkdeusyu) |
+| Telegram 频道 | [@lovedesuyu](https://t.me/lovedesuyu) |
+| Email | [rainman.deus@gmail.com](mailto:rainman.deus@gmail.com) |
+
+频道「婴宁」记录我的见闻，以及和 AI 碰撞出的思考；交流群是它的讨论区，也欢迎来聊 translate-book。
+
 ## 流程详解
 
 ### 第一步：转换

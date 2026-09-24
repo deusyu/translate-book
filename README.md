@@ -165,6 +165,20 @@ A useful issue should include:
 - Minimal reproduction steps or a small public-domain sample when possible
 - Logs, screenshots, or generated file names that show the failure
 
+## Contact
+
+For bugs and feature requests, please open a [GitHub issue](https://github.com/deusyu/translate-book/issues) as described above. For questions, ideas, or anything else, you can reach me here:
+
+| Channel | Link |
+|---------|------|
+| X (Twitter) | [@0xdeusyu](https://x.com/0xdeusyu) |
+| Telegram | [@DeusThink](https://t.me/DeusThink) |
+| Telegram Group (Chinese) | [@talkdeusyu](https://t.me/talkdeusyu) |
+| Telegram Channel (Chinese) | [@lovedesuyu](https://t.me/lovedesuyu) |
+| Email | [rainman.deus@gmail.com](mailto:rainman.deus@gmail.com) |
+
+The channel is my running log of thinking alongside AI; the group is its discussion space, and translate-book questions are welcome there too.
+
 ## Pipeline Details
 
 ### Step 1: Convert
