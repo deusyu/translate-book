@@ -458,7 +458,7 @@ def convert_with_python_markdown(md_file, html_file, title):
         with open(md_file, 'r', encoding='utf-8') as f:
             md_content = f.read()
 
-        extensions = ['toc', 'tables', 'fenced_code', 'codehilite', 'nl2br']
+        extensions = ['toc', 'tables', 'fenced_code', 'codehilite', 'nl2br', 'footnotes']
         md = markdown.Markdown(extensions=extensions)
         html_content = md.convert(md_content)
 

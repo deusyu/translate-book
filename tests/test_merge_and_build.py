@@ -29,6 +29,35 @@ class ConvertWithPandocTests(unittest.TestCase):
         self.assertEqual(cmd[cmd.index("--to") + 1], "html5")
 
 
+class ConvertWithPythonMarkdownTests(unittest.TestCase):
+    def _convert(self, markdown_text):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            md_file = os.path.join(temp_dir, "output.md")
+            html_file = os.path.join(temp_dir, "book.html")
+            Path(md_file).write_text(markdown_text, encoding="utf-8")
+            with contextlib.redirect_stdout(io.StringIO()):
+                ok = merge_and_build.convert_with_python_markdown(md_file, html_file, "Title")
+            self.assertTrue(ok)
+            return Path(html_file).read_text(encoding="utf-8")
+
+    def test_enables_footnotes_extension(self):
+        fake_markdown = mock.MagicMock()
+        fake_markdown.Markdown.return_value.convert.return_value = "<p>Text.</p>"
+        with mock.patch.object(merge_and_build, "MARKDOWN_AVAILABLE", True), \
+                mock.patch.object(merge_and_build, "markdown", fake_markdown, create=True):
+            self._convert("Text.[^1]\n\n[^1]: Note.\n")
+
+        self.assertIn("footnotes", fake_markdown.Markdown.call_args.kwargs["extensions"])
+
+    @unittest.skipUnless(merge_and_build.MARKDOWN_AVAILABLE, "python-markdown not installed")
+    def test_footnotes_render_as_links(self):
+        html = self._convert("Text.[^1]\n\n[^1]: First note.\n")
+
+        self.assertNotIn("[^1]", html)
+        self.assertIn('href="#fn:1"', html)
+        self.assertIn("First note.", html)
+
+
 class GenerateFormatTests(unittest.TestCase):
     def _write_file(self, path, content="data"):
         Path(path).write_text(content, encoding="utf-8")
