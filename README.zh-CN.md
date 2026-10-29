@@ -204,7 +204,7 @@ mineru-kit parse paper.pdf -o paper.md         # MinerU >= 4（纯 CPU 的 basic
 python3 scripts/convert.py paper.md --olang zh
 ```
 
-解析器会把公式保留为 `$...$` / `$$...$$` LaTeX，表格保留为表格。`convert.py` 会把 Markdown 旁边引用的图片复制到 `{book_name}_temp/images/`，MinerU 以 base64 内嵌的图片也会解码成文件放进去，chunk 中不会夹带图片数据。公式块（`$$ ... $$`）不会被拆到两个 chunk 中。YAML front matter（`title`、`author`、`lang`）会写入 `config.txt`，不会送去翻译；没有 front matter 时，开头的 `#` 标题作为 `original_title`。temp 目录按 Markdown 文件名命名，`paper.md` 对应 `paper_temp/`；如果该目录之前由 `paper.pdf` 生成，`convert.py` 会因源文件指纹不一致而中止，需先删除它。两个解析器首次运行都会下载模型。`--strip-page-numbers` 只对 Calibre 输入生效。
+解析器会把公式保留为 `$...$` / `$$...$$` LaTeX，表格保留为表格。`convert.py` 会把 Markdown 旁边引用的图片复制到 `{book_name}_temp/images/`，MinerU 以 base64 内嵌的图片也会解码成文件放进去，chunk 中不会夹带图片数据。公式块（`$$ ... $$`）不会被拆到两个 chunk 中。YAML front matter（`title`、`author`、`lang`）会写入 `config.txt`，不会送去翻译；没有 front matter 时，开头的 `#` 标题作为 `original_title`。temp 目录按 Markdown 文件名命名，`paper.md` 对应 `paper_temp/`；如果该目录之前由 `paper.pdf` 生成，`convert.py` 会因源文件指纹不一致而中止，需先删除它。两个解析器首次运行都会下载模型。`--strip-page-numbers` 和 `--detect-page-numbers` 只对 Calibre 输入生效。
 
 生成成品时，Pandoc 会把 `$...$` / `$$...$$` 渲染为 MathML，因此 `book.html`、`book.pdf` 中的公式会被正确排版，`book.epub` 在支持 MathML 的阅读器中同样如此。Calibre 生成的 DOCX 无法排版 MathML，其中的公式会显示为压平的文本加上对应的 TeX 源码。
 
@@ -302,7 +302,7 @@ python3 scripts/merge_and_build.py --temp-dir book_temp --title "《译后书名
 | `Missing source chunk` | 源文件被删除 — 重新运行 `convert.py` 重新生成 |
 | 翻译不完整 | 重新运行 Skill，会从中断处继续 |
 | 修改标题、模板或图片后输出未更新 | 删除 temp 目录中的 `output.md`、`book*.html`、`book.docx`、`book.epub`、`book.pdf`，然后重跑 `merge_and_build.py` |
-| 想去掉 PDF 输出中的页码 | 默认会自动识别单调递增的页码序列（如 `1, 2, 3, ...`）并删除，同时保留年份（`1984`）、章节编号、引用编号等离散的独立数字行。若识别不到你的页码格式，可给 `convert.py` 加 `--strip-page-numbers`，强制删除所有独立数字行。该标志在检测到已缓存的 `input.md` 或 `chunk*.md` 时会直接报错 — 需先删除这些缓存，标志才会生效 |
+| 想去掉 PDF 输出中的页码 | 对 PDF 输入，默认会自动识别单调递增的页码序列（如 `1, 2, 3, ...`）并删除，同时保留年份（`1984`）、章节编号、引用编号等离散的独立数字行。EPUB 和 DOCX 默认保留所有独立数字行，因为它们的页码不是正文文字（EPUB 是锚点，DOCX 在页脚）；如果某本 EPUB 确实把页码印成了正文，可加 `--detect-page-numbers`。若识别不到你的页码格式，可给 `convert.py` 加 `--strip-page-numbers`，强制删除所有独立数字行。这两个标志在检测到已缓存的 `input.md` 或 `chunk*.md` 时会直接报错 — 需先删除这些缓存，标志才会生效 |
 | `output.md exists but manifest invalid` | 旧输出已过时 — 脚本会自动删除并重新合并 |
 | `Glossary upgrade rejected: duplicate source` | v2 不允许两个术语共用同一个 source/alias 表面词。手工编辑 `glossary.json` 消歧（例如把一个 source 从 `Apple` 改为 `Apple (Inc.)`）后重新加载。 |
 | PDF 生成失败 | 确认 Calibre 已安装且支持 PDF 输出 |

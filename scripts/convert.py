@@ -297,7 +297,7 @@ def setup_temp_directory(input_file, html_file, images_dir, temp_root=None):
         return None
 
 
-def convert_html_to_markdown(html_file, md_file, strip_page_numbers=False):
+def convert_html_to_markdown(html_file, md_file, strip_page_numbers=False, detect_page_numbers=True):
     """Convert HTML to Markdown using pandoc"""
     try:
         import pypandoc
@@ -317,7 +317,11 @@ def convert_html_to_markdown(html_file, md_file, strip_page_numbers=False):
 
         content = content.replace('\ufeff', '')
         content = content.replace('\u00a0', ' ')
-        content = clean_calibre_markers(content, strip_page_numbers=strip_page_numbers)
+        content = clean_calibre_markers(
+            content,
+            strip_page_numbers=strip_page_numbers,
+            detect_page_numbers=detect_page_numbers,
+        )
 
         with open(md_file, 'w', encoding='utf-8') as f:
             f.write(content)
@@ -390,15 +394,19 @@ def _detect_page_number_lines(lines):
     return {digit_indices[i] for i in lnds}
 
 
-def clean_calibre_markers(content, strip_page_numbers=False):
+def clean_calibre_markers(content, strip_page_numbers=False, detect_page_numbers=True):
     """Clean up Calibre-specific markers from markdown content.
 
-    Standalone digit lines are handled in two layers:
+    With detect_page_numbers, standalone digit lines are handled in two layers:
       1. If a line is adjacent to Calibre noise (::: fence, .ct}/.cn} marker),
          drop it — clearly leftover.
       2. Otherwise, run LNDS over all standalone digits to detect a monotonic
          page-number sequence and drop those. Outliers like years (1984),
          chapter numbers, and citation indices stay preserved.
+
+    detect_page_numbers=False keeps every standalone digit line: it is meant
+    for formats whose page numbers are not text (EPUB anchors, DOCX footers),
+    where such lines are chapter, verse or exercise numbers.
 
     Pass strip_page_numbers=True to bypass both layers and aggressively delete
     every standalone-digit line (legacy behavior).
@@ -414,7 +422,8 @@ def clean_calibre_markers(content, strip_page_numbers=False):
 
     lines = content.split('\n')
 
-    page_number_lines = set() if strip_page_numbers else _detect_page_number_lines(lines)
+    detect = detect_page_numbers and not strip_page_numbers
+    page_number_lines = _detect_page_number_lines(lines) if detect else set()
 
     def is_calibre_noise(line):
         s = line.strip()
@@ -450,13 +459,14 @@ def clean_calibre_markers(content, strip_page_numbers=False):
         if re.match(r'^\s*\d+\s*$', line):
             if strip_page_numbers:
                 continue
-            if i in page_number_lines:
-                continue
-            prev = prev_nonblank(i)
-            nxt = next_nonblank(i)
-            if (prev is not None and is_calibre_noise(prev)) or \
-               (nxt is not None and is_calibre_noise(nxt)):
-                continue
+            if detect:
+                if i in page_number_lines:
+                    continue
+                prev = prev_nonblank(i)
+                nxt = next_nonblank(i)
+                if (prev is not None and is_calibre_noise(prev)) or \
+                   (nxt is not None and is_calibre_noise(nxt)):
+                    continue
             # else: preserve as real content
 
         cleaned_lines.append(line)
@@ -1279,12 +1289,13 @@ def _do_split_and_manifest(temp_dir, input_md, chunk_size):
 
 
 def _check_strip_page_numbers_cache_conflict(strip_flag, temp_dir, input_md):
-    """Return list of cached files that would silently neutralize --strip-page-numbers.
+    """Return cached files that would silently neutralize a page-number flag.
 
-    The flag only takes effect inside clean_calibre_markers, which runs during
-    HTML→Markdown conversion. If input.md or chunk*.md already exist from a
-    prior run, both are reused as-is and the flag becomes a no-op. Surface
-    that conflict so the user knows to clean up.
+    --strip-page-numbers and --detect-page-numbers only take effect inside
+    clean_calibre_markers, which runs during HTML→Markdown conversion. If
+    input.md or chunk*.md already exist from a prior run, both are reused
+    as-is and the flag becomes a no-op. Surface that conflict so the user
+    knows to clean up.
     """
     if not strip_flag:
         return []
@@ -1308,7 +1319,7 @@ def _check_strip_page_numbers_cache_conflict(strip_flag, temp_dir, input_md):
 def _abort_on_strip_cache_conflict(blockers, temp_dir):
     if not blockers:
         return
-    print("Error: --strip-page-numbers cannot take effect because cached files exist:")
+    print("Error: page-number options cannot take effect because cached files exist:")
     for b in blockers:
         print(f"  - {b}")
     print(f"Delete the cached files (or remove the entire {temp_dir}/ directory) and re-run.")
@@ -1336,8 +1347,13 @@ def main():
     parser.add_argument(
         "--strip-page-numbers",
         action="store_true",
-        help="Aggressively delete every standalone-digit line (legacy behavior). "
-             "Default is off: standalone digits are preserved unless adjacent to Calibre noise.",
+        help="Aggressively delete every standalone-digit line (legacy behavior).",
+    )
+    parser.add_argument(
+        "--detect-page-numbers",
+        action="store_true",
+        help="Drop detected page-number lines from EPUB/DOCX too. By default only "
+             "PDF input is cleaned this way; EPUB/DOCX keep every standalone number.",
     )
 
     args = parser.parse_args()
@@ -1352,9 +1368,14 @@ def main():
     if file_ext not in ['.pdf', '.docx', '.epub'] and not is_markdown:
         print(f"Error: Unsupported file type: {file_ext}")
         sys.exit(1)
-    if is_markdown and args.strip_page_numbers:
-        print("Error: --strip-page-numbers only cleans Calibre output; it does not apply to Markdown input.")
+    page_number_flag = args.strip_page_numbers or args.detect_page_numbers
+    if is_markdown and page_number_flag:
+        flag = "--strip-page-numbers" if args.strip_page_numbers else "--detect-page-numbers"
+        print(f"Error: {flag} only cleans Calibre output; it does not apply to Markdown input.")
         sys.exit(1)
+    # Only PDFs carry page numbers as text. EPUB page numbers are invisible
+    # anchors and Calibre drops DOCX footers, so their digit lines are content.
+    detect_page_numbers = args.detect_page_numbers or file_ext == '.pdf'
 
     if is_markdown:
         print("=== Markdown Import (no Calibre) ===")
@@ -1427,13 +1448,15 @@ def main():
 
             input_md = os.path.join(temp_dir, "input.md")
             _abort_on_strip_cache_conflict(
-                _check_strip_page_numbers_cache_conflict(args.strip_page_numbers, temp_dir, input_md),
+                _check_strip_page_numbers_cache_conflict(page_number_flag, temp_dir, input_md),
                 temp_dir,
             )
             if os.path.exists(input_md):
                 print(f"Skipping HTML to Markdown conversion - input.md already exists")
             else:
-                if not convert_html_to_markdown(input_html_path, input_md, strip_page_numbers=args.strip_page_numbers):
+                if not convert_html_to_markdown(input_html_path, input_md,
+                                                strip_page_numbers=args.strip_page_numbers,
+                                                detect_page_numbers=detect_page_numbers):
                     sys.exit(1)
 
             chunk_count = _do_split_and_manifest(temp_dir, input_md, args.chunk_size)
@@ -1464,13 +1487,15 @@ def main():
             input_md = os.path.join(temp_dir, "input.md")
 
             _abort_on_strip_cache_conflict(
-                _check_strip_page_numbers_cache_conflict(args.strip_page_numbers, temp_dir, input_md),
+                _check_strip_page_numbers_cache_conflict(page_number_flag, temp_dir, input_md),
                 temp_dir,
             )
             if os.path.exists(input_md):
                 print(f"Skipping HTML to Markdown conversion - input.md already exists")
             else:
-                if not convert_html_to_markdown(input_html, input_md, strip_page_numbers=args.strip_page_numbers):
+                if not convert_html_to_markdown(input_html, input_md,
+                                                strip_page_numbers=args.strip_page_numbers,
+                                                detect_page_numbers=detect_page_numbers):
                     sys.exit(1)
 
             chunk_count = _do_split_and_manifest(temp_dir, input_md, args.chunk_size)

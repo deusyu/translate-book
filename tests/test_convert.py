@@ -6,6 +6,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 SCRIPT_DIR = Path(__file__).resolve().parents[1] / "scripts"
@@ -241,6 +242,44 @@ class CleanCalibreMarkersTests(unittest.TestCase):
 
         for n in ("1984", "42", "7", "1066", "3"):
             self.assertIn(f"\n{n}\n", f"\n{cleaned}\n")
+
+    def test_detection_off_keeps_every_standalone_digit(self):
+        # EPUB/DOCX: chapter numbers next to a chapter div and a numbered
+        # stanza sequence are content, though both layers would drop them.
+        content = "\n".join(
+            [
+                "::: {.calibre}",
+                "4",
+                "",
+                "## Chapter Four",
+                ":::",
+                "",
+                "1",
+                "",
+                "Stanza one.",
+                "",
+                "2",
+                "",
+                "Stanza two.",
+                "",
+                "3",
+                "",
+                "Stanza three.",
+                "",
+                "4",
+                "",
+                "Stanza four.",
+            ]
+        )
+
+        def digit_lines(text):
+            return [line for line in text.split("\n") if line.isdigit()]
+
+        self.assertEqual(digit_lines(convert.clean_calibre_markers(content)), [])
+        cleaned = convert.clean_calibre_markers(content, detect_page_numbers=False)
+
+        self.assertNotIn(":::", cleaned)
+        self.assertEqual(digit_lines(cleaned), ["4", "1", "2", "3", "4"])
 
     def test_strip_page_numbers_flag_restores_legacy(self):
         content = "\n".join(
@@ -551,6 +590,40 @@ class CalibreHtmlToMarkdownTests(unittest.TestCase):
         references = re.findall(r"\[\^([^\]]+)\](?!:)", md)
         self.assertEqual(sorted(definitions), ["1", "2"])
         self.assertEqual(sorted(references), sorted(definitions))
+
+
+class PageNumberDetectionDefaultTests(unittest.TestCase):
+    def _detect_flag(self, filename, *extra_args):
+        """Run main() on a cached input.html and return detect_page_numbers."""
+        calls = []
+
+        def fake_convert(html_file, md_file, strip_page_numbers=False, detect_page_numbers=True):
+            calls.append(detect_page_numbers)
+            Path(md_file).write_text("# Title\n\nBody text.\n", encoding="utf-8")
+            return True
+
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / filename
+            source.write_bytes(b"book bytes")
+            temp_dir = Path(convert.build_temp_dir(str(source), tmp))
+            temp_dir.mkdir()
+            (temp_dir / "input.html").write_text("<html></html>", encoding="utf-8")
+            argv = ["convert.py", str(source), "--temp-root", tmp, *extra_args]
+            with mock.patch.object(sys, "argv", argv), \
+                    mock.patch.object(convert, "find_calibre_convert", return_value="ebook-convert"), \
+                    mock.patch.object(convert, "convert_html_to_markdown", side_effect=fake_convert), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                convert.main()
+        self.assertEqual(len(calls), 1)
+        return calls[0]
+
+    def test_only_pdf_input_detects_page_numbers_by_default(self):
+        self.assertTrue(self._detect_flag("book.pdf"))
+        self.assertFalse(self._detect_flag("book.epub"))
+        self.assertFalse(self._detect_flag("book.docx"))
+
+    def test_flag_enables_detection_for_epub(self):
+        self.assertTrue(self._detect_flag("book.epub", "--detect-page-numbers"))
 
 
 class TempRootTests(unittest.TestCase):
@@ -1007,6 +1080,16 @@ class MarkdownInputEndToEndTests(unittest.TestCase):
 
             self.assertEqual(result.returncode, 1)
             self.assertIn("does not apply to Markdown input", result.stdout)
+            self.assertFalse((workdir / "paper_temp").exists())
+
+    def test_detect_page_numbers_rejected_for_markdown(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workdir, md = self._setup(tmp)
+
+            result = self._run(workdir, str(md), "--detect-page-numbers")
+
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("--detect-page-numbers only cleans Calibre output", result.stdout)
             self.assertFalse((workdir / "paper_temp").exists())
 
     def test_empty_markdown_fails(self):

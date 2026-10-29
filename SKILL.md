@@ -53,6 +53,11 @@ user's consent, because they download large models. Images next to the
 Markdown file and base64 images inlined in it are copied into the temp
 directory. `--strip-page-numbers` does not apply to Markdown input.
 
+Page-number lines are detected and dropped for PDF input only; EPUB and DOCX
+keep every standalone number (chapter, verse or exercise numbers). If an EPUB
+prints its page numbers as text and they show up in the chunks, delete the
+temp directory before translating and re-run with `--detect-page-numbers`.
+
 This creates a `{filename}_temp/` directory containing:
 - `input.html` (Calibre input only), `input.md` — intermediate files
 - `chunk0001.md`, `chunk0002.md`, ... — source chunks for translation
