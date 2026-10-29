@@ -730,5 +730,43 @@ class MarkdownInputEndToEndTests(unittest.TestCase):
             self.assertFalse((workdir / "blank_temp" / "input.md").exists())
 
 
+class CalibreHtmlzLocationTests(unittest.TestCase):
+    def test_htmlz_never_touches_a_same_named_file_next_to_the_source(self):
+        import contextlib
+        import io
+        import zipfile
+        from unittest import mock
+
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "book.epub"
+            source.write_bytes(b"epub bytes")
+            sibling = Path(tmp) / "book.htmlz"
+            sibling.write_text("user-owned htmlz", encoding="utf-8")
+            htmlz_paths = []
+
+            def fake_calibre(input_file, htmlz_file, calibre_path):
+                htmlz_paths.append(Path(htmlz_file))
+                with zipfile.ZipFile(htmlz_file, "w") as z:
+                    z.writestr("index.html", "<html><body><p>Body</p></body></html>")
+                return True
+
+            def fake_markdown(html_file, md_file, strip_page_numbers=False):
+                Path(md_file).write_text("# Book\n\nBody\n", encoding="utf-8")
+                return True
+
+            argv = ["convert.py", str(source), "--temp-root", str(Path(tmp) / "work")]
+            with mock.patch.object(convert, "find_calibre_convert", return_value="ebook-convert"), \
+                    mock.patch.object(convert, "convert_to_htmlz", side_effect=fake_calibre), \
+                    mock.patch.object(convert, "convert_html_to_markdown", side_effect=fake_markdown), \
+                    mock.patch.object(sys, "argv", argv), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                convert.main()
+
+            self.assertEqual(sibling.read_text(encoding="utf-8"), "user-owned htmlz")
+            self.assertNotEqual(htmlz_paths[0].parent, source.parent)
+            self.assertFalse(htmlz_paths[0].exists())
+            self.assertTrue((Path(tmp) / "work" / "book_temp" / "input.html").exists())
+
+
 if __name__ == "__main__":
     unittest.main()

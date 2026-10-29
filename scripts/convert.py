@@ -1081,8 +1081,6 @@ def main():
     if args.temp_root:
         print(f"Temp root: {args.temp_root}")
 
-    htmlz_file = f"{os.path.splitext(input_file)[0]}.htmlz"
-
     try:
         temp_dir = build_temp_dir(input_file, args.temp_root)
         current_fingerprint = source_fingerprint(input_file)
@@ -1162,10 +1160,15 @@ def main():
             print(f"Temp directory: {temp_dir}")
             return
 
-        if not convert_to_htmlz(input_file, htmlz_file, calibre_path):
-            sys.exit(1)
+        # Calibre's HTMLZ goes to a private directory, never next to the source,
+        # where it would overwrite and then delete a user's own <name>.htmlz.
+        with tempfile.TemporaryDirectory() as work_dir:
+            stem = os.path.splitext(os.path.basename(input_file))[0]
+            htmlz_file = os.path.join(work_dir, f"{stem}.htmlz")
+            if not convert_to_htmlz(input_file, htmlz_file, calibre_path):
+                sys.exit(1)
 
-        with tempfile.TemporaryDirectory() as extract_dir:
+            extract_dir = os.path.join(work_dir, "extracted")
             html_file, images_dir = extract_htmlz(htmlz_file, extract_dir)
             if not html_file:
                 sys.exit(1)
@@ -1199,9 +1202,6 @@ def main():
             print("Conversion completed successfully!")
             print(f"Temp directory: {temp_dir}")
             print(f"Markdown chunks: {chunk_count} files")
-
-            if os.path.exists(htmlz_file):
-                os.remove(htmlz_file)
 
     except KeyboardInterrupt:
         print("\nConversion interrupted by user")
