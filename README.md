@@ -189,7 +189,7 @@ The channel is my running log of thinking alongside AI; the group is its discuss
 python3 scripts/convert.py /path/to/book.pdf --olang zh
 ```
 
-Calibre converts the input to HTMLZ, which is extracted and converted to Markdown, then split into chunks (~6000 chars each). A `manifest.json` records the SHA-256 hash of each source chunk for later validation, and a `source_fingerprint.json` ties the temp dir to the exact source bytes it was built from — re-running against a replaced source file aborts instead of silently reusing stale chunks. Temp dirs created before fingerprinting are adopted with a warning on first re-run.
+Calibre converts the input to HTMLZ, which is extracted and converted to Markdown, then split into chunks (~6000 chars each). Superscript note references (`<a><sup>1</sup></a>`) whose note starts with a matching backlink become real Markdown footnotes, numbered `[^1]`, `[^2]`, ... across the whole book, and empty anchors, spans, internal links and `{#id .class}` attribute blocks are dropped instead of leaking into the text as `[]`, `[text]` or `{...}`. Dashes and curly quotes stay as written. A `manifest.json` records the SHA-256 hash of each source chunk for later validation, and a `source_fingerprint.json` ties the temp dir to the exact source bytes it was built from — re-running against a replaced source file aborts instead of silently reusing stale chunks. Temp dirs created before fingerprinting are adopted with a warning on first re-run.
 
 By default the working directory is `{book_name}_temp/` under the current directory. Use `--temp-root /path/to/work` to keep the same leaf directory name under a different parent.
 

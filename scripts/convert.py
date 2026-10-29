@@ -302,29 +302,28 @@ def convert_html_to_markdown(html_file, md_file, strip_page_numbers=False):
     try:
         import pypandoc
 
-        pypandoc.convert_file(
-            html_file,
-            'markdown',
-            outputfile=md_file,
-            extra_args=['--wrap=none']
+        ast = json.loads(pypandoc.convert_file(html_file, 'json', format='html'))
+        content = pypandoc.convert_text(
+            json.dumps(normalize_calibre_ast(ast)),
+            # With pandoc's default `smart`, the writer turns —/–/… and curly
+            # quotes into ---/--/... and straight quotes, and a paragraph of
+            # ——— into a thematic break.
+            'markdown-smart',
+            format='json',
+            # Each footnote definition goes right after the paragraph citing
+            # it, so both normally land in the same chunk.
+            extra_args=['--wrap=none', '--reference-location=block'],
         )
 
-        if os.path.exists(md_file):
-            with open(md_file, 'r', encoding='utf-8') as f:
-                content = f.read()
+        content = content.replace('\ufeff', '')
+        content = content.replace('\u00a0', ' ')
+        content = clean_calibre_markers(content, strip_page_numbers=strip_page_numbers)
 
-            content = content.replace('\ufeff', '')
-            content = content.replace('\u00a0', ' ')
-            content = clean_calibre_markers(content, strip_page_numbers=strip_page_numbers)
+        with open(md_file, 'w', encoding='utf-8') as f:
+            f.write(content)
 
-            with open(md_file, 'w', encoding='utf-8') as f:
-                f.write(content)
-
-            print(f"Markdown conversion successful: {md_file}")
-            return True
-        else:
-            print("Markdown file was not created")
-            return False
+        print(f"Markdown conversion successful: {md_file}")
+        return True
     except ImportError:
         print("pypandoc not found. Install with: pip install pypandoc")
         return False
@@ -465,6 +464,291 @@ def clean_calibre_markers(content, strip_page_numbers=False):
     content = '\n'.join(cleaned_lines)
     content = re.sub(r'\n{3,}', '\n\n', content)
     return content
+
+
+# =============================================================================
+# Calibre HTML → pandoc AST normalization (runs before Markdown is written)
+# =============================================================================
+
+_PANDOC_INLINE_TYPES = frozenset({
+    'Str', 'Emph', 'Underline', 'Strong', 'Strikeout', 'Superscript', 'Subscript',
+    'SmallCaps', 'Quoted', 'Cite', 'Code', 'Space', 'SoftBreak', 'LineBreak',
+    'Math', 'RawInline', 'Link', 'Image', 'Note', 'Span',
+})
+_PANDOC_BLOCK_TYPES = frozenset({
+    'Plain', 'Para', 'LineBlock', 'CodeBlock', 'RawBlock', 'BlockQuote',
+    'OrderedList', 'BulletList', 'DefinitionList', 'Header', 'HorizontalRule',
+    'Table', 'Figure', 'Div', 'Null',
+})
+_WHITESPACE_INLINES = frozenset({'Space', 'SoftBreak', 'LineBreak'})
+_NOTE_MARKER_MAX_LEN = 8
+
+
+def _empty_attr():
+    return ["", [], []]
+
+
+def _pandoc_list_kind(items):
+    if not items or not all(isinstance(x, dict) for x in items):
+        return None
+    types = {x.get('t') for x in items}
+    if types <= _PANDOC_INLINE_TYPES:
+        return 'inline'
+    if types <= _PANDOC_BLOCK_TYPES:
+        return 'block'
+    return None
+
+
+def _map_pandoc_lists(node, fn, children_first=False):
+    """Rewrite every inline/block list of a pandoc JSON AST in place.
+
+    fn(items, kind) returns the replacement list. By default a list is
+    rewritten before the walk descends into it; children_first reverses that.
+    """
+    if isinstance(node, list):
+        kind = _pandoc_list_kind(node)
+        if kind and not children_first:
+            node[:] = fn(node, kind)
+        for item in node:
+            _map_pandoc_lists(item, fn, children_first)
+        if kind and children_first:
+            node[:] = fn(node, kind)
+    elif isinstance(node, dict):
+        for value in node.values():
+            _map_pandoc_lists(value, fn, children_first)
+
+
+def _note_marker_text(inlines):
+    """Return the marker of a note number such as `1`, `[1]`, `1.` or `*`, else None."""
+    parts = []
+    for el in inlines:
+        t = el.get('t')
+        if t == 'Str':
+            parts.append(el['c'])
+        elif t in ('Superscript', 'Strong', 'Emph'):
+            inner = _note_marker_text(el['c'])
+            if inner is None:
+                return None
+            parts.append(inner)
+        else:
+            return None
+    marker = ''.join(parts).strip('[]().')
+    if not marker or len(marker) > _NOTE_MARKER_MAX_LEN:
+        return None
+    return marker
+
+
+def _without_whitespace(inlines):
+    return [el for el in inlines if el.get('t') not in _WHITESPACE_INLINES]
+
+
+def _superscript_note_link(el):
+    """Return (link, marker) for <a><sup>N</sup></a> or <sup><a>N</a></sup>, else None."""
+    t = el.get('t')
+    if t == 'Link':
+        content = _without_whitespace(el['c'][1])
+        if len(content) == 1 and content[0].get('t') == 'Superscript':
+            marker = _note_marker_text(content[0]['c'])
+            return (el, marker) if marker else None
+    elif t == 'Superscript':
+        content = _without_whitespace(el['c'])
+        if len(content) == 1 and content[0].get('t') == 'Link':
+            marker = _note_marker_text(content[0]['c'][1])
+            return (content[0], marker) if marker else None
+    return None
+
+
+def _internal_target(link):
+    url = link['c'][2][0]
+    return url[1:] if url.startswith('#') and len(url) > 1 else None
+
+
+def _collect_note_refs(doc):
+    """Map each superscript note reference's own id to (marker, target id).
+
+    Calibre renames every id to a book-wide unique `calibre_link-N`, so the
+    reference id identifies one note even when numbering restarts per chapter.
+    """
+    refs = {}
+
+    def visit(items, kind):
+        if kind == 'inline':
+            for el in items:
+                found = _superscript_note_link(el)
+                if not found:
+                    continue
+                link, marker = found
+                ref_id, target = link['c'][0][0], _internal_target(link)
+                if ref_id and target and ref_id not in refs:
+                    refs[ref_id] = (marker, target)
+        return items
+
+    _map_pandoc_lists(doc, visit)
+    return refs
+
+
+def _note_start(block, refs):
+    """Return (ref_id, body inlines) if block opens a note that links back to a reference.
+
+    The backlink must point at the reference's own id and carry the same
+    marker, which keeps ordinary internal links (TOC entries, cross-references)
+    out. Class names are useless here because Calibre rewrites them.
+    """
+    if block.get('t') not in ('Para', 'Plain'):
+        return None
+    inlines = block['c']
+    i = 0
+    while i < len(inlines) and inlines[i].get('t') in _WHITESPACE_INLINES:
+        i += 1
+    if i == len(inlines):
+        return None
+    first = inlines[i]
+    found = _superscript_note_link(first)
+    if found:
+        link, marker = found
+    elif first.get('t') == 'Link':
+        link, marker = first, _note_marker_text(first['c'][1])
+    else:
+        return None
+    ref_id = _internal_target(link)
+    if ref_id not in refs or refs[ref_id][0] != marker:
+        return None
+    body = inlines[i + 1:]
+    if body and body[0].get('t') == 'Str' and body[0]['c'] in ('.', ')', ':'):
+        body = body[1:]
+    while body and body[0].get('t') in _WHITESPACE_INLINES:
+        body = body[1:]
+    if not body:
+        return None
+    return ref_id, body
+
+
+def _extract_note_bodies(doc, refs):
+    """Detach paired note bodies from the document; return {ref_id: (blocks, original)}.
+
+    A note is the paragraph opening with the backlink, or the whole div when
+    the reference targets a div holding only that note (multi-paragraph notes).
+    """
+    notes = {}
+
+    def div_note(div):
+        div_id, children = div['c'][0][0], div['c'][1]
+        if not div_id or not children:
+            return None
+        start = _note_start(children[0], refs)
+        if not start or start[0] in notes or refs[start[0]][1] != div_id:
+            return None
+        rest = children[1:]
+        if any(b.get('t') == 'Header' or _note_start(b, refs) for b in rest):
+            return None
+        ref_id, body = start
+        return ref_id, [{'t': 'Para', 'c': body}] + rest
+
+    def visit(items, kind):
+        if kind != 'block':
+            return items
+        kept = []
+        for block in items:
+            found = div_note(block) if block.get('t') == 'Div' else None
+            if not found:
+                start = _note_start(block, refs)
+                if start and start[0] not in notes:
+                    found = (start[0], [{'t': block['t'], 'c': start[1]}])
+            if found:
+                notes[found[0]] = (found[1], block)
+            else:
+                kept.append(block)
+        return kept
+
+    _map_pandoc_lists(doc, visit)
+    return notes
+
+
+def _insert_notes(doc, notes):
+    """Replace each paired reference with a pandoc Note; return unused originals."""
+    def visit(items, kind):
+        if kind != 'inline':
+            return items
+        out = []
+        for el in items:
+            found = _superscript_note_link(el)
+            ref_id = found[0]['c'][0][0] if found else None
+            if ref_id in notes:
+                out.append({'t': 'Note', 'c': notes.pop(ref_id)[0]})
+            else:
+                out.append(el)
+        return out
+
+    _map_pandoc_lists(doc, visit)
+    return [original for _, original in notes.values()]
+
+
+def _strip_calibre_markup(doc):
+    """Drop markup that has no visible content once written as Markdown.
+
+    Spans and internal links are unwrapped (an emptied one was a page/id
+    anchor); heading and link attributes are cleared. Left in, pandoc writes
+    `[]`, `[text]{lang="la"}`, `[text](#calibre_link-N)` and `{#id .class}`,
+    which `clean_calibre_markers()` can only half-remove.
+    """
+    def visit(items, kind):
+        if kind == 'block':
+            kept = []
+            for block in items:
+                t = block.get('t')
+                if t in ('Para', 'Plain') and not _without_whitespace(block['c']):
+                    continue
+                if t == 'Header':
+                    block['c'][1] = _empty_attr()
+                # Endnote lists are left with empty items once their notes move.
+                elif t == 'BulletList':
+                    block['c'] = [item for item in block['c'] if item]
+                    if not block['c']:
+                        continue
+                elif t == 'OrderedList':
+                    block['c'][1] = [item for item in block['c'][1] if item]
+                    if not block['c'][1]:
+                        continue
+                kept.append(block)
+            return kept
+        out = []
+        pending = list(reversed(items))
+        while pending:
+            el = pending.pop()
+            t = el.get('t')
+            if t == 'Span' or (t == 'Link' and _internal_target(el)):
+                pending.extend(reversed(el['c'][1]))
+                continue
+            if t == 'Link':
+                el['c'][0] = _empty_attr()
+            # pandoc only escapes a leading "3." as a list marker when it is
+            # one Str, so re-join text split by an unwrapped link.
+            if t == 'Str' and out and out[-1].get('t') == 'Str':
+                out[-1] = {'t': 'Str', 'c': out[-1]['c'] + el['c']}
+                continue
+            out.append(el)
+        return out
+
+    _map_pandoc_lists(doc, visit, children_first=True)
+
+
+def normalize_calibre_ast(doc):
+    """Rewrite pandoc's JSON AST of Calibre HTML before it is written as Markdown.
+
+    1. `<a><sup>N</sup></a>` references paired with a note that starts with a
+       backlink become real pandoc footnotes; pandoc then numbers them
+       `[^1]`, `[^2]`, ... across the whole book, so labels never collide
+       when every chapter restarts at 1.
+    2. Empty anchors, spans, internal links and attribute blocks are removed
+       (see `_strip_calibre_markup`).
+    """
+    refs = _collect_note_refs(doc)
+    if refs:
+        notes = _extract_note_bodies(doc, refs)
+        if notes:
+            doc['blocks'].extend(_insert_notes(doc, notes))
+    _strip_calibre_markup(doc)
+    return doc
 
 
 # =============================================================================

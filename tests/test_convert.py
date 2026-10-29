@@ -1,4 +1,7 @@
+import contextlib
+import io
 import os
+import re
 import sys
 import tempfile
 import unittest
@@ -260,6 +263,294 @@ class CleanCalibreMarkersTests(unittest.TestCase):
         self.assertNotIn("\n3\n", f"\n{cleaned}\n")
         self.assertIn("He was born in", cleaned)
         self.assertIn("Introduction text follows.", cleaned)
+
+
+def _str(text):
+    return {"t": "Str", "c": text}
+
+
+def _sp():
+    return {"t": "Space"}
+
+
+def _words(text):
+    out = []
+    for i, word in enumerate(text.split(" ")):
+        if i:
+            out.append(_sp())
+        out.append(_str(word))
+    return out
+
+
+def _link(inlines, url, ident=""):
+    return {"t": "Link", "c": [[ident, [], []], inlines, [url, ""]]}
+
+
+def _sup(inlines):
+    return {"t": "Superscript", "c": inlines}
+
+
+def _span(inlines, ident="", classes=(), attrs=()):
+    return {"t": "Span", "c": [[ident, list(classes), [list(kv) for kv in attrs]], inlines]}
+
+
+def _para(inlines):
+    return {"t": "Para", "c": inlines}
+
+
+def _plain(inlines):
+    return {"t": "Plain", "c": inlines}
+
+
+def _div(blocks, ident=""):
+    return {"t": "Div", "c": [[ident, ["calibre"], []], blocks]}
+
+
+def _header(level, inlines, ident="", classes=()):
+    return {"t": "Header", "c": [level, [ident, list(classes), []], inlines]}
+
+
+def _note(blocks):
+    return {"t": "Note", "c": blocks}
+
+
+def _doc(blocks):
+    return {"pandoc-api-version": [1, 23, 1], "meta": {}, "blocks": blocks}
+
+
+def _sup_ref(marker, target, ident):
+    """<a href="#target" id="ident"><sup>marker</sup></a>, as pandoc reads it."""
+    return _link([_sup([_str(marker)])], "#" + target, ident)
+
+
+class NormalizeCalibreAstTests(unittest.TestCase):
+    def test_sup_reference_and_backlinked_note_become_a_footnote(self):
+        doc = _doc([
+            _para(_words("A footnote ref.") + [_sup_ref("1", "calibre_link-2", "calibre_link-3")]),
+            _para([_sup_ref("1", "calibre_link-3", "")] + [_sp()] + _words("First chapter note.")),
+        ])
+
+        convert.normalize_calibre_ast(doc)
+
+        self.assertEqual(doc["blocks"], [
+            _para(_words("A footnote ref.") + [_note([_para(_words("First chapter note."))])]),
+        ])
+
+    def test_numbering_that_restarts_per_chapter_pairs_by_reference_id(self):
+        doc = _doc([
+            _div([
+                _para(_words("Chapter one.") + [_sup_ref("1", "n1", "r1")]),
+                _para([_sup_ref("1", "r1", "")] + [_sp()] + _words("Note of chapter one.")),
+            ], "ch1"),
+            _div([
+                _para(_words("Chapter two.") + [_sup_ref("1", "n2", "r2")]),
+                _para([_sup_ref("1", "r2", "")] + [_sp()] + _words("Note of chapter two.")),
+            ], "ch2"),
+        ])
+
+        convert.normalize_calibre_ast(doc)
+
+        first, second = (div["c"][1] for div in doc["blocks"])
+        self.assertEqual(first, [_para(_words("Chapter one.") + [_note([_para(_words("Note of chapter one."))])])])
+        self.assertEqual(second, [_para(_words("Chapter two.") + [_note([_para(_words("Note of chapter two."))])])])
+
+    def test_link_inside_superscript_with_plain_number_backlink(self):
+        doc = _doc([
+            _para(_words("Text.") + [_sup([_link([_str("2")], "#n2", "r2")])]),
+            _para([_link([_str("2")], "#r2"), _str("."), _sp()] + _words("Note two.")),
+        ])
+
+        convert.normalize_calibre_ast(doc)
+
+        self.assertEqual(doc["blocks"], [
+            _para(_words("Text.") + [_note([_para(_words("Note two."))])]),
+        ])
+
+    def test_div_wrapped_note_keeps_every_paragraph(self):
+        doc = _doc([
+            _para(_words("Text.") + [_sup_ref("4", "n4", "r4")]),
+            _div([
+                _para([_link([_str("4")], "#r4"), _sp()] + _words("Para one.")),
+                _para(_words("Para two.")),
+            ], "n4"),
+        ])
+
+        convert.normalize_calibre_ast(doc)
+
+        self.assertEqual(doc["blocks"], [
+            _para(_words("Text.") + [_note([_para(_words("Para one.")), _para(_words("Para two."))])]),
+        ])
+
+    def test_endnote_list_disappears_once_its_notes_move(self):
+        doc = _doc([
+            _para(_words("Text.") + [_sup_ref("1", "n1", "r1")]),
+            {"t": "OrderedList", "c": [
+                [1, {"t": "Decimal"}, {"t": "Period"}],
+                [[_para([_link([_str("1")], "#r1"), _sp()] + _words("Endnote."))]],
+            ]},
+        ])
+
+        convert.normalize_calibre_ast(doc)
+
+        self.assertEqual(doc["blocks"], [
+            _para(_words("Text.") + [_note([_para(_words("Endnote."))])]),
+        ])
+
+    def test_unpaired_reference_degrades_to_a_plain_superscript(self):
+        doc = _doc([_para(_words("Text.") + [_sup_ref("7", "nowhere", "r7")])])
+
+        convert.normalize_calibre_ast(doc)
+
+        self.assertEqual(doc["blocks"], [_para(_words("Text.") + [_sup([_str("7")])])])
+
+    def test_backlink_with_a_different_marker_is_not_paired(self):
+        doc = _doc([
+            _para(_words("Text.") + [_sup_ref("1", "n1", "r1")]),
+            _para([_sup_ref("2", "r1", "")] + [_sp()] + _words("Some note.")),
+        ])
+
+        convert.normalize_calibre_ast(doc)
+
+        self.assertEqual(doc["blocks"], [
+            _para(_words("Text.") + [_sup([_str("1")])]),
+            _para([_sup([_str("2")]), _sp()] + _words("Some note.")),
+        ])
+
+    def test_two_way_links_without_superscript_are_not_footnotes(self):
+        # A table of contents links to headings that link back — same shape
+        # as a note, minus the superscript reference.
+        doc = _doc([
+            _para([_link([_str("1")], "#c1", "t1"), _sp()] + _words("Chapter One")),
+            _para([_link([_str("1")], "#t1"), _sp()] + _words("Chapter One")),
+        ])
+
+        convert.normalize_calibre_ast(doc)
+
+        self.assertEqual(doc["blocks"], [
+            _para(_words("1 Chapter One")),
+            _para(_words("1 Chapter One")),
+        ])
+
+    def test_note_whose_reference_cannot_be_placed_is_kept(self):
+        # Each note cites the other, so neither reference survives in the
+        # body; both notes must still end up in the document.
+        doc = _doc([
+            _para([_sup_ref("1", "rA", ""), _sp()] + _words("Alpha") + [_sup_ref("2", "nB", "rB")]),
+            _para([_sup_ref("2", "rB", ""), _sp()] + _words("Beta") + [_sup_ref("1", "nA", "rA")]),
+        ])
+
+        convert.normalize_calibre_ast(doc)
+
+        text = repr(doc["blocks"])
+        self.assertIn("'Alpha'", text)
+        self.assertIn("'Beta'", text)
+
+    def test_empty_anchors_spans_and_internal_links_are_unwrapped(self):
+        doc = _doc([
+            _plain([_span([], "calibre_link-8")]),
+            _header(2, [_span([], "calibre_link-10", ["calibre1"])] + _words("Chapter One"),
+                    "calibre_link-9", ["ch_title"]),
+            _para(
+                _words("An anchor") + [_span([], "calibre_link-11"), _sp()]
+                + _words("an internal") + [_sp(), _link(_words("cross-reference"), "#calibre_link-1")]
+                + [_sp(), _span(_words("sic erat"), attrs=[("lang", "lat")])]
+                + [_sp(), _link([_str("site")], "https://example.com", "calibre_link-5")]
+            ),
+        ])
+
+        convert.normalize_calibre_ast(doc)
+
+        self.assertEqual(doc["blocks"], [
+            _header(2, _words("Chapter One")),
+            _para(
+                _words("An anchor an internal cross-reference sic erat")
+                + [_sp(), _link([_str("site")], "https://example.com")]
+            ),
+        ])
+
+    def test_text_split_by_an_unwrapped_link_is_rejoined(self):
+        doc = _doc([_para([_link([_str("3")], "#x"), _str("."), _sp(), _str("Note")])])
+
+        convert.normalize_calibre_ast(doc)
+
+        self.assertEqual(doc["blocks"], [_para([_str("3."), _sp(), _str("Note")])])
+
+
+def _pandoc_available():
+    try:
+        import pypandoc
+
+        pypandoc.get_pandoc_version()
+        return True
+    except Exception:
+        return False
+
+
+# Calibre's HTMLZ output for the reproduction EPUB attached to GitHub issues
+# #49 and #50 (calibre 7.6): page anchors, a cross-reference, a lang span,
+# Unicode dashes, and per-chapter footnotes that both restart at 1.
+CALIBRE_REPRO_HTML = """<html><head><meta http-equiv="Content-Type" content="text/html;charset=utf-8" /><title>Repro</title></head><body><div class="calibre" id="calibre_link-0">
+<a id="calibre_link-8"></a>
+<h2 class="ch_title" id="calibre_link-9"><a id="calibre_link-10" class="calibre1"></a>Chapter One</h2>
+<p class="calibre2">A paragraph with a page anchor<a id="calibre_link-11"></a> in the middle, an
+internal <a href="#calibre_link-1">cross-reference</a>, a
+<span lang="lat">sic erat scriptum</span> span, an em dash&mdash;like this,
+an en dash (pp. 12&ndash;34), and a footnote ref.<a href="#calibre_link-2" id="calibre_link-3"><sup class="calibre3">1</sup></a></p>
+<p class="calibre2" id="calibre_link-2"><a href="#calibre_link-3"><sup class="calibre3">1</sup></a> First chapter note.</p>
+</div>
+
+<div class="calibre" id="calibre_link-5">
+<a id="calibre_link-12"></a>
+<h2 class="ch_title" id="calibre_link-13">Chapter Two</h2>
+<p class="calibre2">Another chapter, whose footnote numbering restarts at one.<a href="#calibre_link-6" id="calibre_link-7"><sup class="calibre3">1</sup></a></p>
+<p class="calibre2" id="calibre_link-6"><a href="#calibre_link-7"><sup class="calibre3">1</sup></a> Second chapter note.</p>
+</div>
+
+<div class="calibre" id="calibre_link-4">
+<p class="calibre2" id="calibre_link-1">Doe, J. <em class="calibre4">Some Book</em>. Press, 2001.</p>
+<p class="calibre2">&mdash;&mdash;&mdash; <em class="calibre4">Another Book</em>. Press, 2005.</p>
+<p class="calibre2">&mdash;&mdash;&mdash;</p>
+</div>
+
+</body></html>"""
+
+
+@unittest.skipUnless(_pandoc_available(), "pandoc and pypandoc are required")
+class CalibreHtmlToMarkdownTests(unittest.TestCase):
+    def _convert(self, html):
+        with tempfile.TemporaryDirectory() as tmp:
+            html_file = Path(tmp) / "input.html"
+            md_file = Path(tmp) / "input.md"
+            html_file.write_text(html, encoding="utf-8")
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertTrue(convert.convert_html_to_markdown(str(html_file), str(md_file)))
+            return md_file.read_text(encoding="utf-8")
+
+    def test_issue_49_50_reproduction(self):
+        md = self._convert(CALIBRE_REPRO_HTML)
+
+        self.assertIn("## Chapter One\n", md)
+        self.assertIn(
+            "A paragraph with a page anchor in the middle, an internal cross-reference, "
+            "a sic erat scriptum span, an em dash—like this, an en dash (pp. 12–34), "
+            "and a footnote ref.[^1]",
+            md,
+        )
+        self.assertIn("[^1]: First chapter note.", md)
+        self.assertIn("restarts at one.[^2]", md)
+        self.assertIn("[^2]: Second chapter note.", md)
+        self.assertIn("\n——— *Another Book*. Press, 2005.\n", md)
+        self.assertIn("\n———\n", md)
+        for artifact in ("[]", "{", "[cross-reference]", "^1^", "---", "--"):
+            self.assertNotIn(artifact, md)
+
+    def test_every_footnote_reference_has_one_definition(self):
+        md = self._convert(CALIBRE_REPRO_HTML)
+
+        definitions = re.findall(r"^\[\^([^\]]+)\]:", md, flags=re.MULTILINE)
+        references = re.findall(r"\[\^([^\]]+)\](?!:)", md)
+        self.assertEqual(sorted(definitions), ["1", "2"])
+        self.assertEqual(sorted(references), sorted(definitions))
 
 
 class TempRootTests(unittest.TestCase):
