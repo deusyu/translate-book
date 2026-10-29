@@ -402,13 +402,17 @@ Translate the title to the target language. For Chinese, wrap in 书名号: `《
 Run the build script with the translated title:
 
 ```bash
-python3 {baseDir}/scripts/merge_and_build.py --temp-dir "<temp_dir>" --title "<translated_title>" --cleanup
+python3 {baseDir}/scripts/merge_and_build.py --temp-dir "<temp_dir>" --title "<translated_title>"
 ```
 
 If the user provided `epub_cover`, add `--cover "<epub_cover>"`. If the user
 provided `export_name`, add `--export-name "<export_name>"`.
 
-The `--cleanup` flag removes intermediate files (chunks, input.html, etc.) after a fully successful build. If the user asked to keep intermediates, omit `--cleanup`.
+Add `--cleanup` only if the user explicitly asks to delete intermediate files.
+After a fully successful build it permanently removes `chunk*.md`,
+`output_chunk*.md`, `input.html`, `input.md` and `output.html`, so a single
+chunk can no longer be fixed or re-translated (Step 9) without converting and
+translating the whole book again.
 
 The script reads `output_lang` from `config.txt` automatically. Optional overrides: `--lang`, `--author`.
 
@@ -426,3 +430,22 @@ Tell the user:
 - The translated title
 - List generated output files with sizes
 - Any format generation failures
+
+### 9. Fix Individual Chunks After a Build
+
+When the user reports problems in a few places of a finished book, fix the
+chunks, not `output.md`: edits made to `output.md` are lost the next time any
+chunk changes, because the build then re-merges it from the chunks.
+
+- **Correct a translation by hand**: edit `<temp_dir>/output_chunk<NNNN>.md`,
+  then record it and rebuild:
+
+  ```bash
+  python3 {baseDir}/scripts/run_state.py record "<temp_dir>" chunk<NNNN>
+  python3 {baseDir}/scripts/merge_and_build.py --temp-dir "<temp_dir>" --title "<translated_title>"
+  ```
+
+  The build re-merges because the chunk is newer than `output.md`, then
+  regenerates the HTML and every output format.
+- **Re-translate a chunk**: delete `<temp_dir>/output_chunk<NNNN>.md` and run
+  Steps 3.7 to 7 again; the planner queues only chunks without an output.
