@@ -301,8 +301,8 @@ python3 scripts/merge_and_build.py --temp-dir book_temp --title "《译后书名
 | `Blank output` / `Empty output` | 某个 subagent 写出了空白或空的 chunk — 重新运行 skill 让它重译 |
 | `Missing source chunk` | 源文件被删除 — 重新运行 `convert.py` 重新生成 |
 | 翻译不完整 | 重新运行 Skill，会从中断处继续 |
-| 修改标题、模板或图片后输出未更新 | 删除 temp 目录中的 `output.md`、`book*.html`、`book.docx`、`book.epub`、`book.pdf`，然后重跑 `merge_and_build.py` |
 | 构建完成后要修改个别 chunk | 编辑 `output_chunkNNNN.md` 并运行 `run_state.py record <temp_dir> chunkNNNN`，或删除该文件让 Skill 重新翻译它。然后重跑 `merge_and_build.py`：只要有 chunk 比 `output.md` 新，就会重新合并。直接改在 `output.md` 里的内容，会在下次任何 chunk 变化时丢失。之后还可能要改的话，不要加 `--cleanup` —— 它会删除所有 chunk |
+| 修改标题、模板或图片后输出未更新 | 删除 temp 目录中的 `output.md`、`book*.html`、`book.docx`、`book.epub`、`book.pdf`，然后重跑 `merge_and_build.py` |
 | 想去掉 PDF 输出中的页码 | 默认会自动识别单调递增的页码序列（如 `1, 2, 3, ...`）并删除，同时保留年份（`1984`）、章节编号、引用编号等离散的独立数字行。若识别不到你的页码格式，可给 `convert.py` 加 `--strip-page-numbers`，强制删除所有独立数字行。该标志在检测到已缓存的 `input.md` 或 `chunk*.md` 时会直接报错 — 需先删除这些缓存，标志才会生效 |
 | `output.md exists but manifest invalid` | 旧输出已过时 — 脚本会自动删除并重新合并 |
 | `Glossary upgrade rejected: duplicate source` | v2 不允许两个术语共用同一个 source/alias 表面词。手工编辑 `glossary.json` 消歧（例如把一个 source 从 `Apple` 改为 `Apple (Inc.)`）后重新加载。 |
