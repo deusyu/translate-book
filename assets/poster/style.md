@@ -25,4 +25,4 @@
 - 输入格式标签("PDF · DOCX · EPUB")从书上方的独立说明移到黑书内部。
 - 左轨标题为动词序列:Convert · split / Translate ×8 / Verify · resume / Merge · build(13px,规线加宽到 144,虚线轨起点右移到 212,避免与英文标题尾部相碰)。
 - 红书保留巨字《译》与印章——对英文读者直观传达"翻译成另一种语言",副标 "WHOLE BOOK · TRANSLATED"。
-- 英文海报嵌入 `README.md`,中文海报嵌入 `README.zh-CN.md`(两个 README 需同步维护)。
+- 英文海报嵌入 `README.md` 和 `README.ja.md`,中文海报嵌入 `README.zh-CN.md`(三个 README 需同步维护)。

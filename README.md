@@ -1,6 +1,6 @@
 # Rainman Translate Book
 
-English | [中文](README.zh-CN.md)
+English | [中文](README.zh-CN.md) | [日本語](README.ja.md)
 
 An agent skill for Codex, Claude Code, and OpenClaw that translates entire books (PDF/DOCX/EPUB) into any language using parallel subagents.
 

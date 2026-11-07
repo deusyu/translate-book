@@ -50,7 +50,7 @@ Verify: all output_chunk*.md files exist, manifest validation passes, output for
 - Script paths in SKILL.md use `{baseDir}` not hardcoded paths
 - Subagent instructions in SKILL.md must be platform-neutral (work on Codex, Claude Code, OpenClaw)
 - Checked-in baseline inputs live under `tests/baselines/<book-id>/`; generated full-pipeline outputs live under `tests/.artifacts/`
-- README changes must be synced to both README.md and README.zh-CN.md
+- README changes must be synced to README.md, README.zh-CN.md, and README.ja.md
 - Releases follow `.claude/commands/release.md` — three commands in order: `git push origin main`, `git tag vX.Y.Z && git push --tags`, `npx clawhub@latest publish ./ --version X.Y.Z`. Do not skip the git tag; it's the only version anchor in the repo
 
 ## Do not
