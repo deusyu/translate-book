@@ -437,6 +437,14 @@ Tell the user:
 - The translated title
 - List generated output files with sizes
 - Any format generation failures
+- That the intermediate files are kept so passages can still be fixed
+  (Step 9), and that they can ask for cleanup once they are done with the book
+
+Do not run `--cleanup` as part of this report. Offer it only after the user
+says they expect no more edits, and before running it, say what it deletes
+(see Step 7). Re-running the Step 7 build command with the same flags plus
+`--cleanup` keeps the existing outputs and then deletes the intermediates; if
+any format fails, the script skips cleanup and keeps them.
 
 ### 9. Spot Fixes After the Build
 
