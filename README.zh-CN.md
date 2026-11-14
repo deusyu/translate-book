@@ -32,7 +32,8 @@ Calibre ebook-convert → HTMLZ → HTML → Markdown
 校验（manifest hash 比对，源文件↔输出文件 1:1 匹配）
   │
   ▼
-合并 → Pandoc → HTML（含目录）→ Calibre → DOCX / EPUB / PDF
+合并 → Pandoc → HTML（含目录）→ Calibre → DOCX / PDF
+     → Pandoc → EPUB（目录取自标题；失败时退回 Calibre）
 ```
 
 每个 chunk 由独立的 subagent 翻译，拥有全新的上下文窗口。这避免了单次会话翻译整本书时的上下文堆积和输出截断问题。
@@ -54,7 +55,7 @@ Calibre ebook-convert → HTMLZ → HTML → Markdown
 - **Calibre** — `ebook-convert` 命令可用（[下载](https://calibre-ebook.com/)）
 - **Pandoc** — 用于 HTML↔Markdown 转换（[下载](https://pandoc.org/)）
 - **Python 3**，需要：
-  - `pypandoc` — 必需（`pip install pypandoc`）
+  - `pypandoc` — 可选（`pip install pypandoc`）；没有时直接调用 `pandoc` 命令
   - `beautifulsoup4` — 可选，用于更好的目录生成（`pip install beautifulsoup4`）
 - **MinerU 或 Marker** — 可选，仅用于把公式、表格密集的 PDF 预先转成 Markdown（见[第一步](#第一步转换)）
 
@@ -253,16 +254,16 @@ Skill 分批启动 subagent（默认 8 路并发）。每个 subagent：
 ### 第三步：合并与构建
 
 ```bash
-python3 scripts/merge_and_build.py --temp-dir book_temp --title "《译后书名》"
+python3 scripts/merge_and_build.py --temp-dir book_temp --title "译后书名"
 ```
 
 可选输出参数：
 
 ```bash
-python3 scripts/merge_and_build.py --temp-dir book_temp --title "《译后书名》" --cover cover.jpg --export-name "译后书名"
+python3 scripts/merge_and_build.py --temp-dir book_temp --title "译后书名" --cover cover.jpg --export-name "译后书名"
 ```
 
-`--cover` 会把显式封面图传给 EPUB 的 Calibre 步骤。`--export-name` 会额外生成如 `译后书名.epub` 的别名副本，同时保留内部 canonical 的 `book.*` 产物。`book_doc` 是保留名称（不区分大小写），会在构建前被拒绝，因为其 HTML 别名会覆盖 `book_doc.html`。
+`--title` 会成为阅读器页眉里显示的元数据书名，传入时不要加书名号或引号（外层的 `《》` 会被去掉）。`--cover` 指定 EPUB 封面；不指定时，如果全书以一张图片开头（原版封面），这张图会成为 EPUB 封面。`--export-name` 会额外生成如 `译后书名.epub` 的别名副本，同时保留内部 canonical 的 `book.*` 产物。`book_doc` 是保留名称（不区分大小写），会在构建前被拒绝，因为其 HTML 别名会覆盖 `book_doc.html`。
 
 合并前校验：
 - 每个源 chunk 都有对应的输出文件（1:1 匹配）
@@ -270,7 +271,7 @@ python3 scripts/merge_and_build.py --temp-dir book_temp --title "《译后书名
 - 输出文件不为空、非纯空白（whitespace-only）、可正常读取 — 空白 chunk 会中止合并，而不是静默丢失该段内容
 - 每个输出 chunk 保留源 chunk 中的全部脚注标记（`[^N]` 和 `[^N]:`），不会留下悬空的引用或注释
 
-校验通过后：合并 → Pandoc 生成 HTML → 注入目录 → Calibre 生成 DOCX、EPUB、PDF。
+校验通过后：合并 → Pandoc 生成 HTML → 注入目录 → Calibre 生成 DOCX 和 PDF；EPUB 由 Pandoc 直接从 `output.md` 生成，导航目录取自 Markdown 标题，任何语言都能正确生成（Calibre 自带的目录识别只认 Chapter 之类的英文单词）。Pandoc 失败时由 Calibre 生成 EPUB。
 
 构建完成后中间文件会保留在 temp 目录里，因此少量译文有问题时不必整本重译：可以直接修改对应的 `output_chunkNNNN.md`，再运行 `python3 scripts/run_state.py record <temp_dir> chunkNNNN`；也可以删除该文件后重新运行 Skill 重译它。`record` 会把这个 chunk 标记为与当前术语表和源文一致，所以先运行 `python3 scripts/run_state.py plan <temp_dir>` 看一下：如果这个 chunk 因为术语表或源文有改动而被列入重译，就在修改时一并改掉，或者改为重译。如果改动的是源 chunk 本身，要先重跑 `convert.py`，让 `manifest.json` 记下新内容，否则合并会报“Source changed since splitting”。这次重跑不要带 `--strip-page-numbers` 这类页码参数：chunk 已存在时它们会直接报错，如果按报错提示删掉缓存文件，chunk 也就没了。重新运行 Skill 时，计划里还可能列出翻译之后术语有变动的其他 chunk，Skill 会先询问再重译。然后重跑 `merge_and_build.py`：只要有 chunk 比 `output.md` 新，它就会重新合并并重新生成各格式成品。不要直接改 `output.md` — 之后任何一次重新合并都会用 chunk 重建它。`--cleanup` 会永久删除 `chunk*.md`、`output_chunk*.md` 和 `input.*`，之后就无法再做这类局部修订；只在整本书定稿后使用。
 

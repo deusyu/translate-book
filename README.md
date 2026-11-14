@@ -32,7 +32,8 @@ Parallel subagents (8 concurrent by default)
 Validate (manifest hash check, 1:1 source↔output match)
   │
   ▼
-Merge → Pandoc → HTML (with TOC) → Calibre → DOCX / EPUB / PDF
+Merge → Pandoc → HTML (with TOC) → Calibre → DOCX / PDF
+      → Pandoc → EPUB (TOC from headings; Calibre fallback)
 ```
 
 Each chunk gets its own independent subagent with a fresh context window. This prevents context accumulation and output truncation that happen when translating a full book in a single session.
@@ -54,7 +55,7 @@ Each chunk gets its own independent subagent with a fresh context window. This p
 - **Calibre** — `ebook-convert` command must be available ([download](https://calibre-ebook.com/))
 - **Pandoc** — for HTML↔Markdown conversion ([download](https://pandoc.org/))
 - **Python 3** with:
-  - `pypandoc` — required (`pip install pypandoc`)
+  - `pypandoc` — optional (`pip install pypandoc`); without it the `pandoc` binary is called directly
   - `beautifulsoup4` — optional, for better TOC generation (`pip install beautifulsoup4`)
 - **MinerU or Marker** — optional, only to pre-extract formula- and table-heavy PDFs to Markdown (see [Step 1](#step-1-convert))
 
@@ -253,16 +254,16 @@ Before launching subagents, `scripts/run_state.py plan <temp_dir>` decides which
 ### Step 3: Merge & Build
 
 ```bash
-python3 scripts/merge_and_build.py --temp-dir book_temp --title "《translated title》"
+python3 scripts/merge_and_build.py --temp-dir book_temp --title "translated title"
 ```
 
 Optional output flags:
 
 ```bash
-python3 scripts/merge_and_build.py --temp-dir book_temp --title "《translated title》" --cover cover.jpg --export-name "translated-title"
+python3 scripts/merge_and_build.py --temp-dir book_temp --title "translated title" --cover cover.jpg --export-name "translated-title"
 ```
 
-`--cover` passes an explicit image to the EPUB Calibre step. `--export-name` creates alias copies such as `translated-title.epub` while preserving the canonical `book.*` pipeline artifacts. The name `book_doc` (case-insensitive) is reserved and rejected before building because its HTML alias would overwrite `book_doc.html`.
+`--title` becomes the metadata title that readers show in page headers, so pass it without 书名号 or quotes (a wrapping `《》` is stripped). `--cover` sets an explicit EPUB cover; without it, an image that opens the book (the source edition's cover) becomes the EPUB cover. `--export-name` creates alias copies such as `translated-title.epub` while preserving the canonical `book.*` pipeline artifacts. The name `book_doc` (case-insensitive) is reserved and rejected before building because its HTML alias would overwrite `book_doc.html`.
 
 Before merging, the script validates:
 - Every source chunk has a corresponding output file (1:1 match)
@@ -270,7 +271,7 @@ Before merging, the script validates:
 - No output files are empty, blank (whitespace-only), or unreadable — a blank chunk aborts the merge instead of silently dropping its content
 - Every output chunk keeps its source chunk's footnote markers (`[^N]` and `[^N]:`), so no reference or note is left dangling
 
-Then: merge → Pandoc HTML → inject TOC → Calibre generates DOCX, EPUB, PDF.
+Then: merge → Pandoc HTML → inject TOC → Calibre generates DOCX and PDF; Pandoc builds the EPUB from `output.md`, so its navigation comes from the Markdown headings in any language (Calibre's own TOC detection only recognises English words such as "Chapter"). Calibre builds the EPUB if Pandoc fails.
 
 Intermediate files stay in the temp dir after the build, so a few bad passages can be fixed without re-translating the book. Either edit the affected `output_chunkNNNN.md` and run `python3 scripts/run_state.py record <temp_dir> chunkNNNN`, or delete the file and re-run the skill to re-translate it. `record` marks the chunk as matching the current glossary and source, so run `python3 scripts/run_state.py plan <temp_dir>` first: if that chunk is queued for re-translation because the glossary or its source changed, apply those changes in your edit or re-translate it instead. If the source chunk itself was edited, re-run `convert.py` first so `manifest.json` records the change; otherwise the merge stops with "Source changed since splitting". Leave out page-number flags such as `--strip-page-numbers` on that re-run: once chunks exist they abort, and deleting the cached files as the error suggests would discard the chunks. A re-run may also queue other chunks whose glossary terms changed after they were translated; the skill asks before re-translating those. Then re-run `merge_and_build.py`: it re-merges when a chunk is newer than `output.md` and regenerates the outputs. Do not edit `output.md` itself — any later re-merge rebuilds it from the chunks. `--cleanup` permanently deletes `chunk*.md`, `output_chunk*.md`, and `input.*`, which rules such fixes out; use it only when you are done with the book.
 

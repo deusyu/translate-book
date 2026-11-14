@@ -5,6 +5,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 SCRIPT_DIR = Path(__file__).resolve().parents[1] / "scripts"
@@ -624,6 +625,24 @@ class CleanCalibreAstMarkupTests(unittest.TestCase):
 
         self.assertEqual(doc["blocks"][0]["c"], [_str("A"), SPACE, _str("B"), SPACE, _str("C")])
 
+    def test_unwraps_links_to_other_files_of_the_source_book(self):
+        # Calibre leaves a link to a part of the EPUB it did not keep (the
+        # cover page) as a relative file link; it cannot resolve after
+        # translation and readers built a one-entry "Cover" TOC from it.
+        doc = _doc(_para(
+            _link("9780063517578_Cover.xhtml#cover", _str("Cover")), SPACE,
+            _link("mailto:me@example.com", _str("mail")), SPACE,
+            _link("http://www.harpercollins.com", _str("hc.com")),
+        ))
+
+        convert.clean_calibre_ast(doc)
+
+        self.assertEqual(
+            doc["blocks"][0]["c"],
+            [_str("Cover"), SPACE, _link("mailto:me@example.com", _str("mail")), SPACE,
+             _link("http://www.harpercollins.com", _str("hc.com"))],
+        )
+
     def test_clears_external_link_attributes(self):
         # Calibre classes such as `pcalibre1` survive on external links and
         # would be written out as `[site](https://example.com){.pcalibre1}`.
@@ -730,6 +749,62 @@ class ConvertHtmlToMarkdownPandocTests(unittest.TestCase):
                 md.read_text(encoding="utf-8").strip(),
                 "1\n\n## Chapter One\n\nOpening text.\n\n4\\. Not a list.",
             )
+
+
+class PandocWithoutPypandocTests(unittest.TestCase):
+    """The pandoc binary is enough: pypandoc is only a convenience wrapper."""
+
+    def test_falls_back_to_the_pandoc_binary(self):
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            if "-t" in cmd and cmd[cmd.index("-t") + 1] == "json":
+                return mock.Mock(stdout='{"pandoc-api-version":[1,23],"meta":{},"blocks":[]}')
+            Path(cmd[cmd.index("-o") + 1]).write_text("Body text.\n", encoding="utf-8")
+            return mock.Mock(stdout="")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            html = Path(tmp) / "input.html"
+            md = Path(tmp) / "input.md"
+            html.write_text("<p>Body text.</p>", encoding="utf-8")
+            with mock.patch.dict(sys.modules, {"pypandoc": None}), \
+                    mock.patch.object(convert.subprocess, "run", side_effect=fake_run), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                self.assertTrue(convert.convert_html_to_markdown(str(html), str(md)))
+            self.assertEqual(md.read_text(encoding="utf-8").strip(), "Body text.")
+
+        self.assertEqual([c[0] for c in calls], ["pandoc", "pandoc"])
+        self.assertIn("--reference-location=block", calls[1])
+
+    def test_reports_missing_pandoc(self):
+        out = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            html = Path(tmp) / "input.html"
+            html.write_text("<p>x</p>", encoding="utf-8")
+            with mock.patch.dict(sys.modules, {"pypandoc": None}), \
+                    mock.patch.object(convert.subprocess, "run", side_effect=FileNotFoundError), \
+                    contextlib.redirect_stdout(out):
+                self.assertFalse(convert.convert_html_to_markdown(str(html), str(Path(tmp) / "o.md")))
+        self.assertIn("pandoc", out.getvalue())
+
+
+class HtmlTitleTests(unittest.TestCase):
+    def test_reads_the_title_calibre_copies_into_input_html(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            html = Path(tmp) / "input.html"
+            html.write_text(
+                "<html><head><title>Profits, Prophets &amp;amp;\n Kings</title></head><body/></html>",
+                encoding="utf-8",
+            )
+            self.assertEqual(convert._html_title(str(html)), "Profits, Prophets &amp; Kings")
+
+    def test_missing_title_or_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            html = Path(tmp) / "input.html"
+            html.write_text("<html><body>x</body></html>", encoding="utf-8")
+            self.assertIsNone(convert._html_title(str(html)))
+            self.assertIsNone(convert._html_title(str(Path(tmp) / "none.html")))
 
 
 class TempRootTests(unittest.TestCase):

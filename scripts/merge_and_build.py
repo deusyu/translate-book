@@ -12,6 +12,7 @@ import re
 import glob
 import shutil
 import subprocess
+import tempfile
 import argparse
 import html as _html_lib
 from collections import Counter
@@ -1007,8 +1008,149 @@ def generate_format(html_file, temp_dir, output_ext, lang_attr, cover=None):
         return None
 
 
-def generate_formats(temp_dir, lang_attr, cover=None):
-    """Generate DOCX, EPUB, and PDF with result summary"""
+_CJK_LANGS = ('zh', 'ja', 'ko')
+
+_LEADING_IMAGE_RE = re.compile(r'\A\s*!\[[^\]]*\]\(([^)\s]+)(?:\s+"[^"]*")?\)[ \t]*\n')
+
+
+def _epub_css(lang_attr):
+    """Minimal reading stylesheet for the pandoc EPUB; readers override fonts."""
+    indent = '2em' if lang_attr.split('-')[0].lower() in _CJK_LANGS else '0'
+    return (
+        "body { line-height: 1.7; }\n"
+        f"p {{ text-indent: {indent}; margin: 0.4em 0; }}\n"
+        "li p, blockquote p, figure p, .footnotes p { text-indent: 0; }\n"
+        "li { text-align: left; }\n"
+        "h1 { font-size: 1.6em; margin: 1.5em 0 1em; text-align: center; }\n"
+        "h2 { font-size: 1.3em; margin: 1.4em 0 0.8em; }\n"
+        "img { max-width: 100%; height: auto; }\n"
+    )
+
+
+def _split_leading_cover(md_text, temp_dir):
+    """Return (cover_path, body) when the book opens with an image.
+
+    Calibre puts the source EPUB's cover image first in the HTML, so the
+    translated Markdown starts with it. Used as the EPUB cover, it must leave
+    the body, or the reader shows the cover twice.
+    """
+    match = _LEADING_IMAGE_RE.match(md_text)
+    if not match:
+        return None, md_text
+    path = os.path.join(temp_dir, match.group(1))
+    if not os.path.isfile(path):
+        return None, md_text
+    return os.path.abspath(path), md_text[match.end():].lstrip('\n')
+
+
+def _epub_stale_reasons(output_file, sources, temp_dir, cover):
+    """Why output_file needs a rebuild; an empty list means it is up to date."""
+    if not os.path.exists(output_file):
+        return ['missing']
+    output_mtime = os.path.getmtime(output_file)
+    reasons = [f"{os.path.basename(s)} changed" for s in sources
+               if os.path.exists(s) and os.path.getmtime(s) > output_mtime]
+    images_dir = os.path.join(temp_dir, 'images')
+    if os.path.isdir(images_dir):
+        for img in os.listdir(images_dir):
+            img_path = os.path.join(images_dir, img)
+            if os.path.isfile(img_path) and os.path.getmtime(img_path) > output_mtime:
+                reasons.append("image assets changed")
+                break
+    if cover and os.path.getmtime(cover) > output_mtime:
+        reasons.append("cover image changed")
+    return reasons
+
+
+def generate_epub_with_pandoc(temp_dir, title, author, lang_cfg, cover=None):
+    """Build book.epub from output.md with pandoc. Returns the path, or None.
+
+    Calibre's HTML -> EPUB step builds the table of contents from headings
+    whose text matches English words (chapter, part, ...), so for other
+    languages it falls back to the book's own links: the result was a TOC
+    holding only "Cover", or entries that all point at the first file without
+    anchors (every entry shows the same page in Apple Books). Pandoc builds the
+    navigation from the Markdown headings themselves, with one anchor per
+    entry, in any language.
+    """
+    md_file = os.path.join(temp_dir, 'output.md')
+    html_file = os.path.join(temp_dir, 'book_doc.html')
+    output_file = os.path.join(temp_dir, 'book.epub')
+    if not os.path.exists(md_file) or not check_pandoc_available():
+        return None
+
+    reasons = _epub_stale_reasons(output_file, [md_file, html_file], temp_dir, cover)
+    if not reasons:
+        print(f"Skipping .epub - already exists and up to date ({os.path.getsize(output_file):,} bytes)")
+        return output_file
+    if reasons != ['missing']:
+        print(f"Rebuilding .epub - {', '.join(reasons)}")
+
+    with open(md_file, 'r', encoding='utf-8') as f:
+        md_text = f.read()
+    if cover:
+        leading, body = _split_leading_cover(md_text, temp_dir)
+        if leading and os.path.samefile(leading, cover):
+            md_text = body
+    else:
+        cover, md_text = _split_leading_cover(md_text, temp_dir)
+
+    lang_attr = lang_cfg['lang_attr']
+    fd, epub_md = tempfile.mkstemp(prefix='.epub_src_', suffix='.md', dir=temp_dir)
+    css_fd, css_file = tempfile.mkstemp(prefix='.epub_', suffix='.css', dir=temp_dir)
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            f.write(md_text)
+        with os.fdopen(css_fd, 'w', encoding='utf-8') as f:
+            f.write(_epub_css(lang_attr))
+        base_cmd = [
+            'pandoc', epub_md, '-f', 'markdown', '-t', 'epub3', '-o', output_file,
+            '--toc', '--toc-depth=2', '--css', css_file,
+            '--resource-path', temp_dir,
+            '--metadata', f'title={title}',
+            '--metadata', f'author={author}',
+            '--metadata', f'lang={lang_attr}',
+            '--metadata', f"toc-title={lang_cfg['toc_label']}",
+        ]
+        if cover:
+            base_cmd.append(f'--epub-cover-image={cover}')
+        # --split-level is pandoc 3's name for --epub-chapter-level.
+        for split_flag in ('--split-level=1', '--epub-chapter-level=1'):
+            result = subprocess.run(base_cmd + [split_flag], capture_output=True, text=True, cwd=temp_dir)
+            if result.returncode == 0 and os.path.exists(output_file):
+                print(f"EPUB built with pandoc ({os.path.getsize(output_file):,} bytes)")
+                return output_file
+            if 'split-level' not in (result.stderr or ''):
+                break
+        print(f"pandoc EPUB build failed: {(result.stderr or '').strip()[-500:]}")
+        # Leave no book.epub behind: the Calibre fallback skips an existing one.
+        if os.path.exists(output_file):
+            os.remove(output_file)
+        return None
+    finally:
+        for path in (epub_md, css_file):
+            if os.path.exists(path):
+                os.remove(path)
+
+
+def _metadata_title(title):
+    """Drop the 《》 a Chinese title is often wrapped in.
+
+    Readers show the metadata title in page headers and library views, where
+    书名号 look wrong; they belong around a title quoted inside prose.
+    """
+    title = title.strip()
+    if title.startswith('《') and title.endswith('》') and title.count('《') == 1:
+        title = title[1:-1].strip()
+    return title
+
+
+def generate_formats(temp_dir, lang_attr, cover=None, title=None, author=None, lang_cfg=None):
+    """Generate DOCX, EPUB, and PDF with result summary.
+
+    With title/author/lang_cfg the EPUB comes from pandoc (see
+    generate_epub_with_pandoc); Calibre remains the fallback.
+    """
     print("=== Generating output formats ===")
 
     html_file = os.path.join(temp_dir, "book_doc.html")
@@ -1022,7 +1164,18 @@ def generate_formats(temp_dir, lang_attr, cover=None):
 
     results = {}
     for ext in ['.docx', '.epub', '.pdf']:
-        result = generate_format(html_file, temp_dir, ext, lang_attr, cover=cover)
+        result = None
+        if ext == '.epub' and title is not None and lang_cfg is not None:
+            result = generate_epub_with_pandoc(temp_dir, title, author or '', lang_cfg, cover=cover)
+            if not result:
+                print("Falling back to Calibre for .epub")
+        if not result:
+            result = generate_format(html_file, temp_dir, ext, lang_attr, cover=cover)
+        if not result and ext == '.pdf':
+            # Calibre's PDF renderer (Qt WebEngine) fails intermittently on
+            # macOS with GPU backend errors; a second run usually succeeds.
+            print("Retrying .pdf once")
+            result = generate_format(html_file, temp_dir, ext, lang_attr, cover=cover)
         if result:
             file_size = os.path.getsize(result)
             results[ext] = ('OK', f"{file_size:,} bytes")
@@ -1126,7 +1279,7 @@ def main():
     lang_code = args.lang or config.get('output_lang', 'zh')
     lang_cfg = get_lang_config(lang_code)
 
-    title = args.title or config.get('original_title', 'Translated Book')
+    title = _metadata_title(args.title or config.get('original_title', 'Translated Book'))
     author = args.author or config.get('creator', 'Unknown Author')
 
     print(f"=== Merge and Build ===")
@@ -1147,7 +1300,8 @@ def main():
     add_toc(temp_dir)
 
     # Step 7: Generate formats
-    all_formats_ok = generate_formats(temp_dir, lang_cfg['lang_attr'], cover=cover)
+    all_formats_ok = generate_formats(temp_dir, lang_cfg['lang_attr'], cover=cover,
+                                      title=title, author=author, lang_cfg=lang_cfg)
 
     if export_name:
         if all_formats_ok:
