@@ -32,7 +32,8 @@ Parallel subagents (8 concurrent by default)
 Validate (manifest hash check, 1:1 source↔output match)
   │
   ▼
-Merge → Pandoc → HTML (with TOC) → Calibre → DOCX / EPUB / PDF
+Merge → Pandoc → HTML (with TOC) → Calibre → DOCX / PDF
+      → Pandoc → EPUB (TOC from headings; Calibre fallback)
 ```
 
 チャンクごとに、新しいコンテキストウィンドウを持つ独立したサブエージェントが割り当てられます。1 つのセッションで書籍全体を翻訳するときに起きるコンテキストの蓄積や出力の途切れを防ぐためです。
@@ -54,7 +55,7 @@ Merge → Pandoc → HTML (with TOC) → Calibre → DOCX / EPUB / PDF
 - **Calibre** — `ebook-convert` コマンドが使えること（[ダウンロード](https://calibre-ebook.com/)）
 - **Pandoc** — HTML↔Markdown 変換に使用（[ダウンロード](https://pandoc.org/)）
 - **Python 3** と以下のパッケージ:
-  - `pypandoc` — 必須（`pip install pypandoc`）
+  - `pypandoc` — 任意（`pip install pypandoc`）。ない場合は `pandoc` コマンドを直接呼び出します
   - `beautifulsoup4` — 任意。目次生成の精度が上がります（`pip install beautifulsoup4`）
 - **MinerU または Marker** — 任意。数式や表の多い PDF を事前に Markdown へ抽出する場合のみ（[ステップ 1](#ステップ-1変換) を参照）
 
@@ -253,16 +254,16 @@ python3 scripts/convert.py paper.md --olang zh
 ### ステップ 3：マージとビルド
 
 ```bash
-python3 scripts/merge_and_build.py --temp-dir book_temp --title "《translated title》"
+python3 scripts/merge_and_build.py --temp-dir book_temp --title "translated title"
 ```
 
 オプションの出力フラグ:
 
 ```bash
-python3 scripts/merge_and_build.py --temp-dir book_temp --title "《translated title》" --cover cover.jpg --export-name "translated-title"
+python3 scripts/merge_and_build.py --temp-dir book_temp --title "translated title" --cover cover.jpg --export-name "translated-title"
 ```
 
-`--cover` は、指定した画像を EPUB を生成する Calibre のステップに渡します。`--export-name` は、パイプラインの正規の成果物 `book.*` を残したまま、`translated-title.epub` のような別名のコピーを作ります。`book_doc` という名前（大文字小文字を区別しない）は予約されており、HTML の別名が `book_doc.html` を上書きしてしまうため、ビルド前に拒否されます。
+`--title` はリーダーのページヘッダーに表示されるメタデータのタイトルになるため、書名号（`《》`）や引用符を付けずに渡してください（外側の `《》` は取り除かれます）。`--cover` は EPUB の表紙を指定します。指定しない場合、書籍の先頭にある画像（原書の表紙）が EPUB の表紙になります。`--export-name` は、パイプラインの正規の成果物 `book.*` を残したまま、`translated-title.epub` のような別名のコピーを作ります。`book_doc` という名前（大文字小文字を区別しない）は予約されており、HTML の別名が `book_doc.html` を上書きしてしまうため、ビルド前に拒否されます。
 
 マージの前に、スクリプトは次の点を検証します:
 - すべてのソースチャンクに対応する出力ファイルがあること（1:1 の対応）
@@ -270,7 +271,7 @@ python3 scripts/merge_and_build.py --temp-dir book_temp --title "《translated t
 - 空、空白のみ、または読み取れない出力ファイルがないこと。空白だけのチャンクがあると、その内容を黙って落とすのではなくマージを中断します
 - すべての出力チャンクが、ソースチャンクの脚注マーカー（`[^N]` と `[^N]:`）を保持していること。参照や注釈が宙に浮くことはありません
 
-その後: マージ → Pandoc で HTML → 目次を挿入 → Calibre で DOCX、EPUB、PDF を生成。
+その後: マージ → Pandoc で HTML → 目次を挿入 → Calibre で DOCX と PDF を生成。EPUB は Pandoc が `output.md` から直接生成するため、ナビゲーションは Markdown の見出しから作られ、どの言語でも正しく機能します（Calibre 独自の目次検出は "Chapter" などの英単語しか認識しません）。Pandoc が失敗した場合は Calibre が EPUB を生成します。
 
 ビルド後も中間ファイルは一時ディレクトリに残るため、問題のある数か所を直すのに書籍全体を再翻訳する必要はありません。該当する `output_chunkNNNN.md` を編集して `python3 scripts/run_state.py record <temp_dir> chunkNNNN` を実行するか、そのファイルを削除してスキルを再実行し、再翻訳させます。`record` はそのチャンクを現在の用語集とソースに一致するものとして記録するので、先に `python3 scripts/run_state.py plan <temp_dir>` を実行してください。用語集やソースの変更によってそのチャンクが再翻訳の対象になっている場合は、その変更も編集に反映するか、代わりに再翻訳します。ソースチャンク自体を編集した場合は、`manifest.json` に変更が記録されるよう先に `convert.py` を再実行してください。そうしないとマージは "Source changed since splitting" で停止します。この再実行では `--strip-page-numbers` などのページ番号フラグを付けないでください。チャンクが存在するとそれらのフラグは中断し、エラーの指示どおりにキャッシュファイルを削除するとチャンクも失われます。再実行では、翻訳後に用語が変わった他のチャンクが再翻訳の対象に並ぶこともあります。その場合、スキルは再翻訳する前に確認します。最後に `merge_and_build.py` を再実行します。`output.md` より新しいチャンクがあれば再マージし、出力を作り直します。`output.md` 自体は編集しないでください。以降の再マージでチャンクから作り直されます。`--cleanup` は `chunk*.md`、`output_chunk*.md`、`input.*` を完全に削除するため、こうした修正はできなくなります。書籍を仕上げ終えたときだけ使ってください。
 

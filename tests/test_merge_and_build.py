@@ -675,3 +675,118 @@ class ImageValidationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MetadataTitleTests(unittest.TestCase):
+    def test_strips_wrapping_book_title_marks(self):
+        self.assertEqual(merge_and_build._metadata_title("《财阀、先知、主帅与君王》"), "财阀、先知、主帅与君王")
+        self.assertEqual(merge_and_build._metadata_title("  Plain Title "), "Plain Title")
+
+    def test_keeps_marks_that_do_not_wrap_the_whole_title(self):
+        title = "《A》与《B》"
+        self.assertEqual(merge_and_build._metadata_title(title), title)
+
+
+class PandocEpubTests(unittest.TestCase):
+    LANG_CFG = merge_and_build.get_lang_config("zh")
+
+    def _book(self, temp_dir, md):
+        os.makedirs(os.path.join(temp_dir, "images"))
+        Path(temp_dir, "images", "cover.jpg").write_bytes(b"jpg")
+        Path(temp_dir, "output.md").write_text(md, encoding="utf-8")
+        Path(temp_dir, "book_doc.html").write_text("<html></html>", encoding="utf-8")
+
+    def _run(self, temp_dir, cover=None, returncode=0):
+        seen = {}
+
+        def fake_run(cmd, **kwargs):
+            src = cmd[1]
+            seen["cmd"] = cmd
+            seen["source"] = Path(src).read_text(encoding="utf-8")
+            seen["css"] = Path(cmd[cmd.index("--css") + 1]).read_text(encoding="utf-8")
+            if returncode == 0:
+                Path(cmd[cmd.index("-o") + 1]).write_bytes(b"epub")
+            return SimpleNamespace(returncode=returncode, stdout="", stderr="boom")
+
+        with mock.patch.object(merge_and_build, "check_pandoc_available", return_value=True), \
+                mock.patch.object(merge_and_build.subprocess, "run", side_effect=fake_run), \
+                contextlib.redirect_stdout(io.StringIO()):
+            result = merge_and_build.generate_epub_with_pandoc(
+                temp_dir, "书名", "作者", self.LANG_CFG, cover=cover)
+        return result, seen
+
+    def test_builds_toc_from_headings_and_uses_leading_image_as_cover(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            self._book(temp_dir, "![](images/cover.jpg)\n\n# 第一部分\n\n## 第1章\n\n正文。\n")
+            result, seen = self._run(temp_dir)
+
+            self.assertEqual(result, os.path.join(temp_dir, "book.epub"))
+            cmd = seen["cmd"]
+            self.assertIn("--toc", cmd)
+            self.assertIn("title=书名", cmd)
+            self.assertIn("lang=zh-CN", cmd)
+            self.assertIn("toc-title=目录", cmd)
+            self.assertIn(f"--epub-cover-image={os.path.join(temp_dir, 'images', 'cover.jpg')}", cmd)
+            # The cover image moves to the EPUB cover instead of opening the body.
+            self.assertTrue(seen["source"].startswith("# 第一部分"))
+            self.assertIn("text-indent: 2em", seen["css"])
+            # Temporary source and stylesheet are removed.
+            self.assertEqual(sorted(os.listdir(temp_dir)),
+                             ["book.epub", "book_doc.html", "images", "output.md"])
+
+    def test_explicit_cover_keeps_a_different_leading_image_in_the_body(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            self._book(temp_dir, "![](images/cover.jpg)\n\n# 标题\n")
+            other = os.path.join(temp_dir, "other.jpg")
+            Path(other).write_bytes(b"jpg")
+            _, seen = self._run(temp_dir, cover=other)
+
+            self.assertIn(f"--epub-cover-image={other}", seen["cmd"])
+            self.assertTrue(seen["source"].startswith("![](images/cover.jpg)"))
+
+    def test_returns_none_when_pandoc_fails(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            self._book(temp_dir, "# 标题\n")
+            result, _ = self._run(temp_dir, returncode=1)
+            self.assertIsNone(result)
+
+    def test_generate_formats_falls_back_to_calibre_for_epub(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            Path(temp_dir, "book_doc.html").write_text("<html></html>", encoding="utf-8")
+            calls = []
+
+            def fake_generate_format(html_file, temp_dir_, ext, lang_attr, cover=None):
+                calls.append(ext)
+                return os.path.join(temp_dir_, "book" + ext)
+
+            for ext in (".docx", ".epub", ".pdf"):
+                Path(temp_dir, "book" + ext).write_bytes(b"x")
+            with mock.patch.object(merge_and_build, "generate_epub_with_pandoc", return_value=None), \
+                    mock.patch.object(merge_and_build, "generate_format", side_effect=fake_generate_format), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                ok = merge_and_build.generate_formats(
+                    temp_dir, "zh-CN", title="书名", author="作者", lang_cfg=self.LANG_CFG)
+
+            self.assertTrue(ok)
+            self.assertEqual(calls, [".docx", ".epub", ".pdf"])
+
+    def test_generate_formats_retries_pdf_once(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            Path(temp_dir, "book_doc.html").write_text("<html></html>", encoding="utf-8")
+            attempts = {".pdf": 0}
+
+            def fake_generate_format(html_file, temp_dir_, ext, lang_attr, cover=None):
+                path = os.path.join(temp_dir_, "book" + ext)
+                if ext == ".pdf":
+                    attempts[".pdf"] += 1
+                    if attempts[".pdf"] == 1:
+                        return None
+                Path(path).write_bytes(b"x")
+                return path
+
+            with mock.patch.object(merge_and_build, "generate_format", side_effect=fake_generate_format), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                ok = merge_and_build.generate_formats(temp_dir, "zh-CN")
+
+            self.assertTrue(ok)
+            self.assertEqual(attempts[".pdf"], 2)

@@ -122,6 +122,21 @@ def extract_metadata_from_htmlz(extract_dir):
         return {}
 
 
+def _html_title(html_file):
+    """The <title> of an HTML file, or None. Calibre copies the book title there."""
+    try:
+        with open(html_file, 'r', encoding='utf-8', errors='replace') as f:
+            head = f.read(65536)
+    except OSError:
+        return None
+    match = re.search(r'<title[^>]*>(.*?)</title>', head, re.IGNORECASE | re.DOTALL)
+    if not match:
+        return None
+    import html as html_lib
+    title = html_lib.unescape(re.sub(r'\s+', ' ', match.group(1))).strip()
+    return title or None
+
+
 def extract_htmlz(htmlz_file, temp_dir):
     """Extract HTMLZ file and return paths to HTML and images"""
     try:
@@ -538,6 +553,20 @@ def convert_footnotes(blocks):
     return len(used)
 
 
+_URL_SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
+
+
+def _is_in_book_target(target):
+    """True for a link into the source book rather than out of it.
+
+    Calibre rewrites resolvable in-book links to `#anchor` targets, but a link
+    to a part of the book it did not keep (a cover page, a nav file) stays a
+    relative file link such as `9780063517578_Cover.xhtml#cover`. Neither kind
+    can resolve in the translated book, so both lose their target.
+    """
+    return target.startswith("#") or not _URL_SCHEME.match(target)
+
+
 def _unwrap_inline_markup(inlines):
     """Unwrap spans and in-book links, clear the attributes of other links, and
     drop empty anchors inside text.
@@ -557,7 +586,7 @@ def _unwrap_inline_markup(inlines):
         t = x.get("t")
         if _is_anchor(x):
             continue
-        if t == "Span" or (t == "Link" and (x["c"][2][0].startswith("#") or _is_filler(x))):
+        if t == "Span" or (t == "Link" and (_is_in_book_target(x["c"][2][0]) or _is_filler(x))):
             pending.extend(reversed(x["c"][1]))
         else:
             if t == "Link":
@@ -589,8 +618,9 @@ def clean_calibre_ast(doc):
     """Structural cleanup of a pandoc JSON AST read from Calibre's HTML, in place.
 
     - EPUB footnotes become real pandoc notes (see convert_footnotes()).
-    - In-book links lose their targets but keep their text: the ids they point
-      at do not survive into the translated book.
+    - In-book links (`#anchor` or a relative file such as `Cover.xhtml#c`) lose
+      their targets but keep their text: what they point at does not survive
+      into the translated book.
     - Spans are unwrapped, so `{lang="…"}` and class attributes never reach
       the Markdown.
     - Empty anchors inside text (`<a id="page_12"/>`) are dropped.
@@ -604,25 +634,58 @@ def clean_calibre_ast(doc):
     return footnotes
 
 
-def convert_html_to_markdown(html_file, md_file, strip_page_numbers=False, detect_page_numbers=True):
-    """Convert HTML to Markdown using pandoc"""
+def _pandoc_html_to_json(html_file):
+    """Read an HTML file into a pandoc JSON AST string.
+
+    Uses pypandoc when it is installed and falls back to the pandoc binary, so
+    a machine with pandoc but without the Python wrapper still converts.
+    """
     try:
         import pypandoc
+    except ImportError:
+        pypandoc = None
+    if pypandoc is not None:
+        return pypandoc.convert_file(html_file, 'json')
+    result = subprocess.run(
+        ['pandoc', html_file, '-f', 'html', '-t', 'json'],
+        capture_output=True, text=True, check=True,
+    )
+    return result.stdout
 
-        doc = json.loads(pypandoc.convert_file(html_file, 'json'))
+
+def _pandoc_json_to_markdown(json_text, md_file, extra_args):
+    """Write a pandoc JSON AST string to md_file as pandoc Markdown."""
+    try:
+        import pypandoc
+    except ImportError:
+        pypandoc = None
+    if pypandoc is not None:
+        pypandoc.convert_text(
+            json_text, 'markdown-smart', format='json',
+            outputfile=md_file, extra_args=extra_args,
+        )
+        return
+    subprocess.run(
+        ['pandoc', '-f', 'json', '-t', 'markdown-smart', '-o', md_file, *extra_args],
+        input=json_text, capture_output=True, text=True, check=True,
+    )
+
+
+def convert_html_to_markdown(html_file, md_file, strip_page_numbers=False, detect_page_numbers=True):
+    """Convert HTML to Markdown using pandoc (pypandoc, or the pandoc binary)"""
+    try:
+        doc = json.loads(_pandoc_html_to_json(html_file))
         footnotes = clean_calibre_ast(doc)
         if footnotes:
             print(f"Converted {footnotes} footnote(s) to Markdown footnotes")
-        pypandoc.convert_text(
+        _pandoc_json_to_markdown(
             json.dumps(doc),
+            md_file,
             # Without smart, typographic dashes and quotes stay Unicode instead
             # of becoming ---, -- and backslash-escaped ASCII quotes.
-            'markdown-smart',
-            format='json',
-            outputfile=md_file,
             # block puts each note right after the paragraph citing it, so a
             # note and its reference usually land in the same chunk.
-            extra_args=['--wrap=none', '--reference-location=block'],
+            ['--wrap=none', '--reference-location=block'],
         )
 
         if os.path.exists(md_file):
@@ -645,8 +708,12 @@ def convert_html_to_markdown(html_file, md_file, strip_page_numbers=False, detec
         else:
             print("Markdown file was not created")
             return False
-    except ImportError:
-        print("pypandoc not found. Install with: pip install pypandoc")
+    except FileNotFoundError:
+        print("Neither pypandoc nor the pandoc binary was found. "
+              "Install pandoc (https://pandoc.org/installing.html) or: pip install pypandoc")
+        return False
+    except subprocess.CalledProcessError as e:
+        print(f"HTML to Markdown conversion failed: {(e.stderr or '').strip()[-500:]}")
         return False
     except Exception as e:
         print(f"HTML to Markdown conversion failed: {e}")
@@ -1544,6 +1611,10 @@ def main():
                                     metadata['language'] = value
                 except Exception as e:
                     print(f"Warning: Could not read metadata from config: {e}")
+            if 'title' not in metadata:
+                html_title = _html_title(input_html_path)
+                if html_title:
+                    metadata['title'] = html_title
 
             input_md = os.path.join(temp_dir, "input.md")
             _abort_on_strip_cache_conflict(
@@ -1585,6 +1656,10 @@ def main():
             temp_dir = setup_temp_directory(input_file, html_file, images_dir, temp_root=args.temp_root)
             if not temp_dir:
                 sys.exit(1)
+            # Write the metadata now: later steps can fail (no pandoc, say), and
+            # a re-run takes the cached input.html path, which only finds the
+            # book's title and author in config.txt.
+            create_config_file(temp_dir, input_file, args.ilang, args.olang, metadata)
 
             input_html = os.path.join(temp_dir, "input.html")
             input_md = os.path.join(temp_dir, "input.md")
