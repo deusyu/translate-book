@@ -54,7 +54,7 @@ Each chunk gets its own independent subagent with a fresh context window. This p
 - **Calibre** — `ebook-convert` command must be available ([download](https://calibre-ebook.com/))
 - **Pandoc** — for HTML↔Markdown conversion ([download](https://pandoc.org/))
 - **Python 3** with:
-  - `pypandoc` — required (`pip install pypandoc`)
+  - `pypandoc` — optional (`pip install pypandoc`); without it the `pandoc` binary is called directly
   - `beautifulsoup4` — optional, for better TOC generation (`pip install beautifulsoup4`)
 - **MinerU or Marker** — optional, only to pre-extract formula- and table-heavy PDFs to Markdown (see [Step 1](#step-1-convert))
 
@@ -253,16 +253,16 @@ Before launching subagents, `scripts/run_state.py plan <temp_dir>` decides which
 ### Step 3: Merge & Build
 
 ```bash
-python3 scripts/merge_and_build.py --temp-dir book_temp --title "《translated title》"
+python3 scripts/merge_and_build.py --temp-dir book_temp --title "translated title"
 ```
 
 Optional output flags:
 
 ```bash
-python3 scripts/merge_and_build.py --temp-dir book_temp --title "《translated title》" --cover cover.jpg --export-name "translated-title"
+python3 scripts/merge_and_build.py --temp-dir book_temp --title "translated title" --cover cover.jpg --export-name "translated-title"
 ```
 
-`--cover` passes an explicit image to the EPUB Calibre step. `--export-name` creates alias copies such as `translated-title.epub` while preserving the canonical `book.*` pipeline artifacts. The name `book_doc` (case-insensitive) is reserved and rejected before building because its HTML alias would overwrite `book_doc.html`.
+`--title` becomes the metadata title that readers show in page headers, so pass it without 书名号 or quotes (a wrapping `《》` is stripped). `--cover` passes an explicit image to the EPUB Calibre step. `--export-name` creates alias copies such as `translated-title.epub` while preserving the canonical `book.*` pipeline artifacts. The name `book_doc` (case-insensitive) is reserved and rejected before building because its HTML alias would overwrite `book_doc.html`.
 
 Before merging, the script validates:
 - Every source chunk has a corresponding output file (1:1 match)

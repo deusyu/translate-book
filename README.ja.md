@@ -54,7 +54,7 @@ Merge → Pandoc → HTML (with TOC) → Calibre → DOCX / EPUB / PDF
 - **Calibre** — `ebook-convert` コマンドが使えること（[ダウンロード](https://calibre-ebook.com/)）
 - **Pandoc** — HTML↔Markdown 変換に使用（[ダウンロード](https://pandoc.org/)）
 - **Python 3** と以下のパッケージ:
-  - `pypandoc` — 必須（`pip install pypandoc`）
+  - `pypandoc` — 任意（`pip install pypandoc`）。ない場合は `pandoc` コマンドを直接呼び出します
   - `beautifulsoup4` — 任意。目次生成の精度が上がります（`pip install beautifulsoup4`）
 - **MinerU または Marker** — 任意。数式や表の多い PDF を事前に Markdown へ抽出する場合のみ（[ステップ 1](#ステップ-1変換) を参照）
 
@@ -253,16 +253,16 @@ python3 scripts/convert.py paper.md --olang zh
 ### ステップ 3：マージとビルド
 
 ```bash
-python3 scripts/merge_and_build.py --temp-dir book_temp --title "《translated title》"
+python3 scripts/merge_and_build.py --temp-dir book_temp --title "translated title"
 ```
 
 オプションの出力フラグ:
 
 ```bash
-python3 scripts/merge_and_build.py --temp-dir book_temp --title "《translated title》" --cover cover.jpg --export-name "translated-title"
+python3 scripts/merge_and_build.py --temp-dir book_temp --title "translated title" --cover cover.jpg --export-name "translated-title"
 ```
 
-`--cover` は、指定した画像を EPUB を生成する Calibre のステップに渡します。`--export-name` は、パイプラインの正規の成果物 `book.*` を残したまま、`translated-title.epub` のような別名のコピーを作ります。`book_doc` という名前（大文字小文字を区別しない）は予約されており、HTML の別名が `book_doc.html` を上書きしてしまうため、ビルド前に拒否されます。
+`--title` はリーダーのページヘッダーに表示されるメタデータのタイトルになるため、書名号（`《》`）や引用符を付けずに渡してください（外側の `《》` は取り除かれます）。`--cover` は、指定した画像を EPUB を生成する Calibre のステップに渡します。`--export-name` は、パイプラインの正規の成果物 `book.*` を残したまま、`translated-title.epub` のような別名のコピーを作ります。`book_doc` という名前（大文字小文字を区別しない）は予約されており、HTML の別名が `book_doc.html` を上書きしてしまうため、ビルド前に拒否されます。
 
 マージの前に、スクリプトは次の点を検証します:
 - すべてのソースチャンクに対応する出力ファイルがあること（1:1 の対応）

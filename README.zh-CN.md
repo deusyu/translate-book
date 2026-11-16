@@ -54,7 +54,7 @@ Calibre ebook-convert → HTMLZ → HTML → Markdown
 - **Calibre** — `ebook-convert` 命令可用（[下载](https://calibre-ebook.com/)）
 - **Pandoc** — 用于 HTML↔Markdown 转换（[下载](https://pandoc.org/)）
 - **Python 3**，需要：
-  - `pypandoc` — 必需（`pip install pypandoc`）
+  - `pypandoc` — 可选（`pip install pypandoc`）；没有时直接调用 `pandoc` 命令
   - `beautifulsoup4` — 可选，用于更好的目录生成（`pip install beautifulsoup4`）
 - **MinerU 或 Marker** — 可选，仅用于把公式、表格密集的 PDF 预先转成 Markdown（见[第一步](#第一步转换)）
 
@@ -253,16 +253,16 @@ Skill 分批启动 subagent（默认 8 路并发）。每个 subagent：
 ### 第三步：合并与构建
 
 ```bash
-python3 scripts/merge_and_build.py --temp-dir book_temp --title "《译后书名》"
+python3 scripts/merge_and_build.py --temp-dir book_temp --title "译后书名"
 ```
 
 可选输出参数：
 
 ```bash
-python3 scripts/merge_and_build.py --temp-dir book_temp --title "《译后书名》" --cover cover.jpg --export-name "译后书名"
+python3 scripts/merge_and_build.py --temp-dir book_temp --title "译后书名" --cover cover.jpg --export-name "译后书名"
 ```
 
-`--cover` 会把显式封面图传给 EPUB 的 Calibre 步骤。`--export-name` 会额外生成如 `译后书名.epub` 的别名副本，同时保留内部 canonical 的 `book.*` 产物。`book_doc` 是保留名称（不区分大小写），会在构建前被拒绝，因为其 HTML 别名会覆盖 `book_doc.html`。
+`--title` 会成为阅读器页眉里显示的元数据书名，传入时不要加书名号或引号（外层的 `《》` 会被去掉）。`--cover` 会把显式封面图传给 EPUB 的 Calibre 步骤。`--export-name` 会额外生成如 `译后书名.epub` 的别名副本，同时保留内部 canonical 的 `book.*` 产物。`book_doc` 是保留名称（不区分大小写），会在构建前被拒绝，因为其 HTML 别名会覆盖 `book_doc.html`。
 
 合并前校验：
 - 每个源 chunk 都有对应的输出文件（1:1 匹配）

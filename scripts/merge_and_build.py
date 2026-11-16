@@ -1007,6 +1007,18 @@ def generate_format(html_file, temp_dir, output_ext, lang_attr, cover=None):
         return None
 
 
+def _metadata_title(title):
+    """Drop the 《》 a Chinese title is often wrapped in.
+
+    Readers show the metadata title in page headers and library views, where
+    书名号 look wrong; they belong around a title quoted inside prose.
+    """
+    title = title.strip()
+    if title.startswith('《') and title.endswith('》') and title.count('《') == 1:
+        title = title[1:-1].strip()
+    return title
+
+
 def generate_formats(temp_dir, lang_attr, cover=None):
     """Generate DOCX, EPUB, and PDF with result summary"""
     print("=== Generating output formats ===")
@@ -1023,6 +1035,11 @@ def generate_formats(temp_dir, lang_attr, cover=None):
     results = {}
     for ext in ['.docx', '.epub', '.pdf']:
         result = generate_format(html_file, temp_dir, ext, lang_attr, cover=cover)
+        if not result and ext == '.pdf':
+            # Calibre's PDF renderer (Qt WebEngine) fails intermittently on
+            # macOS with GPU backend errors; a second run usually succeeds.
+            print("Retrying .pdf once")
+            result = generate_format(html_file, temp_dir, ext, lang_attr, cover=cover)
         if result:
             file_size = os.path.getsize(result)
             results[ext] = ('OK', f"{file_size:,} bytes")
@@ -1126,7 +1143,7 @@ def main():
     lang_code = args.lang or config.get('output_lang', 'zh')
     lang_cfg = get_lang_config(lang_code)
 
-    title = args.title or config.get('original_title', 'Translated Book')
+    title = _metadata_title(args.title or config.get('original_title', 'Translated Book'))
     author = args.author or config.get('creator', 'Unknown Author')
 
     print(f"=== Merge and Build ===")

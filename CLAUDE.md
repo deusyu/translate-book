@@ -24,7 +24,7 @@ translate-book is an agent skill for Codex, Claude Code, and OpenClaw that trans
 - **Unit tests need nothing else.** Every third-party import in `scripts/` is guarded
   (`try/except ImportError` or function-local), so the suite runs on a bare stdlib.
 - **The full pipeline additionally needs** Calibre (`ebook-convert`) and Pandoc binaries,
-  plus the `pypandoc`, `beautifulsoup4`, and `markdown` packages. Missing pieces degrade
+  plus the `beautifulsoup4` and `markdown` packages (`pypandoc` is optional: `convert.py` calls the `pandoc` binary without it). Missing pieces degrade
   individual output formats rather than failing the run.
 
 ## Testing changes
