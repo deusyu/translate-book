@@ -28,6 +28,15 @@ class ConvertWithPandocTests(unittest.TestCase):
         self.assertIn("--mathml", cmd)
         self.assertEqual(cmd[cmd.index("--to") + 1], "html5")
 
+    def test_uses_ascii_heading_ids(self):
+        # Non-ASCII ids lose their anchors in Calibre's split EPUB TOC.
+        with mock.patch.object(merge_and_build.subprocess, "run") as run_mock:
+            with contextlib.redirect_stdout(io.StringIO()):
+                merge_and_build.convert_with_pandoc("in.md", "out.html", "Title", "zh-CN")
+
+        cmd = run_mock.call_args.args[0]
+        self.assertIn("+ascii_identifiers", cmd[cmd.index("--from") + 1])
+
 
 class GenerateFormatTests(unittest.TestCase):
     def _write_file(self, path, content="data"):
