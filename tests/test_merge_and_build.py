@@ -363,6 +363,76 @@ class FootnoteValidationTests(unittest.TestCase):
         self.assertNotIn("[^1]", rendered)
 
 
+class FigureTextValidationTests(unittest.TestCase):
+    SOURCE = (
+        "![Flow](images/flow.png)\n\n"
+        '::: {.figure-text image="images/flow.png"}\n- Client\n- Load balancer\n:::\n\n'
+        "After.\n"
+    )
+    TRANSLATED = (
+        "![流程](images/flow.png)\n\n"
+        '::: {.figure-text image="images/flow.png"}\n- 客户端\n- 负载均衡器\n:::\n\n'
+        "之后。\n"
+    )
+
+    def _write(self, path, content):
+        Path(path).write_text(content, encoding="utf-8")
+
+    def _validate(self, source, output):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            self._write(Path(temp_dir) / "chunk0001.md", source)
+            self._write(Path(temp_dir) / "output_chunk0001.md", output)
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                ok = merge_and_build._validate_chunk_figure_text(temp_dir)
+        return ok, buf.getvalue()
+
+    def test_passes_when_only_the_items_are_translated(self):
+        ok, out = self._validate(self.SOURCE, self.TRANSLATED)
+        self.assertTrue(ok, msg=out)
+
+    def test_passes_without_figure_text(self):
+        ok, out = self._validate("Text.\n", "正文。\n")
+        self.assertTrue(ok, msg=out)
+
+    def test_fails_when_the_closing_fence_is_lost(self):
+        ok, out = self._validate(self.SOURCE, self.TRANSLATED.replace("\n:::\n", "\n：：：\n"))
+        self.assertFalse(ok)
+        self.assertIn("blocks without a closing ::: line: 1", out)
+
+    def test_fails_when_the_opening_line_is_altered(self):
+        altered = self.TRANSLATED.replace('image="images/flow.png"}', 'image="图片/flow.png"}')
+        ok, out = self._validate(self.SOURCE, altered)
+        self.assertFalse(ok)
+        self.assertIn("""missing opening lines (count): [('::: {.figure-text image="images/flow.png"}', 1)]""", out)
+        self.assertIn("""extra   opening lines (count): [('::: {.figure-text image="图片/flow.png"}', 1)]""", out)
+
+    def test_fails_when_the_output_predates_the_injected_text(self):
+        ok, out = self._validate(self.SOURCE, "![流程](images/flow.png)\n\n之后。\n")
+        self.assertFalse(ok)
+        self.assertIn("translate it again", out)
+
+    def test_merge_fails_and_removes_stale_output_on_divergence(self):
+        from manifest import create_manifest
+
+        with tempfile.TemporaryDirectory() as tmp:
+            temp_dir = Path(tmp)
+            self._write(temp_dir / "input.md", self.SOURCE)
+            self._write(temp_dir / "chunk0001.md", self.SOURCE)
+            self._write(temp_dir / "output_chunk0001.md", self.TRANSLATED.replace("\n:::\n", "\n"))
+            with contextlib.redirect_stdout(io.StringIO()):
+                create_manifest(str(temp_dir), ["chunk0001.md"], str(temp_dir / "input.md"))
+            self._write(temp_dir / "output.md", "stale merged content")
+
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                ok = merge_and_build.merge_markdown_files(str(temp_dir))
+
+            self.assertFalse(ok)
+            self.assertFalse((temp_dir / "output.md").exists())
+            self.assertIn("Figure text validation failed", buf.getvalue())
+
+
 class ImageValidationTests(unittest.TestCase):
     """Validates _validate_chunk_images, _check_generated_html_sanity, and the
     basic-regex alt-escape fix. Together these guard against subagent-produced

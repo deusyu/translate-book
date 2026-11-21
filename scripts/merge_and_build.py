@@ -196,6 +196,65 @@ def _validate_chunk_footnotes(temp_dir):
     return True
 
 
+# Figure text from figure_text.py is a pandoc fenced div. A dropped closing `:::`
+# pulls the rest of the book into the div; an altered opening line prints as text.
+_FIGURE_TEXT_OPEN_RE = re.compile(r'^:{3,}\s*\{\.figure-text\b')
+_FENCE_CLOSE_RE = re.compile(r'^:{3,}$')
+
+
+def _scan_figure_text(text):
+    """Return (Counter of figure-text opening lines, number of them left unclosed)."""
+    openers = Counter()
+    unclosed = 0
+    inside = False
+    for line in text.split('\n'):
+        stripped = line.strip()
+        if _FIGURE_TEXT_OPEN_RE.match(stripped):
+            openers[stripped] += 1
+            unclosed += inside
+            inside = True
+        elif inside and _FENCE_CLOSE_RE.match(stripped):
+            inside = False
+    return openers, unclosed + inside
+
+
+def _validate_chunk_figure_text(temp_dir):
+    """Verify each output_chunk*.md keeps the figure-text blocks of its chunk*.md.
+
+    Returns False on any divergence and prints every error at once.
+    """
+    temp_path = Path(temp_dir)
+    errors = []
+    for src_chunk in sorted(temp_path.glob('chunk*.md')):
+        out_chunk = temp_path / f'output_{src_chunk.name}'
+        if not out_chunk.exists():
+            continue
+        src_text = read_output_text(src_chunk)
+        out_text = read_output_text(out_chunk)
+        if src_text is None or out_text is None:
+            continue  # unreadable files are the manifest validator's job
+        src_open, _ = _scan_figure_text(src_text)
+        out_open, out_unclosed = _scan_figure_text(out_text)
+        if src_open != out_open or out_unclosed:
+            errors.append(
+                f"ERROR: {out_chunk.name} figure-text blocks diverge from {src_chunk.name}\n"
+                f"  missing opening lines (count): {sorted((src_open - out_open).items()) or 'none'}\n"
+                f"  extra   opening lines (count): {sorted((out_open - src_open).items()) or 'none'}\n"
+                f"  blocks without a closing ::: line: {out_unclosed}\n"
+                f"  fix: in {out_chunk.name}, copy each `::: {{.figure-text ...}}` line and the `:::` line "
+                f"closing it unchanged from {src_chunk.name}; translate only the list items between them. "
+                f"If the chunk was translated before figure text was injected, translate it again"
+            )
+
+    if errors:
+        print("\n=== Figure text validation failed ===")
+        for e in errors:
+            print(e)
+            print()
+        return False
+    return True
+
+
 def _check_generated_html_sanity(html_path):
     """Sanity-check generated HTML for malformed <img> tags. Returns False on problems.
 
@@ -344,10 +403,11 @@ def merge_markdown_files(temp_dir):
     # Always validate manifest, even if output.md exists (catch stale/corrupt outputs)
     ok, ordered_files, warnings = validate_for_merge(temp_dir)
 
-    # Image and footnote validation run unconditionally — bad chunks invalidate any cached output.md
+    # Image, footnote and figure-text validation run unconditionally — bad chunks invalidate any cached output.md
     images_ok = _validate_chunk_images(temp_dir)
     footnotes_ok = _validate_chunk_footnotes(temp_dir)
-    if not (images_ok and footnotes_ok):
+    figure_text_ok = _validate_chunk_figure_text(temp_dir)
+    if not (images_ok and footnotes_ok and figure_text_ok):
         if os.path.exists(output_md):
             print("Removing stale output.md (built from chunks that failed validation)")
             os.remove(output_md)
