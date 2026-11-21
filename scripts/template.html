@@ -216,6 +216,25 @@
             box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
         }
 
+        /* 图内文字样式 */
+        .figure-text {
+            margin: 1rem 0 2rem;
+            padding: 0.75rem 1.25rem;
+            border-left: 3px solid #cbd5e0;
+            background-color: #f7fafc;
+            color: #4a5568;
+            font-size: 0.9rem;
+        }
+
+        .figure-text ul {
+            margin: 0;
+            padding-left: 1.25rem;
+        }
+
+        .figure-text li {
+            margin-bottom: 0.25rem;
+        }
+
         /* 列表样式 */
         ul, ol {
             margin: 1.25rem 0;
@@ -464,7 +483,7 @@
                 page-break-inside: avoid;
             }
 
-            blockquote, pre {
+            blockquote, pre, .figure-text {
                 page-break-inside: avoid;
             }
 

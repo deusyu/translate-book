@@ -14,6 +14,7 @@ translate-book is an agent skill for Codex, Claude Code, and OpenClaw that trans
 - `scripts/meta.py` — Per-chunk sub-agent observation file schema
 - `scripts/merge_meta.py` — Batch-boundary merge of sub-agent observations into the canonical glossary
 - `scripts/run_state.py` — Selective re-translation planner and run_state.json recorder
+- `scripts/figure_text.py` — Text inside figures: lists images awaiting recognition, validates the recognition sidecars, injects their text into chunks so it is translated with the body
 - `scripts/merge_and_build.py` — Merge translated chunks → HTML/DOCX/EPUB/PDF
 - `scripts/calibre_html_publish.py` — Calibre format conversion wrapper
 - `scripts/template.html`, `scripts/template_ebook.html` — HTML templates

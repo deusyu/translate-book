@@ -60,13 +60,17 @@ def create_manifest(temp_dir, chunk_files, source_md_path):
         "source_hash": source_hash,
         "chunks": chunks,
     }
-
-    manifest_path = os.path.join(temp_dir, "manifest.json")
-    with open(manifest_path, 'w', encoding='utf-8') as f:
-        json.dump(manifest, f, indent=2, ensure_ascii=False)
+    save_manifest(temp_dir, manifest)
 
     print(f"Created manifest.json ({len(chunks)} chunks)")
     return manifest
+
+
+def save_manifest(temp_dir, manifest):
+    """Write manifest.json into temp_dir."""
+    manifest_path = os.path.join(temp_dir, "manifest.json")
+    with open(manifest_path, 'w', encoding='utf-8') as f:
+        json.dump(manifest, f, indent=2, ensure_ascii=False)
 
 
 def load_manifest(temp_dir):
