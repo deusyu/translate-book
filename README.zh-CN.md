@@ -267,7 +267,7 @@ python3 scripts/convert.py paper.md --olang zh
 |---|---|---|---|---|
 | [MinerU](https://github.com/opendatalab/MinerU) >= 4 | `pip install -U "mineru>=4.0,<5"` | `mineru-kit parse paper.pdf -o paper.md` | `paper.md` | 纯 CPU 的 basic 档约需 0.8 GB 模型 |
 | [Marker](https://github.com/datalab-to/marker) | `pip install marker-pdf` | `marker_single paper.pdf --output_dir out/` | `out/paper/paper.md` | |
-| [docling](https://github.com/docling-project/docling) | `pip install docling` | `docling paper.pdf --enrich-formula --output out/` | `out/paper.md` | 不加 `--enrich-formula` 时，每个公式都会变成 `<!-- formula-not-decoded -->` |
+| [docling](https://github.com/docling-project/docling) | `pip install docling` | `docling paper.pdf --enrich-formula --output out/` | `out/paper.md` | 不加 `--enrich-formula` 时，每个公式都会变成 `<!-- formula-not-decoded -->`。只识别独立成行的公式，行内公式会变成普通文字 |
 
 这些解析器首次运行都会下载模型，命令行参数随版本变化（参数被拒时查看 `--help`），许可证也各不相同。如果 Markdown 里还留着解析器为丢弃的公式或图片写下的占位符（`<!-- formula-not-decoded -->`、`<!-- image -->`），`convert.py` 会给出警告：翻译前请按警告里的参数重新提取。
 
@@ -370,6 +370,7 @@ python3 scripts/merge_and_build.py --temp-dir book_temp --title "译后书名" -
 | `was created from different source bytes` | temp 目录属于另一个源文件 — 删除 temp 目录或换一个 `--temp-root` |
 | PDF 转换后公式、表格错乱 | 用[第一步](#第一步转换)表格中的解析器转出 Markdown，删除旧 temp 目录，再对 `.md` 运行 `convert.py` |
 | `formula(s) were not decoded` / `image(s) were exported as placeholders` | 解析器丢弃了这些内容 — 按警告里的参数重新提取，删除 temp 目录，再运行 `convert.py` |
+| `pandoc left N formula(s) as raw TeX` | pandoc 解析不了这段 LaTeX，公式会以 `$$...$$` 原文显示 — 用警告打印的片段找到对应的 `output_chunk*.md` 改正，再运行 `merge_and_build.py` |
 | `Blank output` / `Empty output` | 某个 subagent 写出了空白或空的 chunk — 重新运行 skill 让它重译 |
 | `Missing source chunk` | 源文件被删除 — 重新运行 `convert.py` 重新生成 |
 | 翻译不完整 | 重新运行 Skill，会从中断处继续 |

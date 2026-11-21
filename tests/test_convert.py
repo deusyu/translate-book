@@ -1,6 +1,8 @@
 import contextlib
 import io
 import os
+import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -1256,6 +1258,56 @@ class ImportMarkdownTests(unittest.TestCase):
                 convert.import_markdown(str(md), str(Path(tmp) / "book_temp"))
 
             self.assertNotIn("Warning", out.getvalue())
+
+    # Shaped like docling's formula output for arXiv 1706.03762: an equation
+    # number column, a two-row formula, and a trailing row break.
+    DOCLING_FORMULAS = [
+        r"$$A t t e n t i o n ( Q , K , V ) = \text {softmax} ( \frac { Q K ^ { T } } { \sqrt { d _ { k } } } ) V & & ( 1 )$$",
+        r"$$P E _ { ( p o s , 2 i ) } & = s i n ( p o s / 1 0 0 0 0 ^ { 2 i / d } ) \\ P E _ { ( p o s , 2 i + 1 ) } & = c o s ( p o s / 1 0 0 0 0 ^ { 2 i / d } )$$",
+        r"$$l r a t e = d _ { \text {model} } ^ { - 0 . 5 } \cdot \min ( s t e p ^ { - 0 . 5 } , w a r m u p ^ { - 1 . 5 } ) \quad \\$$",
+    ]
+
+    def test_wraps_display_math_with_bare_alignment_rows(self):
+        unchanged = [
+            r"$$\text{R\&D} = \begin{cases} a & b \\ c & d \end{cases}$$",
+            r"$$x_1 + x_2$$",
+            "Inline $a & b$ stays.",
+        ]
+        multiline = "$$\na &= b \\\\\nc &= d\n$$"
+        code = "```latex\n$$a & b$$\n```"
+        content = "\n\n".join(self.DOCLING_FORMULAS + unchanged + [multiline, code]) + "\n"
+
+        aligned, count = convert.align_display_math(content)
+
+        self.assertEqual(count, 4)
+        for formula in self.DOCLING_FORMULAS:
+            self.assertIn("$$\\begin{aligned}" + formula[2:-2] + "\\end{aligned}$$", aligned)
+        for text in unchanged + [code]:
+            self.assertIn(text, aligned)
+        self.assertIn("$$\\begin{aligned}\na &= b \\\\\nc &= d\n\\end{aligned}$$", aligned)
+        self.assertEqual(convert.align_display_math(aligned), (aligned, 0))
+
+    def test_import_reports_wrapped_formulas(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            md = self._source(tmp, self.DOCLING_FORMULAS[0] + "\n")
+            out = io.StringIO()
+
+            with contextlib.redirect_stdout(out):
+                content = convert.import_markdown(str(md), str(Path(tmp) / "book_temp"))
+
+        self.assertTrue(content.startswith("$$\\begin{aligned}A t t e n t i o n"))
+        self.assertIn("Wrapped 1 display formula(s)", out.getvalue())
+
+    @unittest.skipUnless(shutil.which("pandoc"), "pandoc is not installed")
+    def test_wrapped_formulas_render_as_mathml(self):
+        content, _ = convert.align_display_math("\n\n".join(self.DOCLING_FORMULAS) + "\n")
+        result = subprocess.run(
+            ["pandoc", "--from", "markdown+smart+east_asian_line_breaks", "--to", "html5", "--mathml"],
+            input=content, capture_output=True, text=True, check=True,
+        )
+
+        self.assertEqual(result.stdout.count("<math"), 3)
+        self.assertNotIn("Could not convert TeX math", result.stderr)
 
 
 class MarkdownMetadataTests(unittest.TestCase):

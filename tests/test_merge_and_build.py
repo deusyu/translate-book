@@ -20,13 +20,44 @@ import merge_and_build  # noqa: E402
 class ConvertWithPandocTests(unittest.TestCase):
     def test_renders_tex_math_as_mathml(self):
         with mock.patch.object(merge_and_build.subprocess, "run") as run_mock:
-            with contextlib.redirect_stdout(io.StringIO()):
+            run_mock.return_value.stderr = ""
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
                 ok = merge_and_build.convert_with_pandoc("in.md", "out.html", "Title", "zh-CN")
 
         self.assertTrue(ok)
         cmd = run_mock.call_args.args[0]
         self.assertIn("--mathml", cmd)
         self.assertEqual(cmd[cmd.index("--to") + 1], "html5")
+        self.assertNotIn("Warning", buf.getvalue())
+
+    def test_warns_about_formulas_left_as_raw_tex(self):
+        stderr = (
+            "[WARNING] Could not convert TeX math a & b, rendering as TeX:\n  a & b\n    ^\n  unexpected '&'\n"
+            "[WARNING] Could not convert TeX math x \\quad \\\\, rendering as TeX:\n  unexpected control sequence \\\\\n"
+        )
+        with mock.patch.object(merge_and_build.subprocess, "run") as run_mock:
+            run_mock.return_value.stderr = stderr
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                ok = merge_and_build.convert_with_pandoc("in.md", "out.html", "Title", "zh-CN")
+
+        self.assertTrue(ok)
+        out = buf.getvalue()
+        self.assertIn("Warning: pandoc left 2 formula(s) as raw TeX instead of MathML:", out)
+        self.assertIn("  a & b\n", out)
+        self.assertIn("  x \\quad \\\\\n", out)
+
+    @unittest.skipUnless(merge_and_build.check_pandoc_available(), "pandoc is not installed")
+    def test_real_pandoc_warning_is_recognized(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            md = Path(tmp) / "in.md"
+            md.write_text("$$a & b$$\n\n$$\\frac{1}{2}$$\n", encoding="utf-8")
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                ok = merge_and_build.convert_with_pandoc(str(md), str(Path(tmp) / "out.html"), "T", "en")
+        self.assertTrue(ok)
+        self.assertIn("pandoc left 1 formula(s) as raw TeX", buf.getvalue())
 
     def test_uses_ascii_heading_ids(self):
         # Non-ASCII ids lose their anchors in Calibre's split EPUB TOC.

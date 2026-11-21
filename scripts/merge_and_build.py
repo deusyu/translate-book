@@ -560,6 +560,9 @@ def merge_markdown_files(temp_dir):
 # Step 5: Convert markdown to HTML
 # =============================================================================
 
+_TEX_MATH_WARNING_RE = re.compile(r'Could not convert TeX math (.*?), rendering as TeX', re.DOTALL)
+
+
 def check_pandoc_available():
     """Check if pandoc is available"""
     try:
@@ -588,8 +591,14 @@ def convert_with_pandoc(md_file, html_file, title, lang_attr):
     ]
 
     try:
-        subprocess.run(cmd, capture_output=True, text=True, check=True)
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
         print("Converted with pandoc")
+        unconverted = _TEX_MATH_WARNING_RE.findall(result.stderr)
+        if unconverted:
+            print(f"Warning: pandoc left {len(unconverted)} formula(s) as raw TeX instead of MathML:")
+            for tex in unconverted[:5]:
+                tex = ' '.join(tex.split())
+                print(f"  {tex[:70]}{'...' if len(tex) > 70 else ''}")
         return True
     except subprocess.CalledProcessError as e:
         print(f"Pandoc conversion failed: {e.stderr}")
