@@ -269,7 +269,7 @@ python3 scripts/convert.py paper.md --olang zh
 | [Marker](https://github.com/datalab-to/marker) | `pip install marker-pdf` | `marker_single paper.pdf --output_dir out/` | `out/paper/paper.md` | |
 | [docling](https://github.com/docling-project/docling) | `pip install docling` | `docling paper.pdf --enrich-formula --output out/` | `out/paper.md` | 不加 `--enrich-formula` 时，每个公式都会变成 `<!-- formula-not-decoded -->`。只识别独立成行的公式，行内公式会变成普通文字 |
 
-这些解析器首次运行都会下载模型，命令行参数随版本变化（参数被拒时查看 `--help`），许可证也各不相同。如果 Markdown 里还留着解析器为丢弃的公式或图片写下的占位符（`<!-- formula-not-decoded -->`、`<!-- image -->`），`convert.py` 会给出警告：翻译前请按警告里的参数重新提取。
+这些解析器首次运行都会下载模型，命令行参数随版本变化（参数被拒时查看 `--help`），许可证也各不相同。如果 Markdown 里还留着解析器为丢弃的公式或图片写下的占位符（`<!-- formula-not-decoded -->`、`<!-- image -->`），`convert.py` 会给出警告：翻译前请按警告里的参数重新提取。有行内公式的文档请用 MinerU 或 Marker：docling 只保留独立成行的公式；Markdown 里有好几个独立成行的公式、却没有一个行内公式时，`convert.py` 也会给出警告。
 
 YAML front matter（`title`、`author`、`lang`）会写入 `config.txt`，不会送去翻译；没有 front matter 时，开头的 `#` 标题作为 `original_title`。temp 目录按 Markdown 文件名命名，`paper.md` 对应 `paper_temp/`；如果该目录之前由 `paper.pdf` 生成，`convert.py` 会因源文件指纹不一致而中止，需先删除它。`--strip-page-numbers` 和 `--detect-page-numbers` 只对 Calibre 输入生效。
 
@@ -370,6 +370,7 @@ python3 scripts/merge_and_build.py --temp-dir book_temp --title "译后书名" -
 | `was created from different source bytes` | temp 目录属于另一个源文件 — 删除 temp 目录或换一个 `--temp-root` |
 | PDF 转换后公式、表格错乱 | 用[第一步](#第一步转换)表格中的解析器转出 Markdown，删除旧 temp 目录，再对 `.md` 运行 `convert.py` |
 | `formula(s) were not decoded` / `image(s) were exported as placeholders` | 解析器丢弃了这些内容 — 按警告里的参数重新提取，删除 temp 目录，再运行 `convert.py` |
+| `display formula(s) but no inline math` | 解析器把行内公式压成了普通文字（docling 的标准流程就会这样）— 改用 MinerU 或 Marker 重新提取，删除 temp 目录，再运行 `convert.py`。如果文档本来就没有行内公式，忽略即可 |
 | `pandoc left N formula(s) as raw TeX` | pandoc 解析不了这段 LaTeX，公式会以 `$$...$$` 原文显示 — 用警告打印的片段找到对应的 `output_chunk*.md` 改正，再运行 `merge_and_build.py` |
 | `Blank output` / `Empty output` | 某个 subagent 写出了空白或空的 chunk — 重新运行 skill 让它重译 |
 | `Missing source chunk` | 源文件被删除 — 重新运行 `convert.py` 重新生成 |

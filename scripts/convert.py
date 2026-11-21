@@ -912,8 +912,9 @@ _DATA_URI_EXTENSIONS = {
     "webp": ".webp", "svg+xml": ".svg", "bmp": ".bmp",
 }
 # Comments a parser leaves where it dropped content; translation cannot bring it back.
+_FORMULA_PLACEHOLDER = "<!-- formula-not-decoded -->"
 _PARSER_PLACEHOLDERS = (
-    ("<!-- formula-not-decoded -->", "formula(s) were not decoded",
+    (_FORMULA_PLACEHOLDER, "formula(s) were not decoded",
      "re-extract with formula recognition on (docling: --enrich-formula)"),
     ("<!-- image -->", "image(s) were exported as placeholders",
      "re-extract with images embedded or referenced (docling: --image-export-mode embedded)"),
@@ -924,6 +925,10 @@ _PARSER_PLACEHOLDERS = (
 _DISPLAY_MATH_RE = re.compile(r'^([ \t]*\$\$)((?:(?!\n[ \t]*\n)[^$])+?)(\$\$[ \t]*)$', re.MULTILINE)
 _TEX_ENV_RE = re.compile(r'\\begin\{([^}]*)\}.*?\\end\{\1\}', re.DOTALL)
 _TEX_ALIGN_TOKEN_RE = re.compile(r'\\\\|\\.|&', re.DOTALL)
+# `$...$` as pandoc reads it: no space just inside either dollar, no digit right after the closing one.
+_INLINE_MATH_RE = re.compile(r'(?<![$\\])\$(?![\s$])(?:\\.|[^$\\\n])+?(?<!\s)\$(?![$\d])')
+# A document with only a formula or two may well have no inline math.
+_INLINE_MATH_CHECK_MIN_DISPLAY = 3
 
 _FRONT_MATTER_RE = re.compile(r'\A---[ \t]*\n(.*?)\n(?:---|\.\.\.)[ \t]*(?:\n|\Z)', re.DOTALL)
 _FRONT_MATTER_KEYS = {
@@ -1042,6 +1047,19 @@ def align_display_math(content):
     return '\n'.join(parts), wrapped
 
 
+def formula_counts(content):
+    """Return (display formulas, inline formulas) outside fenced code.
+
+    Placeholders for formulas a parser could not decode count as display formulas.
+    """
+    lines = content.split('\n')
+    code = _fenced_code_line_indices(lines)
+    text = '\n'.join(line for i, line in enumerate(lines) if i not in code)
+    display = len(_DISPLAY_MATH_RE.findall(text)) + text.count(_FORMULA_PLACEHOLDER)
+    inline = len(_INLINE_MATH_RE.findall(_DISPLAY_MATH_RE.sub('', text)))
+    return display, inline
+
+
 def import_markdown(md_path, temp_dir):
     r"""Return Markdown content ready for chunking, with images moved under temp_dir/images/.
 
@@ -1051,7 +1069,9 @@ def import_markdown(md_path, temp_dir):
     image payloads. Remote URLs stay untouched. YAML front matter is dropped
     from the body — its metadata goes to config.txt via markdown_metadata().
     Display formulas with bare `&` / `\\` rows are wrapped so pandoc can render
-    them, and placeholders a parser left for dropped formulas or images are reported.
+    them. Placeholders a parser left for dropped formulas or images are reported,
+    and so are display formulas without any inline math, the mark of a parser
+    that turned inline math into plain text.
     """
     with open(md_path, 'r', encoding='utf-8') as f:
         content = f.read()
@@ -1121,6 +1141,11 @@ def import_markdown(md_path, temp_dir):
         count = content.count(placeholder)
         if count:
             print(f"Warning: {count} {what} ({placeholder}); {fix}")
+    display, inline = formula_counts(content)
+    if display >= _INLINE_MATH_CHECK_MIN_DISPLAY and not inline:
+        print(f"Warning: {display} display formula(s) but no inline math; the parser may have "
+              "turned inline math into plain text (docling's standard pipeline does); "
+              "MinerU and Marker keep it as LaTeX")
     return content
 
 
