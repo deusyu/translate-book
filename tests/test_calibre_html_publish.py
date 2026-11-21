@@ -47,6 +47,9 @@ class ConvertHtmlWithCalibreTests(unittest.TestCase):
             self.assertIn("--epub-version", cmd)
             self.assertIn("3", cmd)
             self.assertNotIn("--disable-font-rescaling", cmd)
+            # TOC comes from heading levels, in any language.
+            self.assertEqual(cmd[cmd.index("--level1-toc") + 1], "//h:h1")
+            self.assertEqual(cmd[cmd.index("--level2-toc") + 1], "//h:h2")
 
     @unittest.skipUnless(
         "cover" in inspect.signature(calibre_html_publish.convert_html_with_calibre).parameters,

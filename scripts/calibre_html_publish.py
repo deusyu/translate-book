@@ -230,7 +230,12 @@ def convert_html_with_calibre(html_file, output_file, format_type, timeout=600, 
         "--language", lang,
         "--book-producer", "translate-book",
         "--preserve-cover-aspect-ratio",
-        "--smarten-punctuation"
+        "--smarten-punctuation",
+        # Build the TOC from heading levels. Calibre's default chapter
+        # detection only matches English words (chapter, part, ...), so a
+        # translated book otherwise gets no TOC entries for its chapters.
+        "--level1-toc", "//h:h1",
+        "--level2-toc", "//h:h2",
     ]
     
     # Add format-specific options
