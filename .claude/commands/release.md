@@ -9,6 +9,14 @@ is the only version anchor in this repo.
 
 `$1` is bare semver (e.g. `0.3.0`). The `v` prefix is applied only to the git tag, not to the ClawHub version.
 
+Before releasing, list the open release blockers:
+
+```bash
+gh issue list --label release-blocker --state open
+```
+
+If the list is not empty, stop and show it to the user. Release only after those issues are closed, or if the user explicitly says to release anyway.
+
 Release version `$1` by running these three steps in order. Stop and report immediately if any step fails — do not attempt to recover automatically.
 
 1. Push `main`:
@@ -17,11 +25,13 @@ Release version `$1` by running these three steps in order. Stop and report imme
    git push origin main
    ```
 
-2. Tag the release:
+2. Tag the release and push only that tag:
 
    ```bash
-   git tag v$1 && git push --tags
+   git tag v$1 && git push origin v$1
    ```
+
+   `git push --tags` pushes every local tag and fails when one of them differs from the tag of the same name on GitHub.
 
 3. Publish to ClawHub:
 
