@@ -214,7 +214,7 @@ python3 scripts/convert.py paper.md --olang zh
 |---|---|---|---|---|
 | [MinerU](https://github.com/opendatalab/MinerU) >= 4 | `pip install -U "mineru>=4.0,<5"` | `mineru-kit parse paper.pdf -o paper.md` | `paper.md` | CPU のみの basic 構成で約 0.8 GB のモデル |
 | [Marker](https://github.com/datalab-to/marker) | `pip install marker-pdf` | `marker_single paper.pdf --output_dir out/` | `out/paper/paper.md` | |
-| [docling](https://github.com/docling-project/docling) | `pip install docling` | `docling paper.pdf --enrich-formula --output out/` | `out/paper.md` | `--enrich-formula` を付けないと、数式はすべて `<!-- formula-not-decoded -->` になります |
+| [docling](https://github.com/docling-project/docling) | `pip install docling` | `docling paper.pdf --enrich-formula --output out/` | `out/paper.md` | `--enrich-formula` を付けないと、数式はすべて `<!-- formula-not-decoded -->` になります。認識されるのは独立した行の数式だけで、インライン数式はプレーンテキストのままです |
 
 どのパーサーも初回実行時に ML モデルをダウンロードし、CLI はバージョンによって変わり（フラグが拒否されたら `--help` を確認してください）、ライセンスもそれぞれ異なります。パーサーが落とした数式や画像のプレースホルダー（`<!-- formula-not-decoded -->`、`<!-- image -->`）が Markdown に残っていると、`convert.py` は警告を出します。翻訳の前に、警告が示すフラグを付けて抽出し直してください。
 
@@ -316,6 +316,7 @@ python3 scripts/merge_and_build.py --temp-dir book_temp --title "《translated t
 | `was created from different source bytes` | 一時ディレクトリが別のソースファイルのものです — 一時ディレクトリを削除するか、新しい `--temp-root` を使ってください |
 | 変換後に PDF の数式や表が崩れる | [ステップ 1](#ステップ-1変換) の表にあるパーサーで PDF を抽出し、古い一時ディレクトリを削除してから、`.md` に対して `convert.py` を実行してください |
 | `formula(s) were not decoded` / `image(s) were exported as placeholders` | パーサーがその内容を落としています — 警告が示すフラグを付けて抽出し直し、一時ディレクトリを削除してから `convert.py` を再実行してください |
+| `pandoc left N formula(s) as raw TeX` | pandoc がその LaTeX を解析できず、数式が `$$...$$` のまま表示されます — 警告に表示された断片を含む `output_chunk*.md` を修正し、`merge_and_build.py` を再実行してください |
 | `Blank output` / `Empty output` | サブエージェントが空白のみ、または空のチャンクを書き出しました — スキルを再実行して再翻訳してください |
 | `Missing source chunk` | ソースファイルが削除されています — `convert.py` を再実行して再生成してください |
 | 翻訳が途中で終わっている | スキルを再実行してください — 止まったところから再開します |

@@ -214,7 +214,7 @@ Any parser works if its Markdown follows these conventions:
 |---|---|---|---|---|
 | [MinerU](https://github.com/opendatalab/MinerU) >= 4 | `pip install -U "mineru>=4.0,<5"` | `mineru-kit parse paper.pdf -o paper.md` | `paper.md` | CPU-only basic tier: ~0.8 GB of models |
 | [Marker](https://github.com/datalab-to/marker) | `pip install marker-pdf` | `marker_single paper.pdf --output_dir out/` | `out/paper/paper.md` | |
-| [docling](https://github.com/docling-project/docling) | `pip install docling` | `docling paper.pdf --enrich-formula --output out/` | `out/paper.md` | Without `--enrich-formula`, every formula becomes `<!-- formula-not-decoded -->` |
+| [docling](https://github.com/docling-project/docling) | `pip install docling` | `docling paper.pdf --enrich-formula --output out/` | `out/paper.md` | Without `--enrich-formula`, every formula becomes `<!-- formula-not-decoded -->`. Only display formulas are recognized; inline math stays plain text |
 
 All of them download ML models on first run, their CLIs change between versions (check `--help` if a flag is rejected), and their licenses differ. If the Markdown still contains a parser's placeholder for a dropped formula or image (`<!-- formula-not-decoded -->`, `<!-- image -->`), `convert.py` warns: re-extract with the flag the warning names before translating.
 
@@ -316,6 +316,7 @@ Intermediate files stay in the temp dir after the build, so a few bad passages c
 | `was created from different source bytes` | The temp dir belongs to a different source file — delete the temp dir or use a fresh `--temp-root` |
 | PDF formulas/tables garbled after conversion | Extract the PDF with a parser from the table in [Step 1](#step-1-convert), delete the old temp dir, and run `convert.py` on the `.md` |
 | `formula(s) were not decoded` / `image(s) were exported as placeholders` | The parser dropped that content — re-extract with the flag the warning names, delete the temp dir, and run `convert.py` again |
+| `pandoc left N formula(s) as raw TeX` | pandoc could not parse that LaTeX, so the formula shows as `$$...$$` text — fix it in the `output_chunk*.md` holding the snippet the warning prints, then run `merge_and_build.py` again |
 | `Blank output` / `Empty output` | A subagent wrote a whitespace-only or empty chunk — re-run the skill to re-translate it |
 | `Missing source chunk` | Source file deleted — re-run `convert.py` to regenerate |
 | Incomplete translation | Re-run the skill — it resumes from where it stopped |

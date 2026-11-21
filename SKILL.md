@@ -45,7 +45,7 @@ instead of the PDF. Markdown input (`.md` / `.markdown`) skips Calibre:
 
 - MinerU >= 4: `mineru-kit parse "<file_path>" -o "<name>.md"`
 - Marker: `marker_single "<file_path>" --output_dir "<dir>"`, then use `<dir>/<name>/<name>.md`
-- docling: `docling "<file_path>" --enrich-formula --output "<dir>"`, then use `<dir>/<name>.md`
+- docling: `docling "<file_path>" --enrich-formula --output "<dir>"`, then use `<dir>/<name>.md` (recognizes display formulas only; inline math comes out as plain text)
 
 Keep the PDF's file name stem for the Markdown file, because the temp
 directory is named after it. These CLIs change between versions; check the
@@ -444,6 +444,8 @@ Tell the user:
 - The translated title
 - List generated output files with sizes
 - Any format generation failures
+- Any `pandoc left N formula(s) as raw TeX` warning with the formulas it lists;
+  those show as LaTeX source in the book and can be fixed as in Step 9
 - That the intermediate files are kept so passages can still be fixed
   (Step 9), and that they can ask for cleanup once they are done with the book
 

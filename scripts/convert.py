@@ -851,6 +851,12 @@ _PARSER_PLACEHOLDERS = (
     ("<!-- image -->", "image(s) were exported as placeholders",
      "re-extract with images embedded or referenced (docling: --image-export-mode embedded)"),
 )
+# Formula models such as docling's write `&` and `\\` rows outside any
+# environment. Pandoc's TeX reader rejects them and prints the formula as raw TeX.
+# A $$...$$ block on lines of its own; like pandoc, never across a blank line.
+_DISPLAY_MATH_RE = re.compile(r'^([ \t]*\$\$)((?:(?!\n[ \t]*\n)[^$])+?)(\$\$[ \t]*)$', re.MULTILINE)
+_TEX_ENV_RE = re.compile(r'\\begin\{([^}]*)\}.*?\\end\{\1\}', re.DOTALL)
+_TEX_ALIGN_TOKEN_RE = re.compile(r'\\\\|\\.|&', re.DOTALL)
 
 _FRONT_MATTER_RE = re.compile(r'\A---[ \t]*\n(.*?)\n(?:---|\.\.\.)[ \t]*(?:\n|\Z)', re.DOTALL)
 _FRONT_MATTER_KEYS = {
@@ -941,15 +947,44 @@ def markdown_metadata(content):
     return metadata
 
 
+def align_display_math(content):
+    r"""Wrap display formulas that have bare `&` or `\\` rows in an aligned environment.
+
+    Returns (content, number of formulas wrapped). Fenced code is left alone.
+    """
+    wrapped = 0
+
+    def wrap(m):
+        nonlocal wrapped
+        tokens = _TEX_ALIGN_TOKEN_RE.findall(_TEX_ENV_RE.sub('', m.group(2)))
+        if '&' not in tokens and '\\\\' not in tokens:
+            return m.group(0)
+        wrapped += 1
+        return f"{m.group(1)}\\begin{{aligned}}{m.group(2)}\\end{{aligned}}{m.group(3)}"
+
+    lines = content.split('\n')
+    code = _fenced_code_line_indices(lines)
+    parts, start = [], 0
+    for i in range(len(lines) + 1):
+        if i == len(lines) or i in code:
+            if start < i:
+                parts.append(_DISPLAY_MATH_RE.sub(wrap, '\n'.join(lines[start:i])))
+            if i < len(lines):
+                parts.append(lines[i])
+            start = i + 1
+    return '\n'.join(parts), wrapped
+
+
 def import_markdown(md_path, temp_dir):
-    """Return Markdown content ready for chunking, with images moved under temp_dir/images/.
+    r"""Return Markdown content ready for chunking, with images moved under temp_dir/images/.
 
     Relative image paths are resolved against the Markdown file's directory
     and copied in; base64 data URIs (MinerU and docling inline images that
     way) are decoded to files so chunks handed to translators never carry
     image payloads. Remote URLs stay untouched. YAML front matter is dropped
     from the body — its metadata goes to config.txt via markdown_metadata().
-    Placeholders a parser left for dropped formulas or images are reported.
+    Display formulas with bare `&` / `\\` rows are wrapped so pandoc can render
+    them, and placeholders a parser left for dropped formulas or images are reported.
     """
     with open(md_path, 'r', encoding='utf-8') as f:
         content = f.read()
@@ -1012,6 +1047,9 @@ def import_markdown(md_path, temp_dir):
 
     if stored:
         print(f"Localized {len(stored)} image(s) into {images_dir}/")
+    content, aligned = align_display_math(content)
+    if aligned:
+        print(f"Wrapped {aligned} display formula(s) with bare & or \\\\ rows in an aligned environment")
     for placeholder, what, fix in _PARSER_PLACEHOLDERS:
         count = content.count(placeholder)
         if count:
