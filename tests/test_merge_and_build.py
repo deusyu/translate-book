@@ -776,5 +776,57 @@ class PdfRetryTests(unittest.TestCase):
             self.assertEqual(attempts[".pdf"], 2)
 
 
+class HeadingOutlineTests(unittest.TestCase):
+    def _write_chunks(self, temp_dir, chunks):
+        for name, text in chunks.items():
+            Path(temp_dir, name).write_text(text, encoding="utf-8")
+
+    def test_lists_headings_in_book_order_without_code(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            self._write_chunks(temp_dir, {
+                "chunk0001.md": "# Source chunks are not listed\n",
+                "output_chunk0001.md": (
+                    "# 第一章 标题\n"
+                    "\n"
+                    "```bash\n"
+                    "# install deps\n"
+                    "```\n"
+                    "\n"
+                    "~~~python\n"
+                    "# comment\n"
+                    "~~~\n"
+                    "\n"
+                    "#hashtag 不是标题\n"
+                    "\n"
+                    "   ## 缩进的不是标题\n"
+                    "\n"
+                    "## 第一节\n"
+                ),
+                # An unclosed fence hides the rest of its own chunk only.
+                "output_chunk2.md": "```\n# still code\n",
+                "output_chunk10.md": "## 第三章\n",
+                "output_chunk3.md": "## 第二章\n",
+            })
+
+            self.assertEqual(merge_and_build.heading_outline(temp_dir), [
+                "output_chunk0001.md:1: # 第一章 标题",
+                "output_chunk0001.md:15: ## 第一节",
+                "output_chunk3.md:1: ## 第二章",
+                "output_chunk10.md:1: ## 第三章",
+            ])
+
+    def test_main_prints_outline_without_building(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            self._write_chunks(temp_dir, {"output_chunk0001.md": "# 标题\n\n```\n# code\n```\n"})
+            out = io.StringIO()
+            with mock.patch.object(
+                sys, "argv", ["merge_and_build.py", "--temp-dir", temp_dir, "--headings"]
+            ), contextlib.redirect_stdout(out):
+                merge_and_build.main()
+
+            self.assertEqual(out.getvalue(), "output_chunk0001.md:1: # 标题\n")
+            self.assertEqual(os.listdir(temp_dir), ["output_chunk0001.md"])
+
+
 if __name__ == "__main__":
     unittest.main()

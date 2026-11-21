@@ -389,10 +389,12 @@ Also read `manifest.json` and verify:
 - No output file is empty (0 bytes) or blank (whitespace-only)
 
 Check the heading structure of the whole book, since each chunk was translated
-in isolation and headings decide the EPUB/PDF table of contents:
+in isolation and headings decide the EPUB/PDF table of contents. This lists
+every heading of the output chunks in book order, leaving out `#` lines inside
+code blocks:
 
 ```bash
-grep -n '^#' "<temp_dir>"/output_chunk*.md
+python3 {baseDir}/scripts/merge_and_build.py --temp-dir "<temp_dir>" --headings
 ```
 
 Look for chapters split into two headings (a bare number heading followed by
