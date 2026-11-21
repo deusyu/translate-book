@@ -1,6 +1,8 @@
 import contextlib
 import io
 import os
+import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -1141,6 +1143,126 @@ class ImportMarkdownTests(unittest.TestCase):
             content = convert.import_markdown(str(md), str(Path(tmp) / "book_temp"))
 
             self.assertEqual(content, "# Paper\n\nBody\n")
+
+    def test_docling_output_keeps_math_and_tables_and_warns_on_placeholders(self):
+        import base64
+
+        payload = base64.b64encode(PNG_BYTES).decode("ascii")
+        with tempfile.TemporaryDirectory() as tmp:
+            md = self._source(
+                tmp,
+                "## 3.2 Scaled Dot-Product Attention\n\n"
+                f"![Image](data:image/png;base64,{payload})\n\n"
+                "$$\\mathrm{Attention}(Q, K, V) = \\mathrm{softmax}(QK^T / \\sqrt{d_k})V$$\n\n"
+                "| Model | BLEU |\n|---|---|\n| Transformer | 28.4 |\n\n"
+                "<!-- formula-not-decoded -->\n\n"
+                "<!-- formula-not-decoded -->\n\n"
+                "<!-- image -->\n",
+            )
+            temp_dir = Path(tmp) / "book_temp"
+            out = io.StringIO()
+
+            with contextlib.redirect_stdout(out):
+                content = convert.import_markdown(str(md), str(temp_dir))
+
+            self.assertIn("![Image](images/embedded-0001.png)", content)
+            self.assertIn("$$\\mathrm{Attention}(Q, K, V) = \\mathrm{softmax}(QK^T / \\sqrt{d_k})V$$", content)
+            self.assertIn("| Transformer | 28.4 |", content)
+            self.assertEqual((temp_dir / "images" / "embedded-0001.png").read_bytes(), PNG_BYTES)
+            log = out.getvalue()
+            self.assertIn("Warning: 2 formula(s) were not decoded", log)
+            self.assertIn("--enrich-formula", log)
+            self.assertIn("Warning: 1 image(s) were exported as placeholders", log)
+            self.assertIn("Warning: 3 display formula(s) but no inline math", log)
+
+    def test_clean_markdown_has_no_placeholder_warning(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            md = self._source(tmp, "$$x_1 + x_2$$\n\n| a | b |\n|---|---|\n")
+            out = io.StringIO()
+
+            with contextlib.redirect_stdout(out):
+                convert.import_markdown(str(md), str(Path(tmp) / "book_temp"))
+
+            self.assertNotIn("Warning", out.getvalue())
+
+    # Shaped like docling's formula output for arXiv 1706.03762: an equation
+    # number column, a two-row formula, and a trailing row break.
+    DOCLING_FORMULAS = [
+        r"$$A t t e n t i o n ( Q , K , V ) = \text {softmax} ( \frac { Q K ^ { T } } { \sqrt { d _ { k } } } ) V & & ( 1 )$$",
+        r"$$P E _ { ( p o s , 2 i ) } & = s i n ( p o s / 1 0 0 0 0 ^ { 2 i / d } ) \\ P E _ { ( p o s , 2 i + 1 ) } & = c o s ( p o s / 1 0 0 0 0 ^ { 2 i / d } )$$",
+        r"$$l r a t e = d _ { \text {model} } ^ { - 0 . 5 } \cdot \min ( s t e p ^ { - 0 . 5 } , w a r m u p ^ { - 1 . 5 } ) \quad \\$$",
+    ]
+
+    def test_wraps_display_math_with_bare_alignment_rows(self):
+        unchanged = [
+            r"$$\text{R\&D} = \begin{cases} a & b \\ c & d \end{cases}$$",
+            r"$$x_1 + x_2$$",
+            "Inline $a & b$ stays.",
+        ]
+        multiline = "$$\na &= b \\\\\nc &= d\n$$"
+        code = "```latex\n$$a & b$$\n```"
+        content = "\n\n".join(self.DOCLING_FORMULAS + unchanged + [multiline, code]) + "\n"
+
+        aligned, count = convert.align_display_math(content)
+
+        self.assertEqual(count, 4)
+        for formula in self.DOCLING_FORMULAS:
+            self.assertIn("$$\\begin{aligned}" + formula[2:-2] + "\\end{aligned}$$", aligned)
+        for text in unchanged + [code]:
+            self.assertIn(text, aligned)
+        self.assertIn("$$\\begin{aligned}\na &= b \\\\\nc &= d\n\\end{aligned}$$", aligned)
+        self.assertEqual(convert.align_display_math(aligned), (aligned, 0))
+
+    def test_import_reports_wrapped_formulas(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            md = self._source(tmp, self.DOCLING_FORMULAS[0] + "\n")
+            out = io.StringIO()
+
+            with contextlib.redirect_stdout(out):
+                content = convert.import_markdown(str(md), str(Path(tmp) / "book_temp"))
+
+        self.assertTrue(content.startswith("$$\\begin{aligned}A t t e n t i o n"))
+        self.assertIn("Wrapped 1 display formula(s)", out.getvalue())
+
+    def test_formula_counts(self):
+        content = (
+            "$$a + b$$\n\n"
+            "Text $x$ and $\\{y\\}$, but prices $5 and $10 and \\$3 are not math.\n\n"
+            "```\n$z$\n$$w$$\n```\n\n"
+            "<!-- formula-not-decoded -->\n"
+        )
+
+        self.assertEqual(convert.formula_counts(content), (2, 2))
+
+    def test_warns_when_display_formulas_come_without_inline_math(self):
+        display = "$$a + b$$\n\n$$c^2$$\n\n$$x_1$$\n\n"
+        cases = {
+            "flattened": (display + "Queries live in Rdmodel×dk and cost $5 and $10.\n", True),
+            "inline kept": (display + "Queries live in $\\mathbb{R}^{d}$.\n", False),
+            "few formulas": ("$$a + b$$\n\n$$c^2$$\n\nNo inline math.\n", False),
+            "placeholders": ("<!-- formula-not-decoded -->\n\n" * 3, True),
+            "inline only in code": (display + "```\n$x$\n```\n", True),
+        }
+        for name, (markdown, warns) in cases.items():
+            with self.subTest(name), tempfile.TemporaryDirectory() as tmp:
+                md = self._source(tmp, markdown)
+                out = io.StringIO()
+
+                with contextlib.redirect_stdout(out):
+                    convert.import_markdown(str(md), str(Path(tmp) / "book_temp"))
+
+                self.assertEqual("but no inline math" in out.getvalue(), warns)
+
+    @unittest.skipUnless(shutil.which("pandoc"), "pandoc is not installed")
+    def test_wrapped_formulas_render_as_mathml(self):
+        content, _ = convert.align_display_math("\n\n".join(self.DOCLING_FORMULAS) + "\n")
+        result = subprocess.run(
+            ["pandoc", "--from", "markdown+smart+east_asian_line_breaks", "--to", "html5", "--mathml"],
+            input=content, capture_output=True, text=True, check=True,
+        )
+
+        self.assertEqual(result.stdout.count("<math"), 3)
+        self.assertNotIn("Could not convert TeX math", result.stderr)
 
 
 class MarkdownMetadataTests(unittest.TestCase):
