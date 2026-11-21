@@ -5,8 +5,8 @@ Combines the original steps 1-2 into a single script.
 
 Markdown input (.md/.markdown) skips Calibre entirely. Use it for PDFs that
 Calibre's coordinate-heuristic reflow mangles (formulas, tables, multi-column
-layouts): extract them with a layout-aware parser such as MinerU or Marker
-first, then pass the resulting Markdown here.
+layouts): extract them with a layout-aware parser such as MinerU, Marker or
+docling first, then pass the resulting Markdown here.
 """
 
 import os
@@ -829,7 +829,7 @@ def clean_calibre_markers(content, strip_page_numbers=False, detect_page_numbers
 
 
 # =============================================================================
-# Markdown input: pre-extracted Markdown (e.g. from MinerU / Marker) skips Calibre
+# Markdown input: pre-extracted Markdown (e.g. from MinerU / Marker / docling) skips Calibre
 # =============================================================================
 
 MARKDOWN_EXTENSIONS = ('.md', '.markdown')
@@ -844,6 +844,13 @@ _DATA_URI_EXTENSIONS = {
     "jpeg": ".jpg", "jpg": ".jpg", "png": ".png", "gif": ".gif",
     "webp": ".webp", "svg+xml": ".svg", "bmp": ".bmp",
 }
+# Comments a parser leaves where it dropped content; translation cannot bring it back.
+_PARSER_PLACEHOLDERS = (
+    ("<!-- formula-not-decoded -->", "formula(s) were not decoded",
+     "re-extract with formula recognition on (docling: --enrich-formula)"),
+    ("<!-- image -->", "image(s) were exported as placeholders",
+     "re-extract with images embedded or referenced (docling: --image-export-mode embedded)"),
+)
 
 _FRONT_MATTER_RE = re.compile(r'\A---[ \t]*\n(.*?)\n(?:---|\.\.\.)[ \t]*(?:\n|\Z)', re.DOTALL)
 _FRONT_MATTER_KEYS = {
@@ -938,10 +945,11 @@ def import_markdown(md_path, temp_dir):
     """Return Markdown content ready for chunking, with images moved under temp_dir/images/.
 
     Relative image paths are resolved against the Markdown file's directory
-    and copied in; base64 data URIs (MinerU inlines images that way) are
-    decoded to files so chunks handed to translators never carry image
-    payloads. Remote URLs stay untouched. YAML front matter is dropped from
-    the body — its metadata goes to config.txt via markdown_metadata().
+    and copied in; base64 data URIs (MinerU and docling inline images that
+    way) are decoded to files so chunks handed to translators never carry
+    image payloads. Remote URLs stay untouched. YAML front matter is dropped
+    from the body — its metadata goes to config.txt via markdown_metadata().
+    Placeholders a parser left for dropped formulas or images are reported.
     """
     with open(md_path, 'r', encoding='utf-8') as f:
         content = f.read()
@@ -1004,6 +1012,10 @@ def import_markdown(md_path, temp_dir):
 
     if stored:
         print(f"Localized {len(stored)} image(s) into {images_dir}/")
+    for placeholder, what, fix in _PARSER_PLACEHOLDERS:
+        count = content.count(placeholder)
+        if count:
+            print(f"Warning: {count} {what} ({placeholder}); {fix}")
     return content
 
 
@@ -1435,7 +1447,7 @@ def main():
     parser.add_argument(
         "input_file",
         help="Input file: PDF, DOCX, or EPUB (converted by Calibre), or Markdown (.md/.markdown), "
-             "e.g. the output of a layout-aware PDF parser such as MinerU or Marker",
+             "e.g. the output of a layout-aware PDF parser such as MinerU, Marker or docling",
     )
     parser.add_argument("-l", "--ilang", default="auto", help="Input language (default: auto)")
     parser.add_argument("--olang", default="zh", help="Output language (default: zh)")

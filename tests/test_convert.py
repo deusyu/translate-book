@@ -1142,6 +1142,46 @@ class ImportMarkdownTests(unittest.TestCase):
 
             self.assertEqual(content, "# Paper\n\nBody\n")
 
+    def test_docling_output_keeps_math_and_tables_and_warns_on_placeholders(self):
+        import base64
+
+        payload = base64.b64encode(PNG_BYTES).decode("ascii")
+        with tempfile.TemporaryDirectory() as tmp:
+            md = self._source(
+                tmp,
+                "## 3.2 Scaled Dot-Product Attention\n\n"
+                f"![Image](data:image/png;base64,{payload})\n\n"
+                "$$\\mathrm{Attention}(Q, K, V) = \\mathrm{softmax}(QK^T / \\sqrt{d_k})V$$\n\n"
+                "| Model | BLEU |\n|---|---|\n| Transformer | 28.4 |\n\n"
+                "<!-- formula-not-decoded -->\n\n"
+                "<!-- formula-not-decoded -->\n\n"
+                "<!-- image -->\n",
+            )
+            temp_dir = Path(tmp) / "book_temp"
+            out = io.StringIO()
+
+            with contextlib.redirect_stdout(out):
+                content = convert.import_markdown(str(md), str(temp_dir))
+
+            self.assertIn("![Image](images/embedded-0001.png)", content)
+            self.assertIn("$$\\mathrm{Attention}(Q, K, V) = \\mathrm{softmax}(QK^T / \\sqrt{d_k})V$$", content)
+            self.assertIn("| Transformer | 28.4 |", content)
+            self.assertEqual((temp_dir / "images" / "embedded-0001.png").read_bytes(), PNG_BYTES)
+            log = out.getvalue()
+            self.assertIn("Warning: 2 formula(s) were not decoded", log)
+            self.assertIn("--enrich-formula", log)
+            self.assertIn("Warning: 1 image(s) were exported as placeholders", log)
+
+    def test_clean_markdown_has_no_placeholder_warning(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            md = self._source(tmp, "$$x_1 + x_2$$\n\n| a | b |\n|---|---|\n")
+            out = io.StringIO()
+
+            with contextlib.redirect_stdout(out):
+                convert.import_markdown(str(md), str(Path(tmp) / "book_temp"))
+
+            self.assertNotIn("Warning", out.getvalue())
+
 
 class MarkdownMetadataTests(unittest.TestCase):
     def test_front_matter_scalars_and_lists(self):

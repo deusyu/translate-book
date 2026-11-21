@@ -19,7 +19,7 @@ Input (PDF/DOCX/EPUB)
   │
   ▼
 Calibre ebook-convert → HTMLZ → HTML → Markdown
-  (or Markdown input, e.g. from MinerU / Marker, skipping Calibre)
+  (or Markdown from a layout-aware PDF parser, skipping Calibre)
   │
   ▼
 Split into chunks (chunk0001.md, chunk0002.md, ...)
@@ -46,7 +46,7 @@ Each chunk gets its own independent subagent with a fresh context window. This p
 - **Multi-format output** — HTML (with floating TOC), DOCX, EPUB, PDF
 - **Optional output controls** — explicit EPUB cover, custom temp root, and user-facing export aliases
 - **Multi-language** — zh, en, ja, ko, fr, de, es (extensible)
-- **PDF/DOCX/EPUB/Markdown input** — Calibre handles the conversion heavy lifting; formula- and table-heavy PDFs can be pre-extracted to Markdown with MinerU or Marker
+- **PDF/DOCX/EPUB/Markdown input** — Calibre handles the conversion heavy lifting; formula- and table-heavy PDFs can be pre-extracted to Markdown with a layout-aware parser (see [Step 1](#step-1-convert))
 
 ## Prerequisites
 
@@ -56,7 +56,7 @@ Each chunk gets its own independent subagent with a fresh context window. This p
 - **Python 3** with:
   - `pypandoc` — required (`pip install pypandoc`)
   - `beautifulsoup4` — optional, for better TOC generation (`pip install beautifulsoup4`)
-- **MinerU or Marker** — optional, only to pre-extract formula- and table-heavy PDFs to Markdown (see [Step 1](#step-1-convert))
+- **A layout-aware PDF parser** — optional, only to pre-extract formula- and table-heavy PDFs to Markdown; supported parsers are listed in [Step 1](#step-1-convert)
 
 ## Quick Start
 
@@ -200,13 +200,25 @@ By default the working directory is `{book_name}_temp/` under the current direct
 Calibre reflows PDF text by coordinate heuristics. That works for plain prose, but academic and technical PDFs lose their structure: formulas break into fragments, tables flatten into one cell per line, and multi-column pages interleave. For those PDFs, extract them with a layout-aware parser first and give `convert.py` the Markdown it writes. `.md` / `.markdown` input skips Calibre entirely:
 
 ```bash
-pip install -U "mineru>=4.0,<5"                # or: pip install marker-pdf
-mineru-kit parse paper.pdf -o paper.md         # MinerU >= 4 (CPU-only basic tier: ~0.8 GB of models)
-# marker_single paper.pdf --output_dir out/    # Marker: writes out/paper/paper.md
+mineru-kit parse paper.pdf -o paper.md          # or any parser from the table below
 python3 scripts/convert.py paper.md --olang zh
 ```
 
-The parsers keep formulas as `$...$` / `$$...$$` LaTeX and tables as tables. `convert.py` copies images referenced next to the Markdown file, and decodes the base64 images MinerU inlines, into `{book_name}_temp/images/`, so chunks never carry image payloads. Display-math blocks (`$$ ... $$`) are never split across chunks. YAML front matter (`title`, `author`, `lang`) fills `config.txt` and is not sent for translation; without it, a leading `#` heading becomes `original_title`. The temp dir is named after the Markdown file, so `paper.md` maps to `paper_temp/`. If that dir was built from `paper.pdf`, `convert.py` aborts on the source-fingerprint mismatch, so delete it first. Both parsers download ML models on first run. `--strip-page-numbers` and `--detect-page-numbers` only apply to Calibre input.
+Any parser works if its Markdown follows these conventions:
+
+- **Formulas** as `$...$` / `$$...$$` LaTeX. Display-math blocks are never split across chunks.
+- **Tables** as Markdown pipe tables or HTML `<table>`.
+- **Images** as paths relative to the Markdown file, or inlined as base64 data URIs. `convert.py` copies or decodes them into `{book_name}_temp/images/`, so chunks never carry image payloads.
+
+| Parser | Install | Extract | Markdown file | Notes |
+|---|---|---|---|---|
+| [MinerU](https://github.com/opendatalab/MinerU) >= 4 | `pip install -U "mineru>=4.0,<5"` | `mineru-kit parse paper.pdf -o paper.md` | `paper.md` | CPU-only basic tier: ~0.8 GB of models |
+| [Marker](https://github.com/datalab-to/marker) | `pip install marker-pdf` | `marker_single paper.pdf --output_dir out/` | `out/paper/paper.md` | |
+| [docling](https://github.com/docling-project/docling) | `pip install docling` | `docling paper.pdf --enrich-formula --output out/` | `out/paper.md` | Without `--enrich-formula`, every formula becomes `<!-- formula-not-decoded -->` |
+
+All of them download ML models on first run, their CLIs change between versions (check `--help` if a flag is rejected), and their licenses differ. If the Markdown still contains a parser's placeholder for a dropped formula or image (`<!-- formula-not-decoded -->`, `<!-- image -->`), `convert.py` warns: re-extract with the flag the warning names before translating.
+
+YAML front matter (`title`, `author`, `lang`) fills `config.txt` and is not sent for translation; without it, a leading `#` heading becomes `original_title`. The temp dir is named after the Markdown file, so `paper.md` maps to `paper_temp/`. If that dir was built from `paper.pdf`, `convert.py` aborts on the source-fingerprint mismatch, so delete it first. `--strip-page-numbers` and `--detect-page-numbers` only apply to Calibre input.
 
 At build time Pandoc renders `$...$` / `$$...$$` as MathML, so formulas are typeset in `book.html` and `book.pdf`, and in `book.epub` on readers that support MathML. Calibre's DOCX output cannot typeset MathML: formulas appear there as flattened text followed by their TeX source.
 
@@ -302,7 +314,8 @@ Intermediate files stay in the temp dir after the build, so a few bad passages c
 | `Calibre ebook-convert not found` | Install Calibre and ensure `ebook-convert` is in PATH |
 | `Manifest validation failed` | Source chunks changed since splitting — re-run `convert.py` |
 | `was created from different source bytes` | The temp dir belongs to a different source file — delete the temp dir or use a fresh `--temp-root` |
-| PDF formulas/tables garbled after conversion | Extract the PDF with MinerU or Marker, delete the old temp dir, and run `convert.py` on the `.md` (see [Step 1](#step-1-convert)) |
+| PDF formulas/tables garbled after conversion | Extract the PDF with a parser from the table in [Step 1](#step-1-convert), delete the old temp dir, and run `convert.py` on the `.md` |
+| `formula(s) were not decoded` / `image(s) were exported as placeholders` | The parser dropped that content — re-extract with the flag the warning names, delete the temp dir, and run `convert.py` again |
 | `Blank output` / `Empty output` | A subagent wrote a whitespace-only or empty chunk — re-run the skill to re-translate it |
 | `Missing source chunk` | Source file deleted — re-run `convert.py` to regenerate |
 | Incomplete translation | Re-run the skill — it resumes from where it stopped |

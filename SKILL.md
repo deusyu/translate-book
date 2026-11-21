@@ -45,6 +45,7 @@ instead of the PDF. Markdown input (`.md` / `.markdown`) skips Calibre:
 
 - MinerU >= 4: `mineru-kit parse "<file_path>" -o "<name>.md"`
 - Marker: `marker_single "<file_path>" --output_dir "<dir>"`, then use `<dir>/<name>/<name>.md`
+- docling: `docling "<file_path>" --enrich-formula --output "<dir>"`, then use `<dir>/<name>.md`
 
 Keep the PDF's file name stem for the Markdown file, because the temp
 directory is named after it. These CLIs change between versions; check the
@@ -52,6 +53,12 @@ parser's `--help` if a flag is rejected. Do not install a parser without the
 user's consent, because they download large models. Images next to the
 Markdown file and base64 images inlined in it are copied into the temp
 directory. `--strip-page-numbers` does not apply to Markdown input.
+
+If `convert.py` warns that formulas were not decoded or images were exported
+as placeholders, the parser dropped that content and translation cannot
+restore it. Tell the user, and with their consent re-extract with the flag
+the warning names (it may download another model), delete the temp
+directory, and convert again.
 
 Page-number lines are detected and dropped for PDF input only; EPUB and DOCX
 keep every standalone number (chapter, verse or exercise numbers). If an EPUB
