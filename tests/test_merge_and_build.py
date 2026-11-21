@@ -673,5 +673,38 @@ class ImageValidationTests(unittest.TestCase):
             self.assertTrue(sanity_ok, msg=sanity_out)
 
 
+class MetadataTitleTests(unittest.TestCase):
+    def test_strips_wrapping_book_title_marks(self):
+        self.assertEqual(merge_and_build._metadata_title("《财阀、先知、主帅与君王》"), "财阀、先知、主帅与君王")
+        self.assertEqual(merge_and_build._metadata_title("  Plain Title "), "Plain Title")
+
+    def test_keeps_marks_that_do_not_wrap_the_whole_title(self):
+        title = "《A》与《B》"
+        self.assertEqual(merge_and_build._metadata_title(title), title)
+
+
+class PdfRetryTests(unittest.TestCase):
+    def test_generate_formats_retries_pdf_once(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            Path(temp_dir, "book_doc.html").write_text("<html></html>", encoding="utf-8")
+            attempts = {".pdf": 0}
+
+            def fake_generate_format(html_file, temp_dir_, ext, lang_attr, cover=None):
+                path = os.path.join(temp_dir_, "book" + ext)
+                if ext == ".pdf":
+                    attempts[".pdf"] += 1
+                    if attempts[".pdf"] == 1:
+                        return None
+                Path(path).write_bytes(b"x")
+                return path
+
+            with mock.patch.object(merge_and_build, "generate_format", side_effect=fake_generate_format), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                ok = merge_and_build.generate_formats(temp_dir, "zh-CN")
+
+            self.assertTrue(ok)
+            self.assertEqual(attempts[".pdf"], 2)
+
+
 if __name__ == "__main__":
     unittest.main()
