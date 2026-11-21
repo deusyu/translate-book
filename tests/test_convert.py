@@ -1173,6 +1173,7 @@ class ImportMarkdownTests(unittest.TestCase):
             self.assertIn("Warning: 2 formula(s) were not decoded", log)
             self.assertIn("--enrich-formula", log)
             self.assertIn("Warning: 1 image(s) were exported as placeholders", log)
+            self.assertIn("Warning: 3 display formula(s) but no inline math", log)
 
     def test_clean_markdown_has_no_placeholder_warning(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1222,6 +1223,35 @@ class ImportMarkdownTests(unittest.TestCase):
 
         self.assertTrue(content.startswith("$$\\begin{aligned}A t t e n t i o n"))
         self.assertIn("Wrapped 1 display formula(s)", out.getvalue())
+
+    def test_formula_counts(self):
+        content = (
+            "$$a + b$$\n\n"
+            "Text $x$ and $\\{y\\}$, but prices $5 and $10 and \\$3 are not math.\n\n"
+            "```\n$z$\n$$w$$\n```\n\n"
+            "<!-- formula-not-decoded -->\n"
+        )
+
+        self.assertEqual(convert.formula_counts(content), (2, 2))
+
+    def test_warns_when_display_formulas_come_without_inline_math(self):
+        display = "$$a + b$$\n\n$$c^2$$\n\n$$x_1$$\n\n"
+        cases = {
+            "flattened": (display + "Queries live in Rdmodel×dk and cost $5 and $10.\n", True),
+            "inline kept": (display + "Queries live in $\\mathbb{R}^{d}$.\n", False),
+            "few formulas": ("$$a + b$$\n\n$$c^2$$\n\nNo inline math.\n", False),
+            "placeholders": ("<!-- formula-not-decoded -->\n\n" * 3, True),
+            "inline only in code": (display + "```\n$x$\n```\n", True),
+        }
+        for name, (markdown, warns) in cases.items():
+            with self.subTest(name), tempfile.TemporaryDirectory() as tmp:
+                md = self._source(tmp, markdown)
+                out = io.StringIO()
+
+                with contextlib.redirect_stdout(out):
+                    convert.import_markdown(str(md), str(Path(tmp) / "book_temp"))
+
+                self.assertEqual("but no inline math" in out.getvalue(), warns)
 
     @unittest.skipUnless(shutil.which("pandoc"), "pandoc is not installed")
     def test_wrapped_formulas_render_as_mathml(self):

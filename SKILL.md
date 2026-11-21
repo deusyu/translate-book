@@ -45,7 +45,12 @@ instead of the PDF. Markdown input (`.md` / `.markdown`) skips Calibre:
 
 - MinerU >= 4: `mineru-kit parse "<file_path>" -o "<name>.md"`
 - Marker: `marker_single "<file_path>" --output_dir "<dir>"`, then use `<dir>/<name>/<name>.md`
-- docling: `docling "<file_path>" --enrich-formula --output "<dir>"`, then use `<dir>/<name>.md` (recognizes display formulas only; inline math comes out as plain text)
+- docling: `docling "<file_path>" --enrich-formula --output "<dir>"`, then use `<dir>/<name>.md`
+
+If the document has formulas, prefer MinerU or Marker: both keep inline math
+as LaTeX, while docling's standard pipeline recognizes display formulas only
+and turns inline math into plain text. Use docling when it is the only parser
+installed or the user asks for it, and tell the user about this first.
 
 Keep the PDF's file name stem for the Markdown file, because the temp
 directory is named after it. These CLIs change between versions; check the
@@ -59,6 +64,12 @@ as placeholders, the parser dropped that content and translation cannot
 restore it. Tell the user, and with their consent re-extract with the flag
 the warning names (it may download another model), delete the temp
 directory, and convert again.
+
+If `convert.py` warns about display formulas but no inline math, the parser
+has probably turned inline math into plain text, which translation cannot
+restore either. Tell the user, and with their consent re-extract with MinerU
+or Marker, delete the temp directory, and convert again. If the document has
+no inline math, continue.
 
 Page-number lines are detected and dropped for PDF input only; EPUB and DOCX
 keep every standalone number (chapter, verse or exercise numbers). If an EPUB
@@ -406,7 +417,10 @@ Report any chunks that failed translation after retry.
 
 Read `config.txt` from the temp directory to get the `original_title` field.
 If it is missing (e.g. Markdown input with neither front matter nor a leading
-`#` title), use the source file name instead.
+`#` title) or is just the source file name (Calibre falls back to it for PDFs
+without title metadata, e.g. `1706.03762`), read the start of `chunk0001.md`:
+if it clearly shows the document's title, use that; otherwise use the source
+file name.
 
 Translate the title to the target language. For Chinese, wrap in 书名号: `《translated_title》`.
 
