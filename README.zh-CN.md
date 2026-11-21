@@ -19,7 +19,7 @@
   │
   ▼
 Calibre ebook-convert → HTMLZ → HTML → Markdown
-  （或直接输入 Markdown，例如 MinerU / Marker 的输出，绕过 Calibre）
+  （或直接输入版面感知解析器转出的 Markdown，绕过 Calibre）
   │
   ▼
 拆分为 chunk（chunk0001.md, chunk0002.md, ...）
@@ -46,7 +46,7 @@ Calibre ebook-convert → HTMLZ → HTML → Markdown
 - **多格式输出** — HTML（含浮动目录）、DOCX、EPUB、PDF
 - **可选输出控制** — 显式 EPUB 封面、自定义 temp root、面向用户的导出别名
 - **多语言** — zh、en、ja、ko、fr、de、es（可扩展）
-- **多格式输入** — PDF/DOCX/EPUB/Markdown，Calibre 负责格式转换；公式、表格密集的 PDF 可先用 MinerU 或 Marker 转成 Markdown
+- **多格式输入** — PDF/DOCX/EPUB/Markdown，Calibre 负责格式转换；公式、表格密集的 PDF 可先用版面感知解析器转成 Markdown（见[第一步](#第一步转换)）
 
 ## 前置要求
 
@@ -56,7 +56,7 @@ Calibre ebook-convert → HTMLZ → HTML → Markdown
 - **Python 3**，需要：
   - `pypandoc` — 可选（`pip install pypandoc`）；没有时直接调用 `pandoc` 命令
   - `beautifulsoup4` — 可选，用于更好的目录生成（`pip install beautifulsoup4`）
-- **MinerU 或 Marker** — 可选，仅用于把公式、表格密集的 PDF 预先转成 Markdown（见[第一步](#第一步转换)）
+- **版面感知 PDF 解析器** — 可选，仅用于把公式、表格密集的 PDF 预先转成 Markdown；支持的解析器见[第一步](#第一步转换)中的表格
 
 ## 快速开始
 
@@ -253,13 +253,25 @@ HTML → Markdown 这一步还会按结构清理 Calibre 的标记。EPUB 脚注
 Calibre 靠坐标启发式重排 PDF 文本，对普通正文够用，但学术、技术类 PDF 会丢失结构：公式被拆成碎片，表格被拍平成一行一个单元格，多栏版面相互交错。对这类 PDF，先用版面感知解析器转出 Markdown，再把 Markdown 交给 `convert.py`。`.md` / `.markdown` 输入完全不经过 Calibre：
 
 ```bash
-pip install -U "mineru>=4.0,<5"                # 或：pip install marker-pdf
-mineru-kit parse paper.pdf -o paper.md         # MinerU >= 4（纯 CPU 的 basic 档约需 0.8 GB 模型）
-# marker_single paper.pdf --output_dir out/    # Marker：输出为 out/paper/paper.md
+mineru-kit parse paper.pdf -o paper.md          # 换成下表中任一解析器均可
 python3 scripts/convert.py paper.md --olang zh
 ```
 
-解析器会把公式保留为 `$...$` / `$$...$$` LaTeX，表格保留为表格。`convert.py` 会把 Markdown 旁边引用的图片复制到 `{book_name}_temp/images/`，MinerU 以 base64 内嵌的图片也会解码成文件放进去，chunk 中不会夹带图片数据。公式块（`$$ ... $$`）不会被拆到两个 chunk 中。YAML front matter（`title`、`author`、`lang`）会写入 `config.txt`，不会送去翻译；没有 front matter 时，开头的 `#` 标题作为 `original_title`。temp 目录按 Markdown 文件名命名，`paper.md` 对应 `paper_temp/`；如果该目录之前由 `paper.pdf` 生成，`convert.py` 会因源文件指纹不一致而中止，需先删除它。两个解析器首次运行都会下载模型。`--strip-page-numbers` 和 `--detect-page-numbers` 只对 Calibre 输入生效。
+只要输出的 Markdown 符合以下约定，用哪个解析器都可以：
+
+- **公式**：`$...$` / `$$...$$` LaTeX。公式块不会被拆到两个 chunk 中。
+- **表格**：Markdown 管道表格或 HTML `<table>`。
+- **图片**：相对于 Markdown 文件的路径，或以 base64 data URI 内嵌。`convert.py` 会把它们复制或解码到 `{book_name}_temp/images/`，chunk 中不会夹带图片数据。
+
+| 解析器 | 安装 | 提取命令 | Markdown 文件 | 备注 |
+|---|---|---|---|---|
+| [MinerU](https://github.com/opendatalab/MinerU) >= 4 | `pip install -U "mineru>=4.0,<5"` | `mineru-kit parse paper.pdf -o paper.md` | `paper.md` | 纯 CPU 的 basic 档约需 0.8 GB 模型 |
+| [Marker](https://github.com/datalab-to/marker) | `pip install marker-pdf` | `marker_single paper.pdf --output_dir out/` | `out/paper/paper.md` | |
+| [docling](https://github.com/docling-project/docling) | `pip install docling` | `docling paper.pdf --enrich-formula --output out/` | `out/paper.md` | 不加 `--enrich-formula` 时，每个公式都会变成 `<!-- formula-not-decoded -->` |
+
+这些解析器首次运行都会下载模型，命令行参数随版本变化（参数被拒时查看 `--help`），许可证也各不相同。如果 Markdown 里还留着解析器为丢弃的公式或图片写下的占位符（`<!-- formula-not-decoded -->`、`<!-- image -->`），`convert.py` 会给出警告：翻译前请按警告里的参数重新提取。
+
+YAML front matter（`title`、`author`、`lang`）会写入 `config.txt`，不会送去翻译；没有 front matter 时，开头的 `#` 标题作为 `original_title`。temp 目录按 Markdown 文件名命名，`paper.md` 对应 `paper_temp/`；如果该目录之前由 `paper.pdf` 生成，`convert.py` 会因源文件指纹不一致而中止，需先删除它。`--strip-page-numbers` 和 `--detect-page-numbers` 只对 Calibre 输入生效。
 
 生成成品时，Pandoc 会把 `$...$` / `$$...$$` 渲染为 MathML，因此 `book.html`、`book.pdf` 中的公式会被正确排版，`book.epub` 在支持 MathML 的阅读器中同样如此。Calibre 生成的 DOCX 无法排版 MathML，其中的公式会显示为压平的文本加上对应的 TeX 源码。
 
@@ -356,7 +368,8 @@ python3 scripts/merge_and_build.py --temp-dir book_temp --title "译后书名" -
 | `Calibre ebook-convert not found` | 安装 Calibre，确保 `ebook-convert` 在 PATH 中 |
 | `Manifest validation failed` | 源 chunk 在拆分后被修改 — 重新运行 `convert.py` |
 | `was created from different source bytes` | temp 目录属于另一个源文件 — 删除 temp 目录或换一个 `--temp-root` |
-| PDF 转换后公式、表格错乱 | 用 MinerU 或 Marker 转出 Markdown，删除旧 temp 目录，再对 `.md` 运行 `convert.py`（见[第一步](#第一步转换)） |
+| PDF 转换后公式、表格错乱 | 用[第一步](#第一步转换)表格中的解析器转出 Markdown，删除旧 temp 目录，再对 `.md` 运行 `convert.py` |
+| `formula(s) were not decoded` / `image(s) were exported as placeholders` | 解析器丢弃了这些内容 — 按警告里的参数重新提取，删除 temp 目录，再运行 `convert.py` |
 | `Blank output` / `Empty output` | 某个 subagent 写出了空白或空的 chunk — 重新运行 skill 让它重译 |
 | `Missing source chunk` | 源文件被删除 — 重新运行 `convert.py` 重新生成 |
 | 翻译不完整 | 重新运行 Skill，会从中断处继续 |

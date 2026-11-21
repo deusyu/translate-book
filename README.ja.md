@@ -19,7 +19,7 @@ Input (PDF/DOCX/EPUB)
   │
   ▼
 Calibre ebook-convert → HTMLZ → HTML → Markdown
-  (or Markdown input, e.g. from MinerU / Marker, skipping Calibre)
+  (or Markdown from a layout-aware PDF parser, skipping Calibre)
   │
   ▼
 Split into chunks (chunk0001.md, chunk0002.md, ...)
@@ -46,7 +46,7 @@ Merge → Pandoc → HTML (with TOC) → Calibre → DOCX / EPUB / PDF
 - **複数フォーマット出力** — HTML（フローティング目次付き）、DOCX、EPUB、PDF
 - **オプションの出力設定** — EPUB 表紙の明示指定、一時ディレクトリの親ディレクトリ変更、ユーザー向けのエクスポート別名
 - **多言語対応** — zh、en、ja、ko、fr、de、es（拡張可能）
-- **PDF/DOCX/EPUB/Markdown 入力** — 変換の重い処理は Calibre が担います。数式や表の多い PDF は、MinerU や Marker で先に Markdown へ抽出できます
+- **PDF/DOCX/EPUB/Markdown 入力** — 変換の重い処理は Calibre が担います。数式や表の多い PDF は、レイアウトを理解するパーサーで先に Markdown へ抽出できます（[ステップ 1](#ステップ-1変換) を参照）
 
 ## 前提条件
 
@@ -56,7 +56,7 @@ Merge → Pandoc → HTML (with TOC) → Calibre → DOCX / EPUB / PDF
 - **Python 3** と以下のパッケージ:
   - `pypandoc` — 任意（`pip install pypandoc`）。ない場合は `pandoc` コマンドを直接呼び出します
   - `beautifulsoup4` — 任意。目次生成の精度が上がります（`pip install beautifulsoup4`）
-- **MinerU または Marker** — 任意。数式や表の多い PDF を事前に Markdown へ抽出する場合のみ（[ステップ 1](#ステップ-1変換) を参照）
+- **レイアウトを理解する PDF パーサー** — 任意。数式や表の多い PDF を事前に Markdown へ抽出する場合のみ。対応パーサーは [ステップ 1](#ステップ-1変換) の表を参照
 
 ## クイックスタート
 
@@ -253,13 +253,25 @@ HTML → Markdown の段階では、Calibre のマークアップも構造的に
 Calibre は座標のヒューリスティクスで PDF のテキストを再構成します。普通の文章ならそれで十分ですが、学術書や技術書の PDF では構造が崩れます。数式は断片に分かれ、表は 1 行 1 セルに平坦化され、段組みのページは行が入り混じります。そうした PDF は、まずレイアウトを理解するパーサーで抽出し、出力された Markdown を `convert.py` に渡してください。`.md` / `.markdown` の入力は Calibre を完全にスキップします:
 
 ```bash
-pip install -U "mineru>=4.0,<5"                # or: pip install marker-pdf
-mineru-kit parse paper.pdf -o paper.md         # MinerU >= 4 (CPU-only basic tier: ~0.8 GB of models)
-# marker_single paper.pdf --output_dir out/    # Marker: writes out/paper/paper.md
+mineru-kit parse paper.pdf -o paper.md          # 下の表のどのパーサーでも可
 python3 scripts/convert.py paper.md --olang zh
 ```
 
-これらのパーサーは数式を `$...$` / `$$...$$` の LaTeX として、表を表として保持します。`convert.py` は Markdown ファイルの隣から参照されている画像をコピーし、MinerU がインライン化した base64 画像をデコードして `{book_name}_temp/images/` に保存するため、チャンクに画像データが含まれることはありません。ディスプレイ数式のブロック（`$$ ... $$`）がチャンクをまたいで分割されることはありません。YAML フロントマター（`title`、`author`、`lang`）は `config.txt` に反映され、翻訳には送られません。フロントマターがない場合は、先頭の `#` 見出しが `original_title` になります。一時ディレクトリは Markdown ファイル名にちなんで命名されるため、`paper.md` なら `paper_temp/` です。そのディレクトリが `paper.pdf` から作られたものであれば、`convert.py` はソースのフィンガープリント不一致で中断するので、先に削除してください。どちらのパーサーも初回実行時に ML モデルをダウンロードします。`--strip-page-numbers` と `--detect-page-numbers` は Calibre 経由の入力にのみ適用されます。
+出力される Markdown が次の規約に沿っていれば、どのパーサーでも使えます:
+
+- **数式**: `$...$` / `$$...$$` の LaTeX。ディスプレイ数式のブロックがチャンクをまたいで分割されることはありません。
+- **表**: Markdown のパイプテーブル、または HTML の `<table>`。
+- **画像**: Markdown ファイルからの相対パス、または base64 の data URI としてインライン化されたもの。`convert.py` はこれらを `{book_name}_temp/images/` にコピーまたはデコードするため、チャンクに画像データが含まれることはありません。
+
+| パーサー | インストール | 抽出コマンド | Markdown ファイル | 備考 |
+|---|---|---|---|---|
+| [MinerU](https://github.com/opendatalab/MinerU) >= 4 | `pip install -U "mineru>=4.0,<5"` | `mineru-kit parse paper.pdf -o paper.md` | `paper.md` | CPU のみの basic 構成で約 0.8 GB のモデル |
+| [Marker](https://github.com/datalab-to/marker) | `pip install marker-pdf` | `marker_single paper.pdf --output_dir out/` | `out/paper/paper.md` | |
+| [docling](https://github.com/docling-project/docling) | `pip install docling` | `docling paper.pdf --enrich-formula --output out/` | `out/paper.md` | `--enrich-formula` を付けないと、数式はすべて `<!-- formula-not-decoded -->` になります |
+
+どのパーサーも初回実行時に ML モデルをダウンロードし、CLI はバージョンによって変わり（フラグが拒否されたら `--help` を確認してください）、ライセンスもそれぞれ異なります。パーサーが落とした数式や画像のプレースホルダー（`<!-- formula-not-decoded -->`、`<!-- image -->`）が Markdown に残っていると、`convert.py` は警告を出します。翻訳の前に、警告が示すフラグを付けて抽出し直してください。
+
+YAML フロントマター（`title`、`author`、`lang`）は `config.txt` に反映され、翻訳には送られません。フロントマターがない場合は、先頭の `#` 見出しが `original_title` になります。一時ディレクトリは Markdown ファイル名にちなんで命名されるため、`paper.md` なら `paper_temp/` です。そのディレクトリが `paper.pdf` から作られたものであれば、`convert.py` はソースのフィンガープリント不一致で中断するので、先に削除してください。`--strip-page-numbers` と `--detect-page-numbers` は Calibre 経由の入力にのみ適用されます。
 
 ビルド時、Pandoc は `$...$` / `$$...$$` を MathML としてレンダリングします。そのため数式は `book.html` と `book.pdf` で組版され、`book.epub` でも MathML に対応したリーダーなら組版されます。Calibre の DOCX 出力は MathML を組版できないため、DOCX では数式が平坦なテキストとして表示され、その後に TeX のソースが続きます。
 
@@ -356,7 +368,8 @@ python3 scripts/merge_and_build.py --temp-dir book_temp --title "translated titl
 | `Calibre ebook-convert not found` | Calibre をインストールし、`ebook-convert` が PATH に含まれていることを確認してください |
 | `Manifest validation failed` | 分割後にソースチャンクが変更されています — `convert.py` を再実行してください |
 | `was created from different source bytes` | 一時ディレクトリが別のソースファイルのものです — 一時ディレクトリを削除するか、新しい `--temp-root` を使ってください |
-| 変換後に PDF の数式や表が崩れる | MinerU または Marker で PDF を抽出し、古い一時ディレクトリを削除してから、`.md` に対して `convert.py` を実行してください（[ステップ 1](#ステップ-1変換) を参照） |
+| 変換後に PDF の数式や表が崩れる | [ステップ 1](#ステップ-1変換) の表にあるパーサーで PDF を抽出し、古い一時ディレクトリを削除してから、`.md` に対して `convert.py` を実行してください |
+| `formula(s) were not decoded` / `image(s) were exported as placeholders` | パーサーがその内容を落としています — 警告が示すフラグを付けて抽出し直し、一時ディレクトリを削除してから `convert.py` を再実行してください |
 | `Blank output` / `Empty output` | サブエージェントが空白のみ、または空のチャンクを書き出しました — スキルを再実行して再翻訳してください |
 | `Missing source chunk` | ソースファイルが削除されています — `convert.py` を再実行して再生成してください |
 | 翻訳が途中で終わっている | スキルを再実行してください — 止まったところから再開します |
