@@ -19,6 +19,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 
 from manifest import read_output_text, validate_for_merge
+from convert import _fenced_code_line_indices
 
 
 # =============================================================================
@@ -388,6 +389,31 @@ def load_config(temp_dir):
 def natural_sort_key(text):
     """Natural sorting key for filenames with numbers"""
     return [int(t) if t.isdigit() else t.lower() for t in re.split(r'(\d+)', text)]
+
+
+# An ATX heading as pandoc reads it: no indent, and a space or the line end after
+# the #s, so `#hashtag` is text.
+_ATX_HEADING_RE = re.compile(r'^#+(?:[ \t]|$)')
+
+
+def heading_outline(temp_dir):
+    """List the headings of the output chunks in book order, as `file:line: heading`.
+
+    Lines in fenced code are skipped: a `# comment` there is code, not a heading.
+    """
+    rows = []
+    paths = sorted(glob.glob(os.path.join(temp_dir, 'output_chunk*.md')), key=natural_sort_key)
+    for path in paths:
+        text = read_output_text(path)
+        if text is None:
+            continue
+        lines = text.split('\n')
+        code = _fenced_code_line_indices(lines)
+        name = os.path.basename(path)
+        rows.extend(f"{name}:{i + 1}: {line.rstrip()}"
+                    for i, line in enumerate(lines)
+                    if i not in code and _ATX_HEADING_RE.match(line))
+    return rows
 
 
 # =============================================================================
@@ -1174,6 +1200,8 @@ def main():
     parser.add_argument('--cover', default=None, help='Cover image path for EPUB output')
     parser.add_argument('--export-name', default=None, help='Optional filename stem for exported alias copies')
     parser.add_argument('--cleanup', action='store_true', help='Remove intermediate artifacts after successful build')
+    parser.add_argument('--headings', action='store_true',
+                        help='List the headings of output_chunk*.md, skipping fenced code, and exit without building')
 
     args = parser.parse_args()
     temp_dir = args.temp_dir
@@ -1181,6 +1209,11 @@ def main():
     if not os.path.isdir(temp_dir):
         print(f"Error: Temp directory not found: {temp_dir}")
         sys.exit(1)
+
+    if args.headings:
+        rows = heading_outline(temp_dir)
+        print('\n'.join(rows) if rows else "No headings in output_chunk*.md")
+        return
 
     cover = args.cover
     if cover:
