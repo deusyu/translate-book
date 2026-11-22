@@ -2,6 +2,8 @@
 
 [English](README.md) | [中文](README.zh-CN.md) | 日本語
 
+プロジェクトページ：[translate.dyu.sh](https://translate.dyu.sh/)（中国語の 1 ページ紹介）
+
 Codex、Claude Code、OpenClaw 向けのエージェントスキルです。並列サブエージェントを使い、書籍まるごと（PDF/DOCX/EPUB）を任意の言語に翻訳します。
 
 <p align="center">
