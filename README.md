@@ -2,6 +2,8 @@
 
 English | [中文](README.zh-CN.md) | [日本語](README.ja.md)
 
+Project page: [translate.dyu.sh](https://translate.dyu.sh/) (a one-page guide, in Chinese)
+
 An agent skill for Codex, Claude Code, and OpenClaw that translates entire books (PDF/DOCX/EPUB) into any language using parallel subagents.
 
 <p align="center">

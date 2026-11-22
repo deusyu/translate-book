@@ -2,6 +2,8 @@
 
 [English](README.md) | 中文 | [日本語](README.ja.md)
 
+项目页：[translate.dyu.sh](https://translate.dyu.sh/)（一页中文导读）
+
 面向 Codex、Claude Code 和 OpenClaw 的 Agent Skill，使用并行 subagent 将整本书（PDF/DOCX/EPUB）翻译成任意语言。
 
 <p align="center">
