@@ -2,11 +2,12 @@
 
 ## Project
 
-translate-book is an agent skill for Codex, Claude Code, and OpenClaw that translates books (PDF/DOCX/EPUB) into any language using parallel subagents. Published on ClawHub as `translate-book` and on GitHub as `deusyu/translate-book`.
+translate-book is an Agent Skill for Claude Code, Codex, Cursor, OpenClaw, and other Agent Skills–compatible agents that translates books (PDF/DOCX/EPUB) into any language using parallel subagents. Published on ClawHub as `translate-book` and on GitHub as `deusyu/translate-book`.
 
 ## Structure
 
-- `SKILL.md` — Skill definition, the orchestration logic that Codex / Claude Code / OpenClaw follows
+- `SKILL.md` — Skill definition, the orchestration logic that the host agent follows
+- `.claude-plugin/marketplace.json` — Plugin-marketplace manifest for Claude Code / GitHub Copilot CLI / Cursor (single plugin, source `./`)
 - `scripts/convert.py` — PDF/DOCX/EPUB → Markdown chunks (via Calibre HTMLZ); Markdown input (e.g. from MinerU/Marker) skips Calibre
 - `scripts/manifest.py` — SHA-256 chunk tracking and merge validation
 - `scripts/glossary.py` — Term-consistency glossary; per-chunk term tables injected into sub-agent prompts
@@ -49,6 +50,10 @@ Verify: all output_chunk*.md files exist, manifest validation passes, output for
 - Pipeline output artifacts use the canonical names `book.html`, `book_doc.html`, `book.docx`, `book.epub`, `book.pdf`. Internal scripts and skip/cache logic depend on these names; if title-based filenames are added later they must be optional aliases/copies, not silent replacements
 - SKILL.md frontmatter must stay single-line per field (OpenClaw parser requirement)
 - Script paths in SKILL.md use `{baseDir}` not hardcoded paths
+- SKILL.md defines `{baseDir}` right under its title (the directory containing SKILL.md); only OpenClaw substitutes it, other hosts rely on that definition
+- When the host cannot spawn sub-agents, SKILL.md tells the user and stops; it never falls back to translating chunks sequentially in the main context
+- `.claude-plugin/marketplace.json` has no `version` field, so hosts use the commit SHA as the version and releases need no manifest bump
+- README host tables mark an agent "Verified" only after it passes the minimal test in the README's Compatibility section
 - Subagent instructions in SKILL.md must be platform-neutral (work on Codex, Claude Code, OpenClaw)
 - Checked-in baseline inputs live under `tests/baselines/<book-id>/`; generated full-pipeline outputs live under `tests/.artifacts/`
 - README changes must be synced to README.md, README.zh-CN.md, and README.ja.md

@@ -7,6 +7,8 @@ metadata: {"openclaw":{"requires":{"bins":["python3","pandoc","ebook-convert"],"
 
 # Book Translation Skill
 
+`{baseDir}` below is the directory containing this SKILL.md. If your runtime does not substitute it, replace it with that absolute path before running any command.
+
 You are a book translation assistant. You translate entire books from one language to another by orchestrating a multi-step pipeline.
 
 ## Workflow
@@ -23,6 +25,8 @@ Determine the following from the user's message:
 - **custom_instructions**: Any additional translation instructions from the user (optional)
 
 If the file path is not provided, ask the user.
+
+This skill requires a runtime that can spawn sub-agents from it (Step 4). If yours cannot, tell the user that this skill needs a runtime that can launch sub-agents, and stop. Do not fall back to translating the chunks yourself in this context, one after another or otherwise: a whole book in one context drifts and gets truncated.
 
 ### 2. Preprocess — Convert to Markdown Chunks
 
@@ -159,6 +163,7 @@ to Step 5.
 ### 4. Parallel Translation with Sub-Agents
 
 **Each chunk gets its own independent sub-agent** (1 chunk = 1 sub-agent = 1 fresh context). This prevents context accumulation and output truncation.
+If you cannot spawn sub-agents, stop as described at the end of Step 1.
 
 Launch chunks in batches to respect API rate limits:
 - Each batch: up to `concurrency` sub-agents in parallel (default: 8)
@@ -175,7 +180,7 @@ an agent. Count it as not started, keep the chunk queued, and wait for running
 agents to finish before launching more. Never launch a chunk that already
 has an agent running, or two agents will write the same output file.
 
-**Spawn each sub-agent with the following task.** Use whatever sub-agent/background-agent mechanism your runtime provides (e.g. the Agent tool, sessions_spawn, or equivalent).
+**Spawn each sub-agent with the following task.** Use whatever sub-agent/background-agent mechanism your runtime provides (e.g. the Agent or Task tool, sessions_spawn, invoke_subagent, or equivalent).
 
 The output file is `output_` prefixed to the source filename: `chunk0001.md` → `output_chunk0001.md`.
 
