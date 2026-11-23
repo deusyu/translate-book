@@ -168,7 +168,7 @@ elements:
     content:
       style: "$subDesc"
       wrap: false
-      text: "An agent skill for Codex, Claude Code & OpenClaw — resumable runs, book-wide glossary consistency."
+      text: "Agent skill for Claude Code, Codex, Cursor, OpenClaw & more — resumable runs, book-wide glossary."
   - elementId: glossary-rail
     elementType: line
     bounds: [212, 489, 452, 2]
