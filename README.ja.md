@@ -2,7 +2,7 @@
 
 [English](README.md) | [中文](README.zh-CN.md) | 日本語
 
-プロジェクトページ：[translate.dyu.sh](https://translate.dyu.sh/)（中国語の 1 ページ紹介）
+プロジェクトページ：[translate.dyu.sh/en](https://translate.dyu.sh/en/)（英語の 1 ページ紹介）
 
 Claude Code、Codex、Cursor、OpenClaw をはじめ、Agent Skills に対応したエージェント向けのスキルです。並列サブエージェントを使い、書籍まるごと（PDF/DOCX/EPUB）を任意の言語に翻訳します。
 
