@@ -4,13 +4,13 @@
 
 プロジェクトページ：[translate.dyu.sh](https://translate.dyu.sh/)（中国語の 1 ページ紹介）
 
-Codex、Claude Code、OpenClaw 向けのエージェントスキルです。並列サブエージェントを使い、書籍まるごと（PDF/DOCX/EPUB）を任意の言語に翻訳します。
+Claude Code、Codex、Cursor、OpenClaw をはじめ、Agent Skills に対応したエージェント向けのスキルです。並列サブエージェントを使い、書籍まるごと（PDF/DOCX/EPUB）を任意の言語に翻訳します。
 
 <p align="center">
   <img src="assets/poster/translate-book-poster-en.jpg" alt="translate-book — 書籍まるごとを並列翻訳：チャンクに分割し、8 つの並列サブエージェントで翻訳、検証してから 1 冊の訳書にマージ" width="480">
 </p>
 
-> [claude_translater](https://github.com/wizlijun/claude_translater) に着想を得ています。元のプロジェクトはシェルスクリプトをエントリポイントとし、Claude CLI と複数のステップスクリプトを組み合わせてチャンク単位の翻訳を行います。本プロジェクトはそのワークフローを Codex、Claude Code、OpenClaw 向けのエージェントスキルとして再構成し、サブエージェントによるチャンクの並列翻訳、manifest に基づく整合性チェック、再開可能な実行、複数フォーマット出力を 1 本のパイプラインにまとめています。構成も実装も元のプロジェクトと大きく異なるため、fork ではなく独立したプロジェクトです。
+> [claude_translater](https://github.com/wizlijun/claude_translater) に着想を得ています。元のプロジェクトはシェルスクリプトをエントリポイントとし、Claude CLI と複数のステップスクリプトを組み合わせてチャンク単位の翻訳を行います。本プロジェクトはそのワークフローを Claude Code、Codex、Cursor、OpenClaw などに対応したエージェントスキルとして再構成し、サブエージェントによるチャンクの並列翻訳、manifest に基づく整合性チェック、再開可能な実行、複数フォーマット出力を 1 本のパイプラインにまとめています。構成も実装も元のプロジェクトと大きく異なるため、fork ではなく独立したプロジェクトです。
 
 ---
 
@@ -52,7 +52,7 @@ Merge → Pandoc → HTML (with TOC) → Calibre → DOCX / EPUB / PDF
 
 ## 前提条件
 
-- **エージェント実行環境** — Codex、Claude Code、または OpenClaw がインストール済みで、スキルを実行できること
+- **エージェント実行環境** — Agent Skills に対応し、スキルからサブエージェントを起動できるエージェント（[互換性](#互換性) を参照）
 - **Calibre** — `ebook-convert` コマンドが使えること（[ダウンロード](https://calibre-ebook.com/)）
 - **Pandoc** — HTML↔Markdown 変換に使用（[ダウンロード](https://pandoc.org/)）
 - **Python 3** と以下のパッケージ:
@@ -64,11 +64,20 @@ Merge → Pandoc → HTML (with TOC) → Calibre → DOCX / EPUB / PDF
 
 ### 1. スキルをインストールする
 
-#### Codex
+#### Agent Skills に対応した任意のエージェント
 
 ```bash
-npx skills add deusyu/translate-book -a codex -g
+npx skills add deusyu/translate-book
 ```
+
+どのエージェントにインストールするかを対話形式で尋ねられます。1 つのエージェントにグローバルでインストールするには `-a <agent> -g` を付けます（例: `npx skills add deusyu/translate-book -a cursor -g`）:
+
+| `-a` | インストール先 |
+|------|----------------|
+| `claude-code` | `~/.claude/skills/translate-book` |
+| `codex`、`cursor`、`gemini-cli`、`opencode`、`github-copilot` | `~/.agents/skills/translate-book`（共用） |
+| `antigravity` | `~/.gemini/config/skills/translate-book` |
+| `openclaw` | `~/.openclaw/skills/translate-book` |
 
 手動でインストールする場合:
 
@@ -77,20 +86,25 @@ mkdir -p ~/.agents/skills
 git clone https://github.com/deusyu/translate-book.git ~/.agents/skills/translate-book
 ```
 
-インストールしたスキルが表示されない場合は、Codex を再起動してください。
+Codex、Cursor、Gemini CLI、OpenCode、GitHub Copilot は `~/.agents/skills/` を読み込みます。Claude Code の場合は `~/.claude/skills/translate-book` に clone してください。インストールしたスキルが表示されない場合は、エージェントを再起動してください。
 
-#### Claude Code
+#### プラグインマーケットプレイス（Claude Code、GitHub Copilot CLI）
 
-```bash
-npx skills add deusyu/translate-book -a claude-code -g
+Claude Code では:
+
+```text
+/plugin marketplace add deusyu/translate-book
+/plugin install translate-book@translate-book
 ```
 
-手動でインストールする場合:
+GitHub Copilot CLI では:
 
 ```bash
-mkdir -p ~/.claude/skills
-git clone https://github.com/deusyu/translate-book.git ~/.claude/skills/translate-book
+copilot plugin marketplace add deusyu/translate-book
+copilot plugin install translate-book@translate-book
 ```
+
+プラグインとしてのインストールと skills ディレクトリへのインストールは、どちらか一方にしてください。両方あると、エージェントは両方を読み込みます。Claude Code では、プラグインのスキルは `/translate-book:translate-book` で呼び出します。
 
 #### OpenClaw
 
@@ -110,7 +124,7 @@ $translate-book Translate /path/to/book.pdf into Chinese.
 
 依頼内容がスキルの説明に合致すれば、Codex が自動的にスキルを選ぶこともあります。
 
-#### Claude Code と OpenClaw
+#### その他のエージェント
 
 エージェントにこう依頼します:
 
@@ -118,11 +132,13 @@ $translate-book Translate /path/to/book.pdf into Chinese.
 translate /path/to/book.pdf to Chinese
 ```
 
-Claude Code ではスラッシュコマンドも使えます:
+Claude Code と Cursor ではスラッシュコマンドも使えます:
 
 ```text
 /translate-book translate /path/to/book.pdf to Japanese
 ```
+
+OpenCode では、依頼文に `@translate-book` を含めます。
 
 変換、分割、並列翻訳、検証、マージ、全出力フォーマットの生成まで、スキルがパイプライン全体を自動で処理します。
 
@@ -137,6 +153,43 @@ Claude Code ではスラッシュコマンドも使えます:
 | `book.docx` | Word 文書 |
 | `book.epub` | 電子書籍 |
 | `book.pdf` | 印刷向け PDF |
+
+## 互換性
+
+このスキルには、スキルからサブエージェントを（チャンクごとに 1 つ）起動できるエージェントが必要です。起動できない場合、スキルはその旨を伝えて停止し、1 つのコンテキストで書籍全体を翻訳することはしません。
+
+| エージェント | 状態 | 呼び出し方 |
+|--------------|------|------------|
+| Cursor | 検証済み | `/translate-book`、または依頼内容を伝える |
+| Claude Code | 従来の対応環境（最小テストは未実施） | `/translate-book`（プラグインの場合は `/translate-book:translate-book`）、または依頼内容を伝える |
+| Codex | 検証済み | `$translate-book`、または依頼内容を伝える |
+| OpenClaw | 従来の対応環境（最小テストは未実施） | 依頼内容を伝える |
+| Antigravity | インストール可、未検証 | 依頼内容を伝える |
+| Gemini CLI | インストール可、未検証 | 依頼内容を伝える |
+| OpenCode | インストール可、未検証 | `@translate-book`、または依頼内容を伝える |
+| GitHub Copilot | インストール可、未検証 | 依頼内容を伝える |
+
+「検証済み」は、そのエージェントが次の最小テストに合格したことを意味します。スキルをインストールし、同梱のベースライン書籍を変換します:
+
+```bash
+S=~/.agents/skills/translate-book   # スキルのインストール先
+mkdir -p /tmp/tb-smoke && cd /tmp/tb-smoke
+python3 "$S/scripts/convert.py" "$S/tests/baselines/diligent-dick/diligent-dick.epub" --olang zh
+```
+
+続いてエージェントに次のように依頼します:
+
+```text
+Use the translate-book skill. Do not convert again; the temp directory is /tmp/tb-smoke/diligent-dick_temp. Only handle chunk0045 and chunk0046, concurrency=2, skip the glossary step, launch one sub-agent per chunk as in Step 4 of SKILL.md to translate them into Chinese, and stop when done.
+```
+
+次の 3 点をすべて満たせば合格です:
+
+1. 対話ログに `python3 /絶対パス/scripts/chunk_context.py …` が現れる。`{baseDir}` が実際のパスに解決されたことを示します。
+2. `diligent-dick_temp/output_chunk0045*` と `output_chunk0046*` の書き込み時刻が、もう一方のサブエージェントの実行中に収まっている。メインエージェントが順番に翻訳したのではなく、並列に翻訳されたことを示します。
+3. `python3 "$S/scripts/merge_meta.py" status diligent-dick_temp` が `malformed_meta_files: 0` を出力する。
+
+「検証済み」でないエージェントで試した方は、エージェント名、バージョン、3 点の結果を添えて issue を開いてください。
 
 ## リポジトリのテスト資産
 
@@ -283,6 +336,7 @@ python3 scripts/merge_and_build.py --temp-dir book_temp --title "translated titl
 | ファイル | 役割 |
 |------|---------|
 | `SKILL.md` | エージェントスキルの定義 — パイプライン全体をオーケストレーションします |
+| `.claude-plugin/marketplace.json` | Claude Code と GitHub Copilot CLI 向けのプラグインマーケットプレイス定義（単一プラグイン、source は `./`） |
 | `scripts/convert.py` | PDF/DOCX/EPUB → Calibre HTMLZ 経由で Markdown チャンクへ。Markdown 入力は Calibre をスキップ |
 | `scripts/manifest.py` | チャンクの manifest: SHA-256 の追跡とマージ時の検証 |
 | `scripts/glossary.py` | 用語集の管理: 用語を統一するためのチャンクごとの用語表 |
@@ -371,7 +425,7 @@ python3 scripts/merge_and_build.py --temp-dir book_temp --title "translated titl
 
 お受けできないもの:
 
-- README やドキュメントに、サードパーティのモデルプラットフォームや API 中継サービスのセットアップ手順、base URL、環境変数を掲載すること。translate-book 自体はモデル API を一切呼び出しません。翻訳はユーザー自身のエージェント実行環境（Codex、Claude Code、OpenClaw）の中で行われます。
+- README やドキュメントに、サードパーティのモデルプラットフォームや API 中継サービスのセットアップ手順、base URL、環境変数を掲載すること。translate-book 自体はモデル API を一切呼び出しません。翻訳はユーザー自身のエージェント実行環境（Claude Code、Codex、Cursor、OpenClaw など）の中で行われます。
 
 ## ライセンス
 

@@ -4,13 +4,13 @@
 
 项目页：[translate.dyu.sh](https://translate.dyu.sh/)（一页中文导读）
 
-面向 Codex、Claude Code 和 OpenClaw 的 Agent Skill，使用并行 subagent 将整本书（PDF/DOCX/EPUB）翻译成任意语言。
+面向 Claude Code、Codex、Cursor、OpenClaw 等支持 Agent Skills 的 agent，使用并行 subagent 将整本书（PDF/DOCX/EPUB）翻译成任意语言。
 
 <p align="center">
   <img src="assets/poster/translate-book-poster.jpg" alt="translate-book 项目海报——一整本书,并行翻译:拆块后由 8 个并行子代理同时翻译,校验合并成完整译本" width="480">
 </p>
 
-> 本项目受 [claude_translater](https://github.com/wizlijun/claude_translater) 启发。原项目以 shell 脚本为入口，配合 Claude CLI 和多个步骤脚本完成分块翻译；本项目则将流程重构为可在 Codex、Claude Code 和 OpenClaw 中使用的 Agent Skill，使用 subagent 按 chunk 并行翻译，并引入 manifest 驱动的完整性校验，将续跑和多格式输出整合为更统一的流水线。由于项目结构和实现方式均与原项目不同，本项目为独立实现，而非 fork。
+> 本项目受 [claude_translater](https://github.com/wizlijun/claude_translater) 启发。原项目以 shell 脚本为入口，配合 Claude CLI 和多个步骤脚本完成分块翻译；本项目则将流程重构为可在 Claude Code、Codex、Cursor、OpenClaw 等 agent 中使用的 Agent Skill，使用 subagent 按 chunk 并行翻译，并引入 manifest 驱动的完整性校验，将续跑和多格式输出整合为更统一的流水线。由于项目结构和实现方式均与原项目不同，本项目为独立实现，而非 fork。
 
 ---
 
@@ -52,7 +52,7 @@ Calibre ebook-convert → HTMLZ → HTML → Markdown
 
 ## 前置要求
 
-- **Agent 运行环境** — Codex、Claude Code 或 OpenClaw，已安装并可运行 Skill
+- **Agent 运行环境** — 任何支持 Agent Skills、能从 Skill 里派出子 agent 的 agent（见[兼容性](#兼容性)）
 - **Calibre** — `ebook-convert` 命令可用（[下载](https://calibre-ebook.com/)）
 - **Pandoc** — 用于 HTML↔Markdown 转换（[下载](https://pandoc.org/)）
 - **Python 3**，需要：
@@ -64,11 +64,20 @@ Calibre ebook-convert → HTMLZ → HTML → Markdown
 
 ### 1. 安装 Skill
 
-#### Codex
+#### 任何支持 Agent Skills 的 agent
 
 ```bash
-npx skills add deusyu/translate-book -a codex -g
+npx skills add deusyu/translate-book
 ```
+
+命令会询问要装给哪些 agent。只给某一个 agent 全局安装时加 `-a <agent> -g`，例如 `npx skills add deusyu/translate-book -a cursor -g`：
+
+| `-a` | 安装目录 |
+|------|----------|
+| `claude-code` | `~/.claude/skills/translate-book` |
+| `codex`、`cursor`、`gemini-cli`、`opencode`、`github-copilot` | `~/.agents/skills/translate-book`（共用） |
+| `antigravity` | `~/.gemini/config/skills/translate-book` |
+| `openclaw` | `~/.openclaw/skills/translate-book` |
 
 或手动安装：
 
@@ -77,20 +86,25 @@ mkdir -p ~/.agents/skills
 git clone https://github.com/deusyu/translate-book.git ~/.agents/skills/translate-book
 ```
 
-如果新安装的 Skill 没有出现，请重启 Codex。
+Codex、Cursor、Gemini CLI、OpenCode 和 GitHub Copilot 都读 `~/.agents/skills/`。Claude Code 要改为 clone 到 `~/.claude/skills/translate-book`。如果新安装的 Skill 没有出现，请重启 agent。
 
-#### Claude Code
+#### 插件市场（Claude Code、GitHub Copilot CLI）
 
-```bash
-npx skills add deusyu/translate-book -a claude-code -g
+在 Claude Code 中：
+
+```text
+/plugin marketplace add deusyu/translate-book
+/plugin install translate-book@translate-book
 ```
 
-或手动安装：
+在 GitHub Copilot CLI 中：
 
 ```bash
-mkdir -p ~/.claude/skills
-git clone https://github.com/deusyu/translate-book.git ~/.claude/skills/translate-book
+copilot plugin marketplace add deusyu/translate-book
+copilot plugin install translate-book@translate-book
 ```
+
+插件安装和 skills 目录安装二选一：agent 找到两份时会同时加载。在 Claude Code 中，插件里的 Skill 用 `/translate-book:translate-book` 调用。
 
 #### OpenClaw
 
@@ -110,7 +124,7 @@ $translate-book Translate /path/to/book.pdf into Chinese.
 
 当请求与 Skill 描述匹配时，Codex 也可以自动选择该 Skill。
 
-#### Claude Code 和 OpenClaw
+#### 其他 agent
 
 直接告诉 Agent：
 
@@ -118,11 +132,13 @@ $translate-book Translate /path/to/book.pdf into Chinese.
 translate /path/to/book.pdf to Chinese
 ```
 
-在 Claude Code 中也可以使用斜杠命令：
+在 Claude Code 和 Cursor 中也可以使用斜杠命令：
 
 ```text
 /translate-book translate /path/to/book.pdf to Japanese
 ```
+
+在 OpenCode 中，在请求里写上 `@translate-book`。
 
 Skill 自动处理完整流程 — 转换、拆分、并行翻译、校验、合并、生成所有输出格式。
 
@@ -137,6 +153,43 @@ Skill 自动处理完整流程 — 转换、拆分、并行翻译、校验、合
 | `book.docx` | Word 文档 |
 | `book.epub` | 电子书 |
 | `book.pdf` | 可打印 PDF |
+
+## 兼容性
+
+这个 Skill 需要 agent 能从 Skill 里派出子 agent，每个 chunk 一个。agent 做不到时，Skill 会说明原因并停下，不会在一个上下文里把整本书翻完。
+
+| Agent | 状态 | 调用方式 |
+|-------|------|----------|
+| Cursor | 已验证 | `/translate-book`，或直接描述需求 |
+| Claude Code | 原有宿主，尚未补跑最小实测 | `/translate-book`（插件安装时为 `/translate-book:translate-book`），或直接描述需求 |
+| Codex | 已验证 | `$translate-book`，或直接描述需求 |
+| OpenClaw | 原有宿主，尚未补跑最小实测 | 直接描述需求 |
+| Antigravity | 可安装、待验证 | 直接描述需求 |
+| Gemini CLI | 可安装、待验证 | 直接描述需求 |
+| OpenCode | 可安装、待验证 | `@translate-book`，或直接描述需求 |
+| GitHub Copilot | 可安装、待验证 | 直接描述需求 |
+
+「已验证」指该 agent 通过了下面的最小实测。先安装 Skill，再转换随 Skill 一起装上的基准书：
+
+```bash
+S=~/.agents/skills/translate-book   # Skill 的安装目录
+mkdir -p /tmp/tb-smoke && cd /tmp/tb-smoke
+python3 "$S/scripts/convert.py" "$S/tests/baselines/diligent-dick/diligent-dick.epub" --olang zh
+```
+
+然后在 agent 里输入：
+
+```text
+用 translate-book skill。不要重新转换，临时目录已经是 /tmp/tb-smoke/diligent-dick_temp。只处理 chunk0045 和 chunk0046，concurrency=2，跳过术语表步骤，按 SKILL.md 第 4 步各派一个子代理翻成中文，完成后停下。
+```
+
+三条都满足才算通过：
+
+1. 对话记录里出现过 `python3 /绝对路径/scripts/chunk_context.py …`，说明 `{baseDir}` 被解析成了真实路径。
+2. `diligent-dick_temp/output_chunk0045*` 和 `output_chunk0046*` 的写入时间落在另一个子 agent 的运行期间，说明两个 chunk 是并行翻译的，不是主 agent 自己挨个翻。
+3. `python3 "$S/scripts/merge_meta.py" status diligent-dick_temp` 输出 `malformed_meta_files: 0`。
+
+在没标「已验证」的 agent 上跑过？欢迎开 issue，写明 agent、版本和三条结果。
 
 ## 仓库测试资产
 
@@ -283,6 +336,7 @@ python3 scripts/merge_and_build.py --temp-dir book_temp --title "译后书名" -
 | 文件 | 用途 |
 |------|------|
 | `SKILL.md` | Agent Skill 定义 — 编排完整流程 |
+| `.claude-plugin/marketplace.json` | Claude Code 和 GitHub Copilot CLI 的插件市场清单（单个插件，source 为 `./`） |
 | `scripts/convert.py` | PDF/DOCX/EPUB → Markdown chunks（经 Calibre HTMLZ）；Markdown 输入不经过 Calibre |
 | `scripts/manifest.py` | Chunk manifest：SHA-256 追踪与合并校验 |
 | `scripts/glossary.py` | 术语表管理：为每个 chunk 生成专属术语对照表，保证全书译名一致 |
@@ -371,7 +425,7 @@ Phase 1 让术语表按批次增长,因此第一批看到的术语表最小,drif
 
 不接受：
 
-- 在 README 或文档中加入第三方模型平台 / API 中转站的配置教程、Base URL 或环境变量。translate-book 本身不调用任何模型 API，翻译在用户自己的 agent 宿主（Codex、Claude Code、OpenClaw）里完成。
+- 在 README 或文档中加入第三方模型平台 / API 中转站的配置教程、Base URL 或环境变量。translate-book 本身不调用任何模型 API，翻译在用户自己的 agent 宿主（Claude Code、Codex、Cursor、OpenClaw 等）里完成。
 
 ## License
 

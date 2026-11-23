@@ -1,0 +1,19 @@
+{
+  "name": "translate-book",
+  "owner": { "name": "deusyu" },
+  "metadata": {
+    "description": "Translate whole books (PDF/DOCX/EPUB) into any language with parallel sub-agents"
+  },
+  "plugins": [
+    {
+      "name": "translate-book",
+      "description": "Translate books (PDF/DOCX/EPUB) into any language using parallel sub-agents.",
+      "source": "./",
+      "strict": false,
+      "skills": ["./"],
+      "homepage": "https://translate.dyu.sh/",
+      "repository": "https://github.com/deusyu/translate-book",
+      "license": "MIT"
+    }
+  ]
+}

@@ -4,13 +4,13 @@ English | [中文](README.zh-CN.md) | [日本語](README.ja.md)
 
 Project page: [translate.dyu.sh](https://translate.dyu.sh/) (a one-page guide, in Chinese)
 
-An agent skill for Codex, Claude Code, and OpenClaw that translates entire books (PDF/DOCX/EPUB) into any language using parallel subagents.
+An Agent Skill for Claude Code, Codex, Cursor, OpenClaw and other Agent Skills–compatible agents that translates entire books (PDF/DOCX/EPUB) into any language using parallel subagents.
 
 <p align="center">
   <img src="assets/poster/translate-book-poster-en.jpg" alt="translate-book — a whole book, translated in parallel: split into chunks, translated by 8 parallel sub-agents, verified and merged into a complete book" width="480">
 </p>
 
-> Inspired by [claude_translater](https://github.com/wizlijun/claude_translater). The original project uses shell scripts as its entry point, coordinating the Claude CLI with multiple step scripts to perform chunked translation. This project restructures the workflow as an agent skill for Codex, Claude Code, and OpenClaw, using subagents to translate chunks in parallel, with manifest-driven integrity checks, resumable runs, and multi-format output unified into a single pipeline. As the project structure and implementation differ significantly from the original, this is an independent project rather than a fork.
+> Inspired by [claude_translater](https://github.com/wizlijun/claude_translater). The original project uses shell scripts as its entry point, coordinating the Claude CLI with multiple step scripts to perform chunked translation. This project restructures the workflow as an Agent Skill for Claude Code, Codex, Cursor, OpenClaw, and other compatible agents, using subagents to translate chunks in parallel, with manifest-driven integrity checks, resumable runs, and multi-format output unified into a single pipeline. As the project structure and implementation differ significantly from the original, this is an independent project rather than a fork.
 
 ---
 
@@ -52,7 +52,7 @@ Each chunk gets its own independent subagent with a fresh context window. This p
 
 ## Prerequisites
 
-- **Agent runtime** — Codex, Claude Code, or OpenClaw, installed and ready to run skills
+- **Agent runtime** — any agent that supports Agent Skills and can launch sub-agents from a skill (see [Compatibility](#compatibility))
 - **Calibre** — `ebook-convert` command must be available ([download](https://calibre-ebook.com/))
 - **Pandoc** — for HTML↔Markdown conversion ([download](https://pandoc.org/))
 - **Python 3** with:
@@ -64,11 +64,20 @@ Each chunk gets its own independent subagent with a fresh context window. This p
 
 ### 1. Install the skill
 
-#### Codex
+#### Any Agent Skills–compatible agent
 
 ```bash
-npx skills add deusyu/translate-book -a codex -g
+npx skills add deusyu/translate-book
 ```
+
+The command asks which agents to install the skill for. To install it globally for one agent, pass `-a <agent> -g`, for example `npx skills add deusyu/translate-book -a cursor -g`:
+
+| `-a` | Installed to |
+|------|--------------|
+| `claude-code` | `~/.claude/skills/translate-book` |
+| `codex`, `cursor`, `gemini-cli`, `opencode`, `github-copilot` | `~/.agents/skills/translate-book` (shared) |
+| `antigravity` | `~/.gemini/config/skills/translate-book` |
+| `openclaw` | `~/.openclaw/skills/translate-book` |
 
 Or install it manually:
 
@@ -77,20 +86,25 @@ mkdir -p ~/.agents/skills
 git clone https://github.com/deusyu/translate-book.git ~/.agents/skills/translate-book
 ```
 
-Restart Codex if the newly installed skill does not appear.
+Codex, Cursor, Gemini CLI, OpenCode, and GitHub Copilot read `~/.agents/skills/`. For Claude Code, clone into `~/.claude/skills/translate-book` instead. Restart the agent if the newly installed skill does not appear.
 
-#### Claude Code
+#### Plugin marketplace (Claude Code, GitHub Copilot CLI)
 
-```bash
-npx skills add deusyu/translate-book -a claude-code -g
+In Claude Code:
+
+```text
+/plugin marketplace add deusyu/translate-book
+/plugin install translate-book@translate-book
 ```
 
-Or install it manually:
+In GitHub Copilot CLI:
 
 ```bash
-mkdir -p ~/.claude/skills
-git clone https://github.com/deusyu/translate-book.git ~/.claude/skills/translate-book
+copilot plugin marketplace add deusyu/translate-book
+copilot plugin install translate-book@translate-book
 ```
+
+Install the skill either as a plugin or into a skills directory, not both: an agent that finds both copies loads both. In Claude Code, the plugin's skill is invoked as `/translate-book:translate-book`.
 
 #### OpenClaw
 
@@ -110,7 +124,7 @@ $translate-book Translate /path/to/book.pdf into Chinese.
 
 Codex can also select the skill automatically when your request matches its description.
 
-#### Claude Code and OpenClaw
+#### Other agents
 
 Ask the agent:
 
@@ -118,11 +132,13 @@ Ask the agent:
 translate /path/to/book.pdf to Chinese
 ```
 
-In Claude Code, you can also use the slash command:
+In Claude Code and Cursor, you can also use the slash command:
 
 ```text
 /translate-book translate /path/to/book.pdf to Japanese
 ```
+
+In OpenCode, mention `@translate-book` in the request.
 
 The skill handles the full pipeline automatically — convert, chunk, translate in parallel, validate, merge, and build all output formats.
 
@@ -137,6 +153,43 @@ All files are in `{book_name}_temp/`:
 | `book.docx` | Word document |
 | `book.epub` | E-book |
 | `book.pdf` | Print-ready PDF |
+
+## Compatibility
+
+The skill needs an agent that can launch sub-agents from a skill, one per chunk. If the agent cannot, the skill says so and stops instead of translating the whole book in a single context.
+
+| Agent | Status | Invoke |
+|-------|--------|--------|
+| Cursor | Verified | `/translate-book`, or describe the task |
+| Claude Code | Original host; minimal test not yet re-run | `/translate-book` (plugin install: `/translate-book:translate-book`), or describe the task |
+| Codex | Verified | `$translate-book`, or describe the task |
+| OpenClaw | Original host; minimal test not yet re-run | Describe the task |
+| Antigravity | Installable, not yet verified | Describe the task |
+| Gemini CLI | Installable, not yet verified | Describe the task |
+| OpenCode | Installable, not yet verified | `@translate-book`, or describe the task |
+| GitHub Copilot | Installable, not yet verified | Describe the task |
+
+"Verified" means the agent passed this minimal test. Install the skill, then convert a baseline book that ships with it:
+
+```bash
+S=~/.agents/skills/translate-book   # the skill's install directory
+mkdir -p /tmp/tb-smoke && cd /tmp/tb-smoke
+python3 "$S/scripts/convert.py" "$S/tests/baselines/diligent-dick/diligent-dick.epub" --olang zh
+```
+
+Then ask the agent:
+
+```text
+Use the translate-book skill. Do not convert again; the temp directory is /tmp/tb-smoke/diligent-dick_temp. Only handle chunk0045 and chunk0046, concurrency=2, skip the glossary step, launch one sub-agent per chunk as in Step 4 of SKILL.md to translate them into Chinese, and stop when done.
+```
+
+The agent passes when all three hold:
+
+1. The transcript shows `python3 /absolute/path/scripts/chunk_context.py …`, so `{baseDir}` was resolved to a real path.
+2. The write times of `diligent-dick_temp/output_chunk0045*` and `output_chunk0046*` overlap with the other sub-agent's run, so the chunks were translated in parallel rather than one after another by the main agent.
+3. `python3 "$S/scripts/merge_meta.py" status diligent-dick_temp` reports `malformed_meta_files: 0`.
+
+Ran it on an agent that is not marked Verified? Please open an issue with the agent, its version, and the three results.
 
 ## Repository Test Assets
 
@@ -283,6 +336,7 @@ Intermediate files stay in the temp dir after the build, so a few bad passages c
 | File | Purpose |
 |------|---------|
 | `SKILL.md` | Agent skill definition — orchestrates the full pipeline |
+| `.claude-plugin/marketplace.json` | Plugin marketplace manifest for Claude Code and GitHub Copilot CLI (single plugin, source `./`) |
 | `scripts/convert.py` | PDF/DOCX/EPUB → Markdown chunks via Calibre HTMLZ; Markdown input skips Calibre |
 | `scripts/manifest.py` | Chunk manifest: SHA-256 tracking and merge validation |
 | `scripts/glossary.py` | Glossary management: per-chunk term tables for consistent terminology |
@@ -371,7 +425,7 @@ Companies are welcome to sponsor translate-book, and terms are open to discussio
 
 Not accepted:
 
-- Setup guides, base URLs, or environment variables for third-party model platforms or API relays in the README or docs. translate-book does not call any model API itself; translation runs inside the user's own agent host (Codex, Claude Code, OpenClaw).
+- Setup guides, base URLs, or environment variables for third-party model platforms or API relays in the README or docs. translate-book does not call any model API itself; translation runs inside the user's own agent host (Claude Code, Codex, Cursor, OpenClaw, and others).
 
 ## License
 
