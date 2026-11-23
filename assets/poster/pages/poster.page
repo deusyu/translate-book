@@ -169,7 +169,7 @@ elements:
       style: "$desc"
       text: |
         把整本 PDF / DOCX / EPUB 交给并行 AI 子代理翻译,校验合并成完整译本。
-        断点续跑 · 术语全书一致 · Codex / Claude Code / OpenClaw 即装即用。
+        断点续跑 · 术语全书一致 · Claude Code / Codex / Cursor / OpenClaw 等即装即用。
   - elementId: src-caption
     elementType: text
     bounds: [286, 213, 300, 14]
