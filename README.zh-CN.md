@@ -162,7 +162,7 @@ Skill 自动处理完整流程 — 转换、拆分、并行翻译、校验、合
 |-------|------|----------|
 | Cursor | 已验证 | `/translate-book`，或直接描述需求 |
 | Claude Code | 原有宿主，尚未补跑最小实测 | `/translate-book`（插件安装时为 `/translate-book:translate-book`），或直接描述需求 |
-| Codex | 原有宿主，尚未补跑最小实测 | `$translate-book`，或直接描述需求 |
+| Codex | 已验证 | `$translate-book`，或直接描述需求 |
 | OpenClaw | 原有宿主，尚未补跑最小实测 | 直接描述需求 |
 | Antigravity | 可安装、待验证 | 直接描述需求 |
 | Gemini CLI | 可安装、待验证 | 直接描述需求 |

@@ -162,7 +162,7 @@ OpenCode では、依頼文に `@translate-book` を含めます。
 |--------------|------|------------|
 | Cursor | 検証済み | `/translate-book`、または依頼内容を伝える |
 | Claude Code | 従来の対応環境（最小テストは未実施） | `/translate-book`（プラグインの場合は `/translate-book:translate-book`）、または依頼内容を伝える |
-| Codex | 従来の対応環境（最小テストは未実施） | `$translate-book`、または依頼内容を伝える |
+| Codex | 検証済み | `$translate-book`、または依頼内容を伝える |
 | OpenClaw | 従来の対応環境（最小テストは未実施） | 依頼内容を伝える |
 | Antigravity | インストール可、未検証 | 依頼内容を伝える |
 | Gemini CLI | インストール可、未検証 | 依頼内容を伝える |

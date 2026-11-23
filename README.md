@@ -162,7 +162,7 @@ The skill needs an agent that can launch sub-agents from a skill, one per chunk.
 |-------|--------|--------|
 | Cursor | Verified | `/translate-book`, or describe the task |
 | Claude Code | Original host; minimal test not yet re-run | `/translate-book` (plugin install: `/translate-book:translate-book`), or describe the task |
-| Codex | Original host; minimal test not yet re-run | `$translate-book`, or describe the task |
+| Codex | Verified | `$translate-book`, or describe the task |
 | OpenClaw | Original host; minimal test not yet re-run | Describe the task |
 | Antigravity | Installable, not yet verified | Describe the task |
 | Gemini CLI | Installable, not yet verified | Describe the task |
