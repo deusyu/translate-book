@@ -5,8 +5,8 @@ Combines the original steps 1-2 into a single script.
 
 Markdown input (.md/.markdown) skips Calibre entirely. Use it for PDFs that
 Calibre's coordinate-heuristic reflow mangles (formulas, tables, multi-column
-layouts): extract them with a layout-aware parser such as MinerU or Marker
-first, then pass the resulting Markdown here.
+layouts): extract them with a layout-aware parser such as MinerU, Marker or
+docling first, then pass the resulting Markdown here.
 """
 
 import os
@@ -896,7 +896,7 @@ def clean_calibre_markers(content, strip_page_numbers=False, detect_page_numbers
 
 
 # =============================================================================
-# Markdown input: pre-extracted Markdown (e.g. from MinerU / Marker) skips Calibre
+# Markdown input: pre-extracted Markdown (e.g. from MinerU / Marker / docling) skips Calibre
 # =============================================================================
 
 MARKDOWN_EXTENSIONS = ('.md', '.markdown')
@@ -911,6 +911,24 @@ _DATA_URI_EXTENSIONS = {
     "jpeg": ".jpg", "jpg": ".jpg", "png": ".png", "gif": ".gif",
     "webp": ".webp", "svg+xml": ".svg", "bmp": ".bmp",
 }
+# Comments a parser leaves where it dropped content; translation cannot bring it back.
+_FORMULA_PLACEHOLDER = "<!-- formula-not-decoded -->"
+_PARSER_PLACEHOLDERS = (
+    (_FORMULA_PLACEHOLDER, "formula(s) were not decoded",
+     "re-extract with formula recognition on (docling: --enrich-formula)"),
+    ("<!-- image -->", "image(s) were exported as placeholders",
+     "re-extract with images embedded or referenced (docling: --image-export-mode embedded)"),
+)
+# Formula models such as docling's write `&` and `\\` rows outside any
+# environment. Pandoc's TeX reader rejects them and prints the formula as raw TeX.
+# A $$...$$ block on lines of its own; like pandoc, never across a blank line.
+_DISPLAY_MATH_RE = re.compile(r'^([ \t]*\$\$)((?:(?!\n[ \t]*\n)[^$])+?)(\$\$[ \t]*)$', re.MULTILINE)
+_TEX_ENV_RE = re.compile(r'\\begin\{([^}]*)\}.*?\\end\{\1\}', re.DOTALL)
+_TEX_ALIGN_TOKEN_RE = re.compile(r'\\\\|\\.|&', re.DOTALL)
+# `$...$` as pandoc reads it: no space just inside either dollar, no digit right after the closing one.
+_INLINE_MATH_RE = re.compile(r'(?<![$\\])\$(?![\s$])(?:\\.|[^$\\\n])+?(?<!\s)\$(?![$\d])')
+# A document with only a formula or two may well have no inline math.
+_INLINE_MATH_CHECK_MIN_DISPLAY = 3
 
 _FRONT_MATTER_RE = re.compile(r'\A---[ \t]*\n(.*?)\n(?:---|\.\.\.)[ \t]*(?:\n|\Z)', re.DOTALL)
 _FRONT_MATTER_KEYS = {
@@ -1001,14 +1019,59 @@ def markdown_metadata(content):
     return metadata
 
 
+def align_display_math(content):
+    r"""Wrap display formulas that have bare `&` or `\\` rows in an aligned environment.
+
+    Returns (content, number of formulas wrapped). Fenced code is left alone.
+    """
+    wrapped = 0
+
+    def wrap(m):
+        nonlocal wrapped
+        tokens = _TEX_ALIGN_TOKEN_RE.findall(_TEX_ENV_RE.sub('', m.group(2)))
+        if '&' not in tokens and '\\\\' not in tokens:
+            return m.group(0)
+        wrapped += 1
+        return f"{m.group(1)}\\begin{{aligned}}{m.group(2)}\\end{{aligned}}{m.group(3)}"
+
+    lines = content.split('\n')
+    code = _fenced_code_line_indices(lines)
+    parts, start = [], 0
+    for i in range(len(lines) + 1):
+        if i == len(lines) or i in code:
+            if start < i:
+                parts.append(_DISPLAY_MATH_RE.sub(wrap, '\n'.join(lines[start:i])))
+            if i < len(lines):
+                parts.append(lines[i])
+            start = i + 1
+    return '\n'.join(parts), wrapped
+
+
+def formula_counts(content):
+    """Return (display formulas, inline formulas) outside fenced code.
+
+    Placeholders for formulas a parser could not decode count as display formulas.
+    """
+    lines = content.split('\n')
+    code = _fenced_code_line_indices(lines)
+    text = '\n'.join(line for i, line in enumerate(lines) if i not in code)
+    display = len(_DISPLAY_MATH_RE.findall(text)) + text.count(_FORMULA_PLACEHOLDER)
+    inline = len(_INLINE_MATH_RE.findall(_DISPLAY_MATH_RE.sub('', text)))
+    return display, inline
+
+
 def import_markdown(md_path, temp_dir):
-    """Return Markdown content ready for chunking, with images moved under temp_dir/images/.
+    r"""Return Markdown content ready for chunking, with images moved under temp_dir/images/.
 
     Relative image paths are resolved against the Markdown file's directory
-    and copied in; base64 data URIs (MinerU inlines images that way) are
-    decoded to files so chunks handed to translators never carry image
-    payloads. Remote URLs stay untouched. YAML front matter is dropped from
-    the body — its metadata goes to config.txt via markdown_metadata().
+    and copied in; base64 data URIs (MinerU and docling inline images that
+    way) are decoded to files so chunks handed to translators never carry
+    image payloads. Remote URLs stay untouched. YAML front matter is dropped
+    from the body — its metadata goes to config.txt via markdown_metadata().
+    Display formulas with bare `&` / `\\` rows are wrapped so pandoc can render
+    them. Placeholders a parser left for dropped formulas or images are reported,
+    and so are display formulas without any inline math, the mark of a parser
+    that turned inline math into plain text.
     """
     with open(md_path, 'r', encoding='utf-8') as f:
         content = f.read()
@@ -1071,6 +1134,18 @@ def import_markdown(md_path, temp_dir):
 
     if stored:
         print(f"Localized {len(stored)} image(s) into {images_dir}/")
+    content, aligned = align_display_math(content)
+    if aligned:
+        print(f"Wrapped {aligned} display formula(s) with bare & or \\\\ rows in an aligned environment")
+    for placeholder, what, fix in _PARSER_PLACEHOLDERS:
+        count = content.count(placeholder)
+        if count:
+            print(f"Warning: {count} {what} ({placeholder}); {fix}")
+    display, inline = formula_counts(content)
+    if display >= _INLINE_MATH_CHECK_MIN_DISPLAY and not inline:
+        print(f"Warning: {display} display formula(s) but no inline math; the parser may have "
+              "turned inline math into plain text (docling's standard pipeline does); "
+              "MinerU and Marker keep it as LaTeX")
     return content
 
 
@@ -1502,7 +1577,7 @@ def main():
     parser.add_argument(
         "input_file",
         help="Input file: PDF, DOCX, or EPUB (converted by Calibre), or Markdown (.md/.markdown), "
-             "e.g. the output of a layout-aware PDF parser such as MinerU or Marker",
+             "e.g. the output of a layout-aware PDF parser such as MinerU, Marker or docling",
     )
     parser.add_argument("-l", "--ilang", default="auto", help="Input language (default: auto)")
     parser.add_argument("--olang", default="zh", help="Output language (default: zh)")
