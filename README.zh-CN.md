@@ -1,8 +1,6 @@
 # Rainman Translate Book
 
-[English](README.md) | 中文 | [日本語](README.ja.md)
-
-项目页：[translate.dyu.sh](https://translate.dyu.sh/)（一页中文导读）
+[![英文版 README（English）](https://img.shields.io/badge/English-1f6b52)](README.md) [![中文（当前语言）](https://img.shields.io/badge/%E4%B8%AD%E6%96%87-e9c13f)](#rainman-translate-book) [![日文版 README（日本語）](https://img.shields.io/badge/%E6%97%A5%E6%9C%AC%E8%AA%9E-1f6b52)](README.ja.md) [![项目页：translate.dyu.sh，一页中文导读](https://img.shields.io/badge/%E9%A1%B9%E7%9B%AE%E9%A1%B5-translate.dyu.sh_%C2%B7_%E4%B8%80%E9%A1%B5%E4%B8%AD%E6%96%87%E5%AF%BC%E8%AF%BB-e9c13f?labelColor=1f6b52)](https://translate.dyu.sh/)
 
 面向 Claude Code、Codex、Cursor、OpenClaw 等支持 Agent Skills 的 agent，使用并行 subagent 将整本书（PDF/DOCX/EPUB）翻译成任意语言。
 
