@@ -1,8 +1,6 @@
 # Rainman Translate Book
 
-English | [中文](README.zh-CN.md) | [日本語](README.ja.md)
-
-Project page: [translate.dyu.sh/en](https://translate.dyu.sh/en/) (a one-page guide)
+![English (current language)](https://img.shields.io/badge/English-e9c13f) [![Read in Chinese (中文)](https://img.shields.io/badge/%E4%B8%AD%E6%96%87-1f6b52)](README.zh-CN.md) [![Read in Japanese (日本語)](https://img.shields.io/badge/%E6%97%A5%E6%9C%AC%E8%AA%9E-1f6b52)](README.ja.md) [![Project page: translate.dyu.sh/en, a one-page guide](https://img.shields.io/badge/Project_page-translate.dyu.sh%2Fen_%C2%B7_a_one--page_guide-e9c13f?labelColor=1f6b52)](https://translate.dyu.sh/en/)
 
 An Agent Skill for Claude Code, Codex, Cursor, OpenClaw and other Agent Skills–compatible agents that translates entire books (PDF/DOCX/EPUB) into any language using parallel subagents.
 

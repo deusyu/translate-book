@@ -1,8 +1,6 @@
 # Rainman Translate Book
 
-[English](README.md) | [中文](README.zh-CN.md) | 日本語
-
-プロジェクトページ：[translate.dyu.sh/en](https://translate.dyu.sh/en/)（英語の 1 ページ紹介）
+[![英語版 README（English）](https://img.shields.io/badge/English-1f6b52)](README.md) [![中国語版 README（中文）](https://img.shields.io/badge/%E4%B8%AD%E6%96%87-1f6b52)](README.zh-CN.md) ![日本語（表示中の言語）](https://img.shields.io/badge/%E6%97%A5%E6%9C%AC%E8%AA%9E-e9c13f) [![プロジェクトページ：translate.dyu.sh/en（英語で書かれた 1 ページの紹介）](https://img.shields.io/badge/%E3%83%97%E3%83%AD%E3%82%B8%E3%82%A7%E3%82%AF%E3%83%88%E3%83%9A%E3%83%BC%E3%82%B8-translate.dyu.sh%2Fen_%C2%B7_%E8%8B%B1%E8%AA%9E%E3%81%AE_1_%E3%83%9A%E3%83%BC%E3%82%B8%E7%B4%B9%E4%BB%8B-e9c13f?labelColor=1f6b52)](https://translate.dyu.sh/en/)
 
 Claude Code、Codex、Cursor、OpenClaw をはじめ、Agent Skills に対応したエージェント向けのスキルです。並列サブエージェントを使い、書籍まるごと（PDF/DOCX/EPUB）を任意の言語に翻訳します。
 
