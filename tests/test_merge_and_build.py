@@ -62,6 +62,7 @@ class ConvertWithPandocTests(unittest.TestCase):
     def test_uses_ascii_heading_ids(self):
         # Non-ASCII ids lose their anchors in Calibre's split EPUB TOC.
         with mock.patch.object(merge_and_build.subprocess, "run") as run_mock:
+            run_mock.return_value.stderr = ""
             with contextlib.redirect_stdout(io.StringIO()):
                 merge_and_build.convert_with_pandoc("in.md", "out.html", "Title", "zh-CN")
 
