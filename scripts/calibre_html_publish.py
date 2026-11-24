@@ -206,6 +206,26 @@ def get_output_format(output_file):
     }
     return format_map.get(ext)
 
+def _toc_xpaths(html_file):
+    """Return the --level1-toc and --level2-toc XPaths for this book.
+
+    Pandoc's title block puts the book title in an <h1 class="title">. When the
+    chapters are h2, `//h:h1` alone makes that title the only top-level entry,
+    with every chapter nested under it. Leaving the title out drops the chapters
+    too, since Calibre discards level-2 entries with no level-1 entry to sit
+    under. So the title shares level 1 with the top content heading level.
+    """
+    try:
+        with open(html_file, encoding='utf-8', errors='replace') as f:
+            html = f.read()
+    except OSError:
+        return "//h:h1", "//h:h2"
+    levels = {int(n) for n in re.findall(r'<h([1-6])\b(?![^>]*class="title")', html, re.IGNORECASE)}
+    top = min(levels, default=1)
+    if top == 1:
+        return "//h:h1", "//h:h2"
+    return f"//h:h1 | //h:h{top}", f"//h:h{top + 1}"
+
 def convert_html_with_calibre(html_file, output_file, format_type, timeout=600, lang="zh-CN", cover=None):
     """Convert HTML to specified format using Calibre with timeout protection"""
     
@@ -219,7 +239,9 @@ def convert_html_with_calibre(html_file, output_file, format_type, timeout=600, 
     print(f"Converting HTML to {format_type.upper()} using Calibre...")
     print(f"Title: {title}")
     print(f"Author: {author}")
-    
+
+    level1_toc, level2_toc = _toc_xpaths(html_file)
+
     # Prepare Calibre command
     cmd = [
         calibre_path,
@@ -230,7 +252,12 @@ def convert_html_with_calibre(html_file, output_file, format_type, timeout=600, 
         "--language", lang,
         "--book-producer", "translate-book",
         "--preserve-cover-aspect-ratio",
-        "--smarten-punctuation"
+        "--smarten-punctuation",
+        # Build the TOC from heading levels. Calibre's default chapter
+        # detection only matches English words (chapter, part, ...), so a
+        # translated book otherwise gets no TOC entries for its chapters.
+        "--level1-toc", level1_toc,
+        "--level2-toc", level2_toc,
     ]
     
     # Add format-specific options

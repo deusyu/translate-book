@@ -576,7 +576,11 @@ def convert_with_pandoc(md_file, html_file, title, lang_attr):
         '--standalone',
         '--metadata', f'title={title}',
         '--metadata', f'lang={lang_attr}',
-        '--from', 'markdown+smart+east_asian_line_breaks',
+        # ascii_identifiers: heading ids such as `section-1` instead of
+        # `第一章-掉进兔子洞`. Calibre drops non-ASCII anchors from its TOC
+        # entries when it splits the book, so every entry pointed at the
+        # first file.
+        '--from', 'markdown+smart+east_asian_line_breaks+ascii_identifiers',
         '--to', 'html5',
         # Without this, pandoc emits any TeX it cannot approximate in plain
         # HTML (fractions, roots, display math) as raw `$...$` text.

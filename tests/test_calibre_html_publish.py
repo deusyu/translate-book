@@ -47,6 +47,41 @@ class ConvertHtmlWithCalibreTests(unittest.TestCase):
             self.assertIn("--epub-version", cmd)
             self.assertIn("3", cmd)
             self.assertNotIn("--disable-font-rescaling", cmd)
+            # TOC comes from heading levels, in any language.
+            self.assertEqual(cmd[cmd.index("--level1-toc") + 1], "//h:h1")
+            self.assertEqual(cmd[cmd.index("--level2-toc") + 1], "//h:h2")
+
+    def test_h2_chapters_share_toc_level_one_with_the_title(self):
+        # Pandoc's title block is the only h1 when the chapters are h2. With
+        # `//h:h1` as level 1, every chapter would nest under the book title.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            input_html = Path(temp_dir) / "input.html"
+            output_file = Path(temp_dir) / "output.epub"
+            input_html.write_text(
+                '<html><body><header id="title-block-header"><h1 class="title">Book</h1></header>'
+                '<h2 id="one">One</h2><h3 id="one-1">1.1</h3><h2 id="two">Two</h2></body></html>',
+                encoding="utf-8",
+            )
+
+            def fake_run(cmd, capture_output, text, timeout):
+                output_file.write_text("epub", encoding="utf-8")
+                return mock.Mock(returncode=0, stderr="")
+
+            with mock.patch.object(
+                calibre_html_publish, "find_calibre_convert", return_value="/usr/bin/ebook-convert"
+            ), mock.patch.object(
+                calibre_html_publish, "extract_html_metadata", return_value=("Book", "Author")
+            ), mock.patch.object(
+                calibre_html_publish.subprocess, "run", side_effect=fake_run
+            ) as run_mock:
+                ok = calibre_html_publish.convert_html_with_calibre(
+                    str(input_html), str(output_file), "epub", timeout=12, lang="zh-CN"
+                )
+
+            self.assertTrue(ok)
+            cmd = run_mock.call_args.args[0]
+            self.assertEqual(cmd[cmd.index("--level1-toc") + 1], "//h:h1 | //h:h2")
+            self.assertEqual(cmd[cmd.index("--level2-toc") + 1], "//h:h3")
 
     @unittest.skipUnless(
         "cover" in inspect.signature(calibre_html_publish.convert_html_with_calibre).parameters,
