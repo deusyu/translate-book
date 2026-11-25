@@ -70,14 +70,22 @@ def extract_html_metadata(html_file):
         print(f"Warning: Could not extract metadata: {e}")
         return os.path.splitext(os.path.basename(html_file))[0], "Unknown Author"
 
+def _primary_language(lang):
+    """The primary subtag of a language tag: zh for zh-TW, pt for pt_BR.
+
+    Compare it whole: kok is Konkani and jav is Javanese, not Korean or Japanese.
+    """
+    return lang.lower().replace('_', '-').split('-')[0]
+
+
 def _get_font_family_for_lang(lang):
     """Get appropriate font family CSS for the given language."""
-    lang_lower = lang.lower()
-    if lang_lower.startswith('zh'):
+    primary = _primary_language(lang)
+    if primary == 'zh':
         return '"FangSong", "FangSong_GB2312", "仿宋", "仿宋_GB2312", "STFangSong", "SimSun", serif'
-    elif lang_lower.startswith('ja'):
+    elif primary == 'ja':
         return '"Hiragino Mincho ProN", "Yu Mincho", "MS Mincho", serif'
-    elif lang_lower.startswith('ko'):
+    elif primary == 'ko':
         return '"Nanum Myeongjo", "Batang", serif'
     else:
         return 'Georgia, "Times New Roman", Times, serif'
@@ -85,12 +93,12 @@ def _get_font_family_for_lang(lang):
 
 def _get_pdf_font_for_lang(lang):
     """Get PDF font name for the given language."""
-    lang_lower = lang.lower()
-    if lang_lower.startswith('zh'):
+    primary = _primary_language(lang)
+    if primary == 'zh':
         return 'FangSong'
-    elif lang_lower.startswith('ja'):
+    elif primary == 'ja':
         return 'Hiragino Mincho ProN'
-    elif lang_lower.startswith('ko'):
+    elif primary == 'ko':
         return 'Nanum Myeongjo'
     else:
         return 'Georgia'

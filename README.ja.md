@@ -45,7 +45,7 @@ Merge → Pandoc → HTML (with TOC) → Calibre → DOCX / EPUB / PDF
 - **manifest による検証** — SHA-256 ハッシュの追跡により、古い出力や壊れた出力がマージされるのを防ぎます
 - **複数フォーマット出力** — HTML（フローティング目次付き）、DOCX、EPUB、PDF
 - **オプションの出力設定** — EPUB 表紙の明示指定、一時ディレクトリの親ディレクトリ変更、ユーザー向けのエクスポート別名
-- **多言語対応** — zh、en、ja、ko、fr、de、es（拡張可能）
+- **多言語対応** — 任意の言語コードを指定できます。例：zh、en、ja、ko、fr、de、es、イタリア語の it、地域付きの zh-TW や pt-BR
 - **PDF/DOCX/EPUB/Markdown 入力** — 変換の重い処理は Calibre が担います。数式や表の多い PDF は、レイアウトを理解するパーサーで先に Markdown へ抽出できます（[ステップ 1](#ステップ-1変換) を参照）
 
 ## 前提条件
