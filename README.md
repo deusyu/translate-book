@@ -384,7 +384,7 @@ Intermediate files stay in the temp dir after the build, so a few bad passages c
 
 ## Roadmap
 
-Tracking [issue #7](https://github.com/deusyu/translate-book/issues/7) — name/term inconsistency and pronoun/gender errors across chunks. The pipeline now covers high-frequency entities, alias/spelling drift, adjacent-chunk pronoun context, and selective re-translation after glossary changes. Full-book organic validation remains a future quality pass. The plan is four independently shippable phases.
+[Issue #7](https://github.com/deusyu/translate-book/issues/7) — name/term inconsistency and pronoun/gender errors across chunks — was closed in June 2026, and Phases 1–3 have shipped. The pipeline now covers high-frequency entities, alias/spelling drift, adjacent-chunk pronoun context, and selective re-translation after glossary changes. Full-book organic validation remains a future quality pass. The plan is four independently shippable phases.
 
 ### Design principles
 
@@ -419,6 +419,10 @@ Recent PR discussions also surfaced several useful workflow improvements, but th
 - **Configurable temp workspace location (shipped).** `convert.py --temp-root <dir>` keeps the default cwd-local `{book_name}_temp/` behavior unless explicitly overridden. (context: closed #4)
 - **Safer Calibre/Pandoc artifact cleanup (partly shipped).** Page-number and Calibre-marker cleanup is regression-tested, preserving years, chapter numbers, and non-monotonic standalone numbers. Continue improving cleanup incrementally under tests. (context: closed #5)
 - **Optional user-facing export names (shipped).** `merge_and_build.py --export-name <stem>` creates alias copies while preserving canonical pipeline artifacts as `book.html`, `book_doc.html`, `book.docx`, `book.epub`, and `book.pdf`. (context: closed #6)
+
+### Next — Text inside figures (issue #66)
+
+[PR #68](https://github.com/deusyu/translate-book/pull/68), the first part of [issue #66](https://github.com/deusyu/translate-book/issues/66), added `scripts/figure_text.py`: it lists the images awaiting recognition, validates the recognition sidecars, and injects their text into the chunks so it is translated with the body. SKILL.md does not call it yet.
 
 ## Star History
 
