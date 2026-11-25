@@ -42,8 +42,11 @@ changes.
 
 The conversion needs Calibre (`ebook-convert`) and the `pandoc` binary;
 `pypandoc` is used when installed but is not required. If `convert.py` stops
-on a missing tool, install it and re-run the same command: the temp dir is
-reused, and the book's title and author are kept in `config.txt`.
+on a missing tool, tell the user which tool is missing and how you plan to
+install it. Do not install it without the user's consent, unless they have
+already told you that you may install missing tools. Once it is installed,
+re-run the same command: the temp dir is reused, and the book's title and
+author are kept in `config.txt`.
 
 For PDFs, Calibre reflows text by coordinate heuristics, which shatters math
 formulas, flattens tables, and interleaves multi-column layouts before
@@ -64,9 +67,12 @@ installed or the user asks for it, and tell the user about this first.
 Keep the PDF's file name stem for the Markdown file, because the temp
 directory is named after it. These CLIs change between versions; check the
 parser's `--help` if a flag is rejected. Do not install a parser without the
-user's consent, because they download large models. Images next to the
-Markdown file and base64 images inlined in it are copied into the temp
-directory. `--strip-page-numbers` does not apply to Markdown input.
+user's consent, because they download large models. Images in the Markdown
+file's directory or its subdirectories, and base64 images inlined in it, are
+copied into the temp directory. An image whose path leads outside that
+directory is not copied, and `convert.py` warns about it; tell the user, and
+do not copy the file in without their consent. `--strip-page-numbers` does
+not apply to Markdown input.
 
 If `convert.py` warns that formulas were not decoded or images were exported
 as placeholders, the parser dropped that content and translation cannot

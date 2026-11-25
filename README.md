@@ -261,7 +261,7 @@ Any parser works if its Markdown follows these conventions:
 
 - **Formulas** as `$...$` / `$$...$$` LaTeX. Display-math blocks are never split across chunks.
 - **Tables** as Markdown pipe tables or HTML `<table>`.
-- **Images** as paths relative to the Markdown file, or inlined as base64 data URIs. `convert.py` copies or decodes them into `{book_name}_temp/images/`, so chunks never carry image payloads.
+- **Images** as files in the Markdown file's directory or its subdirectories, or inlined as base64 data URIs. `convert.py` copies or decodes them into `{book_name}_temp/images/`, so chunks never carry image payloads. An image whose path leads outside that directory (through `..`, an absolute path, or a symlink) is not copied: `convert.py` warns and leaves the reference as it is.
 
 | Parser | Install | Extract | Markdown file | Notes |
 |---|---|---|---|---|
