@@ -1,2 +1,9 @@
 # Baseline books are CI fixtures, and standard-alice.epub exceeds ClawHub's 10MB file limit
 tests/baselines/**/*.epub
+
+# ClawHub audits every file it ships; an install needs only SKILL.md, LICENSE and scripts/
+/README*.md
+/AGENTS.md
+/CLAUDE.md
+/assets/
+/tests/

@@ -1,3 +1,4 @@
+import fnmatch
 import json
 import re
 import shlex
@@ -31,6 +32,45 @@ class MarketplaceManifestTest(unittest.TestCase):
         self.assertNotIn("version", self.manifest)
         for plugin in self.manifest["plugins"]:
             self.assertNotIn("version", plugin)
+
+
+class ClawHubIgnoreTest(unittest.TestCase):
+    """The package published to ClawHub is SKILL.md, LICENSE and scripts/.
+
+    ClawHub audits every file it ships, so `.clawhubignore` keeps out the docs,
+    assets and tests that only serve the GitHub repository.
+    """
+
+    REQUIRED_RULES = {"/README*.md", "/AGENTS.md", "/CLAUDE.md", "/assets/", "/tests/"}
+
+    def setUp(self):
+        text = (REPO_ROOT / ".clawhubignore").read_text(encoding="utf-8")
+        self.rules = [line.strip() for line in text.splitlines()
+                      if line.strip() and not line.startswith("#")]
+
+    def test_keeps_docs_assets_and_tests_out(self):
+        self.assertEqual(self.REQUIRED_RULES - set(self.rules), set())
+
+    def test_no_rule_excludes_skill_md_license_or_scripts(self):
+        skill_files = ["SKILL.md", "LICENSE"] + sorted(
+            path.relative_to(REPO_ROOT).as_posix()
+            for path in (REPO_ROOT / "scripts").rglob("*")
+            if path.is_file() and "__pycache__" not in path.parts
+        )
+        self.assertIn("scripts/convert.py", skill_files)
+        hits = [(rule, path) for rule in self.rules if not rule.startswith("!")
+                for path in skill_files if self.may_exclude(rule, path)]
+        self.assertEqual(hits, [])
+
+    @staticmethod
+    def may_exclude(rule, path):
+        """Loose gitignore match that errs towards a hit: anchors and trailing `/`
+        are dropped, every level of the path is tried, and `*` may cross `/`."""
+        pattern = rule.strip("/")
+        variants = {pattern, pattern.replace("/**/", "/"), pattern.removeprefix("**/")}
+        parts = path.split("/")
+        names = {"/".join(parts[:end]) for end in range(1, len(parts) + 1)} | set(parts)
+        return any(fnmatch.fnmatchcase(name, variant) for name in names for variant in variants)
 
 
 class SkillDefinitionTest(unittest.TestCase):
