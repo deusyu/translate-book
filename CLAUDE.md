@@ -61,7 +61,7 @@ Verify: all output_chunk*.md files exist, manifest validation passes, output for
 - Subagent instructions in SKILL.md must be platform-neutral (work on Codex, Claude Code, OpenClaw)
 - Checked-in baseline inputs live under `tests/baselines/<book-id>/`; generated full-pipeline outputs live under `tests/.artifacts/`
 - README changes must be synced to README.md, README.zh-CN.md, and README.ja.md
-- Releases follow `.claude/commands/release.md` — check that no open issue is labeled `release-blocker`, then run three commands in order: `git push origin main`, `git tag vX.Y.Z && git push origin vX.Y.Z`, `npx clawhub@latest publish ./ --slug translate-book --name translate-book --version X.Y.Z`. Do not skip the git tag; it's the only version anchor in the repo
+- Releases follow `.claude/commands/release.md` — check that no open issue is labeled `release-blocker`, then run four commands in order: `git push origin main`, `git tag vX.Y.Z && git push origin vX.Y.Z`, `npx clawhub@latest publish ./ --slug translate-book --name translate-book --version X.Y.Z`, `gh release create vX.Y.Z --verify-tag --generate-notes`. Do not skip the git tag; it's the only version anchor in the repo
 
 ## Do not
 
