@@ -261,7 +261,7 @@ python3 scripts/convert.py paper.md --olang zh
 
 - **公式**：`$...$` / `$$...$$` LaTeX。公式块不会被拆到两个 chunk 中。
 - **表格**：Markdown 管道表格或 HTML `<table>`。
-- **图片**：相对于 Markdown 文件的路径，或以 base64 data URI 内嵌。`convert.py` 会把它们复制或解码到 `{book_name}_temp/images/`，chunk 中不会夹带图片数据。
+- **图片**：放在 Markdown 文件所在目录或其子目录中，或以 base64 data URI 内嵌。`convert.py` 会把它们复制或解码到 `{book_name}_temp/images/`，chunk 中不会夹带图片数据。路径指向该目录之外的图片（经由 `..`、绝对路径或符号链接）不会被复制：`convert.py` 给出警告，引用保持原样。
 
 | 解析器 | 安装 | 提取命令 | Markdown 文件 | 备注 |
 |---|---|---|---|---|

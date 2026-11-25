@@ -1211,6 +1211,117 @@ class ImportMarkdownTests(unittest.TestCase):
             self.assertEqual(content, text)
             self.assertFalse((temp_dir / "images").exists())
 
+    def test_copies_images_from_parser_output_layouts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            # docling's referenced image mode writes absolute paths when --output is absolute.
+            absolute = Path(tmp) / "parser_out" / "paper_artifacts" / "image_000001_cd34.png"
+            md = self._source(
+                tmp,
+                "![](_page_0_Picture_1.jpeg)\n"
+                "![](./images/3f2a9c.jpg)\n"
+                "![Image](paper_artifacts/image_000000_ab12.png)\n"
+                f"![Image]({absolute})\n",
+                files=[
+                    ("_page_0_Picture_1.jpeg", b"marker"),
+                    ("images/3f2a9c.jpg", b"mineru"),
+                    ("paper_artifacts/image_000000_ab12.png", b"docling"),
+                    ("paper_artifacts/image_000001_cd34.png", b"docling-abs"),
+                ],
+            )
+            temp_dir = Path(tmp) / "book_temp"
+            out = io.StringIO()
+
+            with contextlib.redirect_stdout(out):
+                content = convert.import_markdown(str(md), str(temp_dir))
+
+            self.assertEqual(
+                content,
+                "![](images/_page_0_Picture_1.jpeg)\n"
+                "![](images/3f2a9c.jpg)\n"
+                "![Image](images/image_000000_ab12.png)\n"
+                "![Image](images/image_000001_cd34.png)\n",
+            )
+            self.assertEqual((temp_dir / "images" / "image_000001_cd34.png").read_bytes(), b"docling-abs")
+            self.assertNotIn("Warning", out.getvalue())
+
+    def test_does_not_copy_images_outside_the_markdown_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            secret = Path(tmp) / "secret.png"
+            secret.write_bytes(b"secret")
+            text = (
+                "![ok](images/ok.png)\n"
+                f"![abs]({secret})\n"
+                "![up](../secret.png)\n"
+                "![encoded](%2E%2E/secret.png)\n"
+                "![nested](images/../../secret.png)\n"
+                f'<img src="{secret}" alt="html"/>\n'
+            )
+            md = self._source(tmp, text, files=[("images/ok.png", b"ok")])
+            temp_dir = Path(tmp) / "book_temp"
+            out = io.StringIO()
+
+            with contextlib.redirect_stdout(out):
+                content = convert.import_markdown(str(md), str(temp_dir))
+
+            self.assertEqual(content, text)
+            self.assertEqual([p.name for p in (temp_dir / "images").iterdir()], ["ok.png"])
+            log = out.getvalue()
+            for raw in (secret, "../secret.png", "%2E%2E/secret.png", "images/../../secret.png"):
+                self.assertIn(
+                    f"Warning: image outside the Markdown file's directory, not copied, "
+                    f"reference kept as-is: {raw}\n",
+                    log,
+                )
+
+    def test_follows_symlinks_only_within_the_markdown_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            outside = Path(tmp) / "outside"
+            outside.mkdir()
+            (outside / "secret.png").write_bytes(b"secret")
+            text = "![in](link_in.png)\n![out](link_out.png)\n![dir](linked/secret.png)\n"
+            md = self._source(tmp, text, files=[("images/fig.png", b"fig")])
+            try:
+                (md.parent / "link_in.png").symlink_to(md.parent / "images" / "fig.png")
+                (md.parent / "link_out.png").symlink_to(outside / "secret.png")
+                (md.parent / "linked").symlink_to(outside, target_is_directory=True)
+            except OSError as exc:
+                self.skipTest(f"cannot create symlinks here: {exc}")
+            temp_dir = Path(tmp) / "book_temp"
+            out = io.StringIO()
+
+            with contextlib.redirect_stdout(out):
+                content = convert.import_markdown(str(md), str(temp_dir))
+
+            self.assertEqual(content, "![in](images/link_in.png)\n![out](link_out.png)\n![dir](linked/secret.png)\n")
+            self.assertEqual([p.name for p in (temp_dir / "images").iterdir()], ["link_in.png"])
+            self.assertEqual((temp_dir / "images" / "link_in.png").read_bytes(), b"fig")
+            log = out.getvalue()
+            self.assertIn("not copied, reference kept as-is: link_out.png\n", log)
+            self.assertIn("not copied, reference kept as-is: linked/secret.png\n", log)
+
+    def test_markdown_directory_reached_through_a_symlink_keeps_its_images(self):
+        # macOS temp dirs are like this: /var is a symlink to /private/var.
+        with tempfile.TemporaryDirectory() as tmp:
+            alias = Path(tmp) / "alias"
+            md = self._source(
+                tmp,
+                f"![](images/a.png)\n![]({alias / 'images' / 'b.png'})\n",
+                files=[("images/a.png", b"a"), ("images/b.png", b"b")],
+            )
+            try:
+                alias.symlink_to(md.parent, target_is_directory=True)
+            except OSError as exc:
+                self.skipTest(f"cannot create symlinks here: {exc}")
+            temp_dir = Path(tmp) / "book_temp"
+            out = io.StringIO()
+
+            with contextlib.redirect_stdout(out):
+                content = convert.import_markdown(str(alias / md.name), str(temp_dir))
+
+            self.assertEqual(content, "![](images/a.png)\n![](images/b.png)\n")
+            self.assertEqual(sorted(p.name for p in (temp_dir / "images").iterdir()), ["a.png", "b.png"])
+            self.assertNotIn("Warning", out.getvalue())
+
     def test_strips_front_matter_from_body(self):
         with tempfile.TemporaryDirectory() as tmp:
             md = self._source(tmp, "---\ntitle: Paper\n---\n# Paper\n\nBody\n")

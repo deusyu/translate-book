@@ -1060,12 +1060,22 @@ def formula_counts(content):
     return display, inline
 
 
+def _is_within(path, root):
+    """True if path is root or lies below it. Pass both through os.path.realpath first."""
+    try:
+        return os.path.commonpath([root, path]) == root
+    except ValueError:  # on Windows, paths on different drives
+        return False
+
+
 def import_markdown(md_path, temp_dir):
     r"""Return Markdown content ready for chunking, with images moved under temp_dir/images/.
 
-    Relative image paths are resolved against the Markdown file's directory
-    and copied in; base64 data URIs (MinerU and docling inline images that
-    way) are decoded to files so chunks handed to translators never carry
+    Image paths, relative or absolute, are resolved against the Markdown file's
+    directory and copied in only if they lie inside that directory tree once
+    `..` and symlinks are resolved, so a Markdown file cannot pull other local
+    files into the book. Base64 data URIs (MinerU and docling inline images
+    that way) are decoded to files so chunks handed to translators never carry
     image payloads. Remote URLs stay untouched. YAML front matter is dropped
     from the body — its metadata goes to config.txt via markdown_metadata().
     Display formulas with bare `&` / `\\` rows are wrapped so pandoc can render
@@ -1079,6 +1089,7 @@ def import_markdown(md_path, temp_dir):
     _, content = split_front_matter(content)
 
     md_dir = os.path.dirname(os.path.abspath(md_path))
+    md_root = os.path.realpath(md_dir)
     images_dir = os.path.join(temp_dir, "images")
     refs = {}
     stored = {}
@@ -1118,10 +1129,14 @@ def import_markdown(md_path, temp_dir):
             else:
                 print("Warning: could not decode an embedded data-URI image; left inline")
         elif not _URI_SCHEME_RE.match(raw) and not raw.startswith('#'):
-            src = os.path.normpath(os.path.join(md_dir, urllib.parse.unquote(raw)))
-            if os.path.isfile(src):
+            path = os.path.normpath(os.path.join(md_dir, urllib.parse.unquote(raw)))
+            src = os.path.realpath(path)
+            if not _is_within(src, md_root):
+                print("Warning: image outside the Markdown file's directory, not copied, "
+                      f"reference kept as-is: {raw}")
+            elif os.path.isfile(src):
                 with open(src, 'rb') as f:
-                    new_ref = store(os.path.basename(src), f.read())
+                    new_ref = store(os.path.basename(path), f.read())
             else:
                 print(f"Warning: image not found next to the Markdown file, reference kept as-is: {raw}")
         refs[raw] = new_ref
