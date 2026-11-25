@@ -746,18 +746,20 @@ def apply_template_to_html(html_content, template_file, output_file, title, lang
                 full_html = template_content + html_content
 
         # Replace all template placeholders
-        full_html = full_html.replace('$title$', title)
+        full_html = full_html.replace('$title$', _html_lib.escape(title))
         full_html = full_html.replace('$lang$', lang_cfg['lang_attr'])
         full_html = full_html.replace('$body_font$', lang_cfg['font_family'])
         full_html = full_html.replace('$toc_label$', lang_cfg['toc_label'])
 
         # Inject author meta tag into <head> so calibre_html_publish.py can extract it
         if author:
-            author_meta = f'<meta name="author" content="{author}">'
+            author_meta = f'<meta name="author" content="{_html_lib.escape(author)}">'
             if '<head>' in full_html or '<head ' in full_html:
+                # A function, not a replacement string: re.sub would read a
+                # backslash in the name as an escape or a group reference.
                 full_html = re.sub(
                     r'(<head[^>]*>)',
-                    r'\1\n    ' + author_meta,
+                    lambda m: m.group(1) + '\n    ' + author_meta,
                     full_html,
                     count=1,
                     flags=re.IGNORECASE

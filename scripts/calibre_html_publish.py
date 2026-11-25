@@ -13,6 +13,7 @@ import tempfile
 import shutil
 from pathlib import Path
 import re
+import html as html_lib
 
 def find_calibre_convert():
     """Find ebook-convert command from Calibre installation"""
@@ -43,19 +44,23 @@ def extract_html_metadata(html_file):
         # Extract title
         title_match = re.search(r'<title[^>]*>(.*?)</title>', content, re.IGNORECASE | re.DOTALL)
         if title_match:
-            title = re.sub(r'<[^>]+>', '', title_match.group(1)).strip()
+            title = html_lib.unescape(re.sub(r'<[^>]+>', '', title_match.group(1))).strip()
         else:
             # Try h1 tag
             h1_match = re.search(r'<h1[^>]*>(.*?)</h1>', content, re.IGNORECASE | re.DOTALL)
             if h1_match:
-                title = re.sub(r'<[^>]+>', '', h1_match.group(1)).strip()
+                title = html_lib.unescape(re.sub(r'<[^>]+>', '', h1_match.group(1))).strip()
             else:
                 title = os.path.splitext(os.path.basename(html_file))[0]
         
-        # Extract author
-        author_match = re.search(r'<meta[^>]*name=["\']author["\'][^>]*content=["\']([^"\']*)["\']', content, re.IGNORECASE)
+        # Extract author. The value ends at the quote that opened it; the
+        # other kind of quote may appear inside, as in content="Flann O'Brien".
+        author_match = re.search(
+            r'<meta[^>]*name=["\']author["\'][^>]*content=(["\'])(.*?)\1',
+            content, re.IGNORECASE | re.DOTALL,
+        )
         if author_match:
-            author = author_match.group(1).strip()
+            author = html_lib.unescape(author_match.group(2)).strip()
         else:
             author = "Unknown Author"
         

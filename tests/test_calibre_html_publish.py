@@ -1,4 +1,6 @@
+import contextlib
 import inspect
+import io
 import sys
 import tempfile
 import unittest
@@ -11,6 +13,50 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 import calibre_html_publish  # noqa: E402
+import merge_and_build  # noqa: E402
+
+# Characters that are special in HTML, and a backslash.
+TITLE = "O'Brien's \"Third\" Policeman & List<T>"
+AUTHOR = "Flann O'Brien & \"Myles\" <na gCopaleen> \\1"
+
+
+def _write_book_doc(path):
+    """Write book_doc.html the way merge_and_build.py does."""
+    return merge_and_build.apply_template_to_html(
+        "<p>x</p>", str(SCRIPT_DIR / "template_ebook.html"), str(path),
+        TITLE, merge_and_build.get_lang_config("en"), AUTHOR,
+    )
+
+
+class ExtractHtmlMetadataTests(unittest.TestCase):
+    def _extract(self, html):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "in.html"
+            path.write_text(html, encoding="utf-8")
+            return calibre_html_publish.extract_html_metadata(str(path))
+
+    def test_reads_back_what_merge_and_build_writes(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            book = Path(temp_dir) / "book_doc.html"
+            self.assertTrue(_write_book_doc(book))
+            self.assertEqual(calibre_html_publish.extract_html_metadata(str(book)), (TITLE, AUTHOR))
+
+    def test_reads_a_quote_inside_the_other_kind_of_quote(self):
+        self.assertEqual(
+            self._extract('<html><head><title>T</title><meta name="author" content="Flann O\'Brien">'),
+            ("T", "Flann O'Brien"),
+        )
+        self.assertEqual(
+            self._extract("<html><head><title>T</title><meta name='author' content='Myles \"na gCopaleen\"'>"),
+            ("T", 'Myles "na gCopaleen"'),
+        )
+
+    def test_decodes_character_references(self):
+        html = (
+            '<html><head><meta name="author" content="Tom &amp; Jerry &lt;TJ&gt; &#39;s"></head>'
+            "<body><h1>Q&amp;A <em>&lt;T&gt;</em></h1></body></html>"
+        )
+        self.assertEqual(self._extract(html), ("Q&A <T>", "Tom & Jerry <TJ> 's"))
 
 
 class ConvertHtmlWithCalibreTests(unittest.TestCase):
@@ -119,6 +165,28 @@ class ConvertHtmlWithCalibreTests(unittest.TestCase):
             cmd = run_mock.call_args.args[0]
             self.assertIn("--cover", cmd)
             self.assertIn(str(cover_file), cmd)
+
+    def test_passes_the_whole_title_and_author_for_every_format(self):
+        def fake_run(cmd, capture_output, text, timeout):
+            Path(cmd[2]).write_text("x", encoding="utf-8")
+            return mock.Mock(returncode=0, stderr="")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            book = Path(temp_dir) / "book_doc.html"
+            self.assertTrue(_write_book_doc(book))
+            for fmt in ("docx", "epub", "pdf"):
+                with self.subTest(fmt=fmt):
+                    argv = ["calibre_html_publish.py", str(book), "-o", str(Path(temp_dir) / f"book.{fmt}")]
+                    with mock.patch.object(sys, "argv", argv), mock.patch.object(
+                        calibre_html_publish, "find_calibre_convert", return_value="ebook-convert"
+                    ), mock.patch.object(
+                        calibre_html_publish.subprocess, "run", side_effect=fake_run
+                    ) as run_mock, contextlib.redirect_stdout(io.StringIO()):
+                        calibre_html_publish.main()
+
+                    cmd = run_mock.call_args.args[0]
+                    self.assertEqual(cmd[cmd.index("--authors") + 1], AUTHOR)
+                    self.assertEqual(cmd[cmd.index("--title") + 1], TITLE)
 
 
 if __name__ == "__main__":

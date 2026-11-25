@@ -5,6 +5,7 @@ import os
 import sys
 import tempfile
 import unittest
+from html.parser import HTMLParser
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -792,6 +793,53 @@ class MetadataTitleTests(unittest.TestCase):
     def test_keeps_marks_that_do_not_wrap_the_whole_title(self):
         title = "《A》与《B》"
         self.assertEqual(merge_and_build._metadata_title(title), title)
+
+
+class _HeadReader(HTMLParser):
+    """Reads <title> and <meta name="author"> the way an HTML parser does."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.title = ""
+        self.authors = []
+        self._in_title = False
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        if tag == "title":
+            self._in_title = True
+        elif tag == "meta" and attrs.get("name") == "author":
+            self.authors.append(attrs.get("content"))
+
+    def handle_endtag(self, tag):
+        if tag == "title":
+            self._in_title = False
+
+    def handle_data(self, data):
+        if self._in_title:
+            self.title += data
+
+
+class TemplateMetadataTests(unittest.TestCase):
+    # Characters that are special in HTML, and a backslash, which re.sub
+    # reads as a group reference in a replacement string.
+    TITLE = "O'Brien's \"Third\" Policeman & List<T>"
+    AUTHOR = "Flann O'Brien & \"Myles\" <na gCopaleen> \\1"
+
+    def test_title_and_author_parse_back_unchanged(self):
+        for template in ("template_ebook.html", "template.html"):
+            with self.subTest(template=template), tempfile.TemporaryDirectory() as temp_dir:
+                out = Path(temp_dir) / "book.html"
+                ok = merge_and_build.apply_template_to_html(
+                    "<p>x</p>", str(SCRIPT_DIR / template), str(out),
+                    self.TITLE, merge_and_build.get_lang_config("en"), self.AUTHOR,
+                )
+
+                self.assertTrue(ok)
+                reader = _HeadReader()
+                reader.feed(out.read_text(encoding="utf-8"))
+                self.assertEqual(reader.authors, [self.AUTHOR])
+                self.assertEqual(reader.title, self.TITLE)
 
 
 class PdfRetryTests(unittest.TestCase):
