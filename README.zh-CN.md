@@ -384,7 +384,7 @@ python3 scripts/merge_and_build.py --temp-dir book_temp --title "译后书名" -
 
 ## 后续规划
 
-跟踪 [issue #7](https://github.com/deusyu/translate-book/issues/7) — chunk 之间的人名/术语不一致以及代词/性别错误。当前流水线已覆盖高频实体、别名/拼写漂移、相邻 chunk 的代词上下文，以及术语表变更后的精确重译。整书自然度校验仍是后续质量阶段。整体方案分为四个可独立交付的阶段。
+[issue #7](https://github.com/deusyu/translate-book/issues/7)（chunk 之间的人名/术语不一致以及代词/性别错误）已于 2026 年 6 月关闭，Phase 1–3 均已发布。当前流水线已覆盖高频实体、别名/拼写漂移、相邻 chunk 的代词上下文，以及术语表变更后的精确重译。整书自然度校验仍是后续质量阶段。整体方案分为四个可独立交付的阶段。
 
 ### 设计原则
 
@@ -419,6 +419,10 @@ Phase 1 让术语表按批次增长,因此第一批看到的术语表最小,drif
 - **可配置的 temp 工作目录位置（已发布）**。`convert.py --temp-root <dir>` 保留默认 cwd-local `{book_name}_temp/` 行为，只有显式传参时才改变父目录。(context: closed #4)
 - **更安全的 Calibre/Pandoc 噪声清理（部分已发布）**。页码和 Calibre marker 清理已有回归测试保护，保留年份、章节编号和非单调独立数字。后续清理规则继续在测试下增量增加。(context: closed #5)
 - **可选的面向用户导出文件名（已发布）**。`merge_and_build.py --export-name <stem>` 生成 alias/copy，同时流水线内部 canonical 产物仍保持 `book.html`、`book_doc.html`、`book.docx`、`book.epub`、`book.pdf`。(context: closed #6)
+
+### 下一步 — 图内文字（issue #66）
+
+[PR #68](https://github.com/deusyu/translate-book/pull/68) 是 [issue #66](https://github.com/deusyu/translate-book/issues/66) 的第一部分，新增了 `scripts/figure_text.py`：列出待识别的图片、校验识别结果的 sidecar 文件、把识别出的文字注入 chunk，让它和正文一起翻译。SKILL.md 目前还没有调用它。
 
 ## Star History
 

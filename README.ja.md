@@ -384,7 +384,7 @@ python3 scripts/merge_and_build.py --temp-dir book_temp --title "translated titl
 
 ## ロードマップ
 
-[issue #7](https://github.com/deusyu/translate-book/issues/7) で追跡しています — チャンク間での名前や用語の不一致、代名詞や性別の誤りです。現在のパイプラインは、高頻度の固有名詞、別名や綴りの揺れ、隣接チャンクの代名詞コンテキスト、用語集変更後の選択的再翻訳に対応しています。書籍全体を使った実地検証は、今後の品質チェックとして残っています。計画は、それぞれ独立してリリースできる 4 つのフェーズです。
+[issue #7](https://github.com/deusyu/translate-book/issues/7)（チャンク間での名前や用語の不一致、代名詞や性別の誤り）は 2026 年 6 月にクローズし、フェーズ 1〜3 はリリース済みです。現在のパイプラインは、高頻度の固有名詞、別名や綴りの揺れ、隣接チャンクの代名詞コンテキスト、用語集変更後の選択的再翻訳に対応しています。書籍全体を使った実地検証は、今後の品質チェックとして残っています。計画は、それぞれ独立してリリースできる 4 つのフェーズです。
 
 ### 設計原則
 
@@ -419,6 +419,10 @@ python3 scripts/merge_and_build.py --temp-dir book_temp --title "translated titl
 - **一時作業ディレクトリの場所の設定（リリース済み）。** `convert.py --temp-root <dir>` を明示しない限り、カレントディレクトリに `{book_name}_temp/` を作るデフォルトの挙動は変わりません。（context: closed #4）
 - **Calibre/Pandoc の生成物の、より安全なクリーンアップ（一部リリース済み）。** ページ番号と Calibre マーカーの除去は回帰テストで守られており、年、章番号、単調でない単独の数字は残ります。テストを伴いながら、クリーンアップを段階的に改善していきます。（context: closed #5）
 - **ユーザー向けエクスポート名のオプション（リリース済み）。** `merge_and_build.py --export-name <stem>` は、パイプラインの正規の成果物 `book.html`、`book_doc.html`、`book.docx`、`book.epub`、`book.pdf` を残したまま、別名のコピーを作ります。（context: closed #6）
+
+### 次のステップ — 画像内のテキスト（issue #66）
+
+[issue #66](https://github.com/deusyu/translate-book/issues/66) の最初の部分として、[PR #68](https://github.com/deusyu/translate-book/pull/68) で `scripts/figure_text.py` が追加されました。このスクリプトは、認識待ちの画像を一覧にし、認識結果の sidecar ファイルを検証し、そのテキストをチャンクに挿入して、本文と一緒に翻訳されるようにします。SKILL.md からはまだ呼び出されていません。
 
 ## Star History
 
