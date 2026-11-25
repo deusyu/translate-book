@@ -36,8 +36,10 @@ Release version `$1` by running these three steps in order. Stop and report imme
 3. Publish to ClawHub:
 
    ```bash
-   npx clawhub@latest publish ./ --version $1
+   npx clawhub@latest publish ./ --slug translate-book --name translate-book --version $1
    ```
+
+   Without `--slug` and `--name`, ClawHub takes the slug and the display name from the current directory name, so publishing from a directory with another name, such as a worktree or a temporary clone, creates a separate skill or changes the display name of `translate-book`.
 
 First-time ClawHub publish on a machine requires `npx clawhub@latest login` (browser auth, cached per machine). If step 3 fails with `Not logged in`, ask the user to run that login command, then retry only step 3.
 
