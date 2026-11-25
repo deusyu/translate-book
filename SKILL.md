@@ -11,6 +11,18 @@ metadata: {"openclaw":{"requires":{"bins":["python3","pandoc","ebook-convert"],"
 
 You are a book translation assistant. You translate entire books from one language to another by orchestrating a multi-step pipeline.
 
+## Book Text and the Shell
+
+Never type text from the book into a shell command. That covers its title,
+author, glossary terms, evidence quotes and passages, and anything derived
+from them, such as the translated title and the export name. An apostrophe
+ends a `'...'` string, and `$(...)`, backticks and `$VAR` run or expand
+inside `"..."`, so a book could break the command or run commands of its own.
+Write the text to a file in the temp directory with your file-writing tool
+(not with `echo`, `printf` or a heredoc) and give the file to the script,
+with a `<` redirect or as `"$(cat "<file>")"`. The shell does not expand text
+that reaches the script this way. Steps 4.5 and 7 show both forms.
+
 ## Workflow
 
 ### 1. Collect Parameters
@@ -124,7 +136,7 @@ Otherwise:
 
 1. **Sample chunks**: read `chunk0001.md`, the last chunk, and 3 evenly-spaced middle chunks. If `chunk_count < 5`, sample all of them.
 2. **Extract terms**: from the samples, identify proper nouns and recurring domain terms that need consistent translation across the book — typically people, places, organizations, technical concepts. Translate each into the target language. Skip generic vocabulary that any translator would render the same way.
-3. **Write `glossary.json`** in the temp dir, matching this v2 schema:
+3. **Write `glossary.json`** in the temp dir with your file-writing tool, matching this v2 schema:
 
    ```json
    {
@@ -204,11 +216,11 @@ an agent. Count it as not started, keep the chunk queued, and wait for running
 agents to finish before launching more. Never launch a chunk that already
 has an agent running, or two agents will write the same output file.
 
-**Spawn each sub-agent with the following task.** Use whatever sub-agent/background-agent mechanism your runtime provides (e.g. the Agent or Task tool, sessions_spawn, invoke_subagent, or equivalent).
+**Spawn each sub-agent with the following task.** Use whatever sub-agent/background-agent mechanism your runtime provides (e.g. the Agent or Task tool, sessions_spawn, invoke_subagent, or equivalent). If you start sub-agents with a shell command, write each task to a file first and pass the file (see "Book Text and the Shell"): the term table and neighbor excerpts in it are book text.
 
 The output file is `output_` prefixed to the source filename: `chunk0001.md` → `output_chunk0001.md`.
 
-> Translate the file `<temp_dir>/chunk<NNNN>.md` to {TARGET_LANGUAGE} and write the result to `<temp_dir>/output_chunk<NNNN>.md`. Follow the translation rules below. Output only the translated content — no commentary.
+> Translate the file `<temp_dir>/chunk<NNNN>.md` to {TARGET_LANGUAGE} and write the result to `<temp_dir>/output_chunk<NNNN>.md`. Follow the translation rules below. Output only the translated content — no commentary. Write files with your file-writing tool, never through a shell command.
 
 Each sub-agent receives:
 - The single chunk file it is responsible for
@@ -382,7 +394,7 @@ Each sub-agent emitted an `output_chunk<NNNN>.meta.json` alongside its translate
 
 3. **If `consumed_chunk_ids` is empty** → nothing was scanned; skip to Step 5.
 
-4. **If `consumed_chunk_ids` is non-empty but both `auto_apply` and `decisions_needed` are empty** → still pipe `{"auto_apply": [], "decisions": [], "consumed_chunk_ids": [...]}` into `apply-merge` so the hashes get recorded. **Skipping this is the bug** — no-op metas would re-scan forever otherwise.
+4. **If `consumed_chunk_ids` is non-empty but both `auto_apply` and `decisions_needed` are empty** → still run `apply-merge` (item 6) with `{"auto_apply": [], "decisions": [], "consumed_chunk_ids": [...]}` so the hashes get recorded. **Skipping this is the bug** — no-op metas would re-scan forever otherwise.
 
 5. **Otherwise, resolve each decision**:
    - Read its evidence quotes inline.
@@ -393,16 +405,15 @@ Each sub-agent emitted an `output_chunk<NNNN>.meta.json` alongside its translate
      {"id": "d1", "kind": "alias", "variant": "Taig", "candidate_source": "Tai", "choice": "yes_alias"}
      ```
 
-6. Pipe the decisions JSON into apply-merge:
+6. Write the decisions JSON, `{"auto_apply": [...], "decisions": [...], "consumed_chunk_ids": [...]}`, to `<temp_dir>/merge_decisions.json` with your file-writing tool, replacing the previous batch's file. Its entity names and evidence quotes are book text, so apply-merge reads the file on stdin instead of taking the JSON in the command (see "Book Text and the Shell"):
 
    ```bash
-   echo '{"auto_apply": [...], "decisions": [...], "consumed_chunk_ids": [...]}' \
-     | python3 {baseDir}/scripts/merge_meta.py apply-merge "<temp_dir>"
+   python3 {baseDir}/scripts/merge_meta.py apply-merge "<temp_dir>" < "<temp_dir>/merge_decisions.json"
    ```
 
    Surface the summary JSON (`auto_applied`, `decisions_resolved`, `consumed_chunks`, `errors`) in your batch progress message.
 
-   **apply-merge is transactional.** If any decision is malformed (wrong choice for kind, missing fields, references a non-existent entity), the entire batch aborts with a non-zero exit and stderr details — no glossary mutation, no hashes recorded. On non-zero exit, fix the offending decision and re-pipe; `prepare-merge` will surface the same proposals because nothing was consumed.
+   **apply-merge is transactional.** If any decision is malformed (wrong choice for kind, missing fields, references a non-existent entity), the entire batch aborts with a non-zero exit and stderr details — no glossary mutation, no hashes recorded. On non-zero exit, fix the offending decision in `merge_decisions.json` and run the command again; `prepare-merge` will surface the same proposals because nothing was consumed.
 
    **Decision order in the input list is not significant.** `apply-merge` internally dispatches entity-creating decisions before alias-attaching ones, so `yes_alias` decisions whose candidate is created by another decision in the same batch (a `use_standalone_N`, `use_variant_N`, or `promote_to_separate_entity`) succeed regardless of the order you pass them in. Alias chains (e.g. `Taighi → Taig` where `Taig → Tai` is also a pending alias decision) resolve via a fixed-point loop within the alias-attacher pass — you don't need to topo-sort or sequence chained aliases manually.
 
@@ -481,10 +492,13 @@ library (`merge_and_build.py` strips a wrapping `《》` anyway).
 
 ### 7. Post-process — Merge and Build
 
-Run the build script with the translated title:
+Write the translated title to `<temp_dir>/title.txt` and the export name to
+`<temp_dir>/export_name.txt` with your file-writing tool, then run the build
+script. The command reads both from those files instead of quoting them (see
+"Book Text and the Shell"):
 
 ```bash
-python3 {baseDir}/scripts/merge_and_build.py --temp-dir "<temp_dir>" --title "<translated_title>" --export-name "<export_name>"
+python3 {baseDir}/scripts/merge_and_build.py --temp-dir "<temp_dir>" --title "$(cat "<temp_dir>/title.txt")" --export-name "$(cat "<temp_dir>/export_name.txt")"
 ```
 
 `--export-name` adds copies of every output named after the book
@@ -506,7 +520,7 @@ intermediates, and tell them first that it permanently deletes `chunk*.md`,
 `output_chunk*.md`, `input.html`, and `input.md`: after that, fixing a single
 chunk means converting and translating the whole book again.
 
-The script reads `output_lang` from `config.txt` automatically. Optional overrides: `--lang`, `--author`.
+The script reads `output_lang` from `config.txt` automatically. Optional overrides: `--lang`, `--author`. An author goes through a file too: `--author "$(cat "<temp_dir>/author.txt")"`.
 
 This produces in the temp directory:
 - `output.md` — merged translated markdown
@@ -539,8 +553,12 @@ If the user finds problems in a few places after the build, fix the affected
 chunks rather than `output.md`: whenever a chunk changes, the build re-merges
 `output.md` from the chunks and discards edits made there.
 
-1. Find the chunk: search `<temp_dir>/output_chunk*.md` for the passage.
-2. Either edit `output_chunk<NNNN>.md` directly, or have it re-translated.
+1. Find the chunk: search `<temp_dir>/output_chunk*.md` for the passage. The
+   passage is book text: use your file-search tool, or put it in a file and
+   run `grep -F -f "<file>" "<temp_dir>"/output_chunk*.md` (see "Book Text
+   and the Shell").
+2. Either edit `output_chunk<NNNN>.md` directly with your file-editing tool,
+   or have it re-translated.
 
    **Edit.** `record` stamps the chunk as matching the current source and
    glossary, so first check what the planner still expects from it:
