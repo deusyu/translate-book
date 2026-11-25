@@ -710,7 +710,7 @@ def convert_html_to_markdown(html_file, md_file, strip_page_numbers=False, detec
             return False
     except FileNotFoundError:
         print("Neither pypandoc nor the pandoc binary was found. "
-              "Install pandoc (https://pandoc.org/installing.html) or: pip install pypandoc")
+              "Install pandoc (https://pandoc.org/installing.html)")
         return False
     except subprocess.CalledProcessError as e:
         print(f"HTML to Markdown conversion failed: {(e.stderr or '').strip()[-500:]}")
