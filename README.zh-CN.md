@@ -45,7 +45,7 @@ Calibre ebook-convert → HTMLZ → HTML → Markdown
 - **Manifest 校验** — SHA-256 hash 追踪，防止过时或损坏的输出被合并
 - **多格式输出** — HTML（含浮动目录）、DOCX、EPUB、PDF
 - **可选输出控制** — 显式 EPUB 封面、自定义 temp root、面向用户的导出别名
-- **多语言** — zh、en、ja、ko、fr、de、es（可扩展）
+- **多语言** — 任意语言代码，例如 zh、en、ja、ko、fr、de、es、意大利语 it，也可以带地区，例如 zh-TW、pt-BR
 - **多格式输入** — PDF/DOCX/EPUB/Markdown，Calibre 负责格式转换；公式、表格密集的 PDF 可先用版面感知解析器转成 Markdown（见[第一步](#第一步转换)）
 
 ## 前置要求

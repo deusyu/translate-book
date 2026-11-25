@@ -59,6 +59,31 @@ class ExtractHtmlMetadataTests(unittest.TestCase):
         self.assertEqual(self._extract(html), ("Q&A <T>", "Tom & Jerry <TJ> 's"))
 
 
+class FontForLanguageTests(unittest.TestCase):
+    def test_fonts_follow_the_primary_language(self):
+        # kok is Konkani, kos Kosraean, jav Javanese, jam Jamaican Creole and zha Zhuang.
+        cases = {
+            "zh-CN": "FangSong", "zh-TW": "FangSong", "zh_TW": "FangSong", "zh-Hant-HK": "FangSong",
+            "ja": "Hiragino Mincho ProN", "ja-JP": "Hiragino Mincho ProN",
+            "ko": "Nanum Myeongjo", "ko-KR": "Nanum Myeongjo",
+            "kok": "Georgia", "kos": "Georgia", "jav": "Georgia", "jam": "Georgia", "zha": "Georgia",
+            "it": "Georgia", "pt-BR": "Georgia",
+        }
+        for lang, font in cases.items():
+            with self.subTest(lang=lang):
+                family = calibre_html_publish._get_font_family_for_lang(lang)
+                self.assertEqual(family.split(",")[0].strip('"'), font)
+                self.assertEqual(calibre_html_publish._get_pdf_font_for_lang(lang), font)
+
+    def test_formats_pick_fonts_from_the_same_entry_as_book_html(self):
+        for code in ("zh", "zh-TW", "ja", "ko-KR", "en", "it", "kok", "jav", "zha", "zho", "kor"):
+            with self.subTest(code=code):
+                cfg = merge_and_build.get_lang_config(code)
+                lang = cfg["lang_attr"]
+                self.assertEqual(calibre_html_publish._get_font_family_for_lang(lang), cfg["font_family_ebook"])
+                self.assertEqual(calibre_html_publish._get_pdf_font_for_lang(lang), cfg["pdf_font"])
+
+
 class ConvertHtmlWithCalibreTests(unittest.TestCase):
     def test_builds_expected_epub_command(self):
         with tempfile.TemporaryDirectory() as temp_dir:

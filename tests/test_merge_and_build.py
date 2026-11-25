@@ -796,17 +796,20 @@ class MetadataTitleTests(unittest.TestCase):
 
 
 class _HeadReader(HTMLParser):
-    """Reads <title> and <meta name="author"> the way an HTML parser does."""
+    """Reads <html lang>, <title> and <meta name="author"> the way an HTML parser does."""
 
     def __init__(self):
         super().__init__(convert_charrefs=True)
+        self.lang = None
         self.title = ""
         self.authors = []
         self._in_title = False
 
     def handle_starttag(self, tag, attrs):
         attrs = dict(attrs)
-        if tag == "title":
+        if tag == "html":
+            self.lang = attrs.get("lang")
+        elif tag == "title":
             self._in_title = True
         elif tag == "meta" and attrs.get("name") == "author":
             self.authors.append(attrs.get("content"))
@@ -840,6 +843,122 @@ class TemplateMetadataTests(unittest.TestCase):
                 reader.feed(out.read_text(encoding="utf-8"))
                 self.assertEqual(reader.authors, [self.AUTHOR])
                 self.assertEqual(reader.title, self.TITLE)
+
+
+class TemplatePlaceholderTests(unittest.TestCase):
+    # A book about templates can show the placeholders in its text and title.
+    BODY = "<pre><code>$title$ $lang$ $body_font$ $toc_label$ $body$ {{content}}</code></pre>"
+    TITLE = "Writing $title$, $lang$ and $body$"
+
+    def test_placeholders_in_the_book_text_are_kept(self):
+        for template in ("template_ebook.html", "template.html"):
+            with self.subTest(template=template), tempfile.TemporaryDirectory() as temp_dir:
+                out = Path(temp_dir) / "book.html"
+                ok = merge_and_build.apply_template_to_html(
+                    self.BODY, str(SCRIPT_DIR / template), str(out),
+                    self.TITLE, merge_and_build.get_lang_config("de"),
+                )
+
+                self.assertTrue(ok)
+                html = out.read_text(encoding="utf-8")
+                self.assertEqual(html.count(self.BODY), 1)
+                reader = _HeadReader()
+                reader.feed(html)
+                self.assertEqual(reader.title, self.TITLE)
+                self.assertEqual(reader.lang, "de")
+                rest = html.replace(self.BODY, "").replace(self.TITLE, "")
+                self.assertNotRegex(rest, r"\$(title|lang|body_font|toc_label|body)\$")
+
+
+class LangConfigTests(unittest.TestCase):
+    def test_table_codes_keep_their_entries(self):
+        for code, entry in merge_and_build.LANG_CONFIG.items():
+            with self.subTest(code=code):
+                self.assertIs(merge_and_build.get_lang_config(code), entry)
+        self.assertEqual(merge_and_build.get_lang_config("zh")["lang_attr"], "zh-CN")
+
+    def test_any_language_tag_is_used_as_given(self):
+        table = merge_and_build.LANG_CONFIG
+        default = merge_and_build._DEFAULT_LANG_CONFIG
+        # Fonts and the TOC label come from the entry for the primary subtag.
+        cases = {
+            "it": ("it", default),
+            "ru": ("ru", default),
+            "pt-BR": ("pt-BR", default),
+            "pt_BR": ("pt-BR", default),
+            "zh-SG": ("zh-SG", table["zh"]),
+            "en-GB": ("en-GB", table["en"]),
+        }
+        for code, (lang_attr, entry) in cases.items():
+            with self.subTest(code=code):
+                self.assertEqual(merge_and_build.get_lang_config(code), dict(entry, lang_attr=lang_attr))
+
+    def test_traditional_chinese_gets_its_toc_label(self):
+        zh = merge_and_build.LANG_CONFIG["zh"]
+        # A script subtag decides; without one, TW, HK and MO are Traditional.
+        cases = {
+            "zh-TW": "目錄", "zh_TW": "目錄", "zh-hk": "目錄", "zh-MO": "目錄",
+            "zh-Hant": "目錄", "zh-Hant-CN": "目錄", "zh-Hant-HK": "目錄",
+            "zh-CN": "目录", "zh-SG": "目录", "zh-Hans": "目录", "zh-Hans-TW": "目录", "zh-Hans-HK": "目录",
+        }
+        for code, label in cases.items():
+            with self.subTest(code=code):
+                self.assertEqual(
+                    merge_and_build.get_lang_config(code),
+                    dict(zh, lang_attr=code.replace("_", "-"), toc_label=label),
+                )
+        self.assertIs(merge_and_build.get_lang_config("zh"), zh)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            out = Path(temp_dir) / "book.html"
+            self.assertTrue(merge_and_build.apply_template_to_html(
+                "<p>x</p>", str(SCRIPT_DIR / "template.html"), str(out),
+                "Title", merge_and_build.get_lang_config("zh-TW"),
+            ))
+            self.assertIn("<h3>目錄</h3>", out.read_text(encoding="utf-8"))
+
+    def test_a_value_that_is_not_a_language_code_falls_back_to_en(self):
+        for value in ("Italian", "Traditional Chinese", "", 'it" onload="x'):
+            with self.subTest(value=value):
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    cfg = merge_and_build.get_lang_config(value)
+                self.assertIs(cfg, merge_and_build._DEFAULT_LANG_CONFIG)
+                self.assertIn(f"'{value}' is not a language code", out.getvalue())
+
+    def test_html_lang_is_the_language_tag(self):
+        for code, lang in (("zh", "zh-CN"), ("it", "it"), ("zh-TW", "zh-TW"), ("pt_BR", "pt-BR")):
+            for template in ("template_ebook.html", "template.html"):
+                with self.subTest(code=code, template=template), tempfile.TemporaryDirectory() as temp_dir:
+                    out = Path(temp_dir) / "book.html"
+                    ok = merge_and_build.apply_template_to_html(
+                        "<p>x</p>", str(SCRIPT_DIR / template), str(out),
+                        "Title", merge_and_build.get_lang_config(code),
+                    )
+
+                    self.assertTrue(ok)
+                    reader = _HeadReader()
+                    reader.feed(out.read_text(encoding="utf-8"))
+                    self.assertEqual(reader.lang, lang)
+
+    def test_main_passes_the_tag_to_the_html_and_calibre(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            Path(temp_dir, "config.txt").write_text("output_lang=pt-BR\n", encoding="utf-8")
+            with mock.patch.object(
+                merge_and_build, "merge_markdown_files", return_value=True
+            ), mock.patch.object(
+                merge_and_build, "convert_md_to_html", return_value=True
+            ) as html_mock, mock.patch.object(
+                merge_and_build, "add_toc", return_value=True
+            ), mock.patch.object(
+                merge_and_build, "generate_formats", return_value=True
+            ) as formats_mock, mock.patch.object(
+                sys, "argv", ["merge_and_build.py", "--temp-dir", temp_dir]
+            ), contextlib.redirect_stdout(io.StringIO()):
+                merge_and_build.main()
+
+        self.assertEqual(html_mock.call_args.args[2]["lang_attr"], "pt-BR")
+        self.assertEqual(formats_mock.call_args.args[1], "pt-BR")
 
 
 class PdfRetryTests(unittest.TestCase):

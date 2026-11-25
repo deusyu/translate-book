@@ -29,7 +29,7 @@ that reaches the script this way. Steps 4.5 and 7 show both forms.
 
 Determine the following from the user's message:
 - **file_path**: Path to the input file (PDF, DOCX, EPUB, or Markdown) — REQUIRED
-- **target_lang**: Target language code (default: `zh`) — e.g. zh, en, ja, ko, fr, de, es
+- **target_lang**: Target language code (default: `zh`) — e.g. zh, en, ja, ko, fr, de, es, it (Italian), or a code with a region such as zh-TW or pt-BR
 - **concurrency**: Number of parallel sub-agents per batch (default: `8`)
 - **temp_root**: Optional directory under which `{filename}_temp/` should be created
 - **epub_cover**: Optional explicit cover image path for EPUB output

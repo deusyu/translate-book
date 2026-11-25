@@ -45,7 +45,7 @@ Each chunk gets its own independent subagent with a fresh context window. This p
 - **Manifest validation** — SHA-256 hash tracking prevents stale or corrupt outputs from being merged
 - **Multi-format output** — HTML (with floating TOC), DOCX, EPUB, PDF
 - **Optional output controls** — explicit EPUB cover, custom temp root, and user-facing export aliases
-- **Multi-language** — zh, en, ja, ko, fr, de, es (extensible)
+- **Multi-language** — any language code, e.g. zh, en, ja, ko, fr, de, es, it (Italian), or one with a region such as zh-TW or pt-BR
 - **PDF/DOCX/EPUB/Markdown input** — Calibre handles the conversion heavy lifting; formula- and table-heavy PDFs can be pre-extracted to Markdown with a layout-aware parser (see [Step 1](#step-1-convert))
 
 ## Prerequisites

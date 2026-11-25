@@ -364,10 +364,44 @@ _DEFAULT_LANG_CONFIG = {
     'pdf_font': 'Georgia',
 }
 
+# A BCP 47 language tag such as it, pt-BR or zh-Hant-TW.
+_LANG_TAG_RE = re.compile(r'[A-Za-z]{2,3}(?:-[A-Za-z0-9]{1,8})*')
+
+
+def _is_traditional_chinese(tag):
+    """Whether a zh tag asks for Traditional Chinese.
+
+    A script subtag decides: Hant is Traditional, Hans is Simplified. Without
+    one, Taiwan, Hong Kong and Macau mean Traditional.
+    """
+    subtags = [s.lower() for s in tag.split('-')[1:]]
+    scripts = [s for s in subtags if len(s) == 4 and s.isalpha()]
+    if scripts:
+        return scripts[0] == 'hant'
+    return any(s in ('tw', 'hk', 'mo') for s in subtags)
+
 
 def get_lang_config(lang_code):
-    """Get language config, falling back to defaults for unknown languages."""
-    return LANG_CONFIG.get(lang_code, _DEFAULT_LANG_CONFIG)
+    """Get language config for a language tag, such as it, pt-BR or zh-TW.
+
+    The tag becomes lang_attr as given, with an underscore read as a hyphen.
+    Fonts and the TOC label come from the table entry for its primary subtag
+    (zh for zh-TW), or from the defaults when there is none; Traditional
+    Chinese gets its own TOC label. A bare code that is in the table keeps
+    its entry's lang_attr, so zh is written as zh-CN.
+    """
+    tag = (lang_code or '').strip().replace('_', '-')
+    if not _LANG_TAG_RE.fullmatch(tag):
+        print(f"Warning: '{lang_code}' is not a language code such as it, pt-BR or zh-TW; "
+              f"marking the book as {_DEFAULT_LANG_CONFIG['lang_attr']}")
+        return _DEFAULT_LANG_CONFIG
+    primary = tag.split('-')[0].lower()
+    if tag.lower() == primary and primary in LANG_CONFIG:
+        return LANG_CONFIG[primary]
+    cfg = {**LANG_CONFIG.get(primary, _DEFAULT_LANG_CONFIG), 'lang_attr': tag}
+    if primary == 'zh' and _is_traditional_chinese(tag):
+        cfg['toc_label'] = '目錄'
+    return cfg
 
 
 def load_config(temp_dir):
@@ -736,20 +770,28 @@ def apply_template_to_html(html_content, template_file, output_file, title, lang
             template_content = f.read()
 
         if '$body$' in template_content:
-            full_html = template_content.replace('$body$', html_content)
+            parts, body = template_content.split('$body$'), html_content
         elif '{{content}}' in template_content:
-            full_html = template_content.replace('{{content}}', html_content)
+            parts, body = template_content.split('{{content}}'), html_content
         else:
             if '</body>' in template_content:
-                full_html = template_content.replace('</body>', f'{html_content}\n</body>')
+                parts, body = template_content.split('</body>'), f'{html_content}\n</body>'
             else:
-                full_html = template_content + html_content
+                parts, body = [template_content, ''], html_content
 
-        # Replace all template placeholders
-        full_html = full_html.replace('$title$', _html_lib.escape(title))
-        full_html = full_html.replace('$lang$', lang_cfg['lang_attr'])
-        full_html = full_html.replace('$body_font$', lang_cfg['font_family'])
-        full_html = full_html.replace('$toc_label$', lang_cfg['toc_label'])
+        # Fill in the template around the body, all placeholders in one pass:
+        # the body and the title come from the book, and a $title$ or $lang$
+        # written in them must come through as written.
+        fields = {
+            'title': _html_lib.escape(title),
+            'lang': lang_cfg['lang_attr'],
+            'body_font': lang_cfg['font_family'],
+            'toc_label': lang_cfg['toc_label'],
+        }
+        full_html = body.join(
+            re.sub(r'\$(title|lang|body_font|toc_label)\$', lambda m: fields[m.group(1)], part)
+            for part in parts
+        )
 
         # Inject author meta tag into <head> so calibre_html_publish.py can extract it
         if author:
