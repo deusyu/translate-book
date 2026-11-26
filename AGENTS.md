@@ -58,7 +58,7 @@ Verify: all output_chunk*.md files exist, manifest validation passes, output for
 - Checked-in baseline inputs live under `tests/baselines/<book-id>/`; generated full-pipeline outputs live under `tests/.artifacts/`
 - README changes must be synced to README.md, README.zh-CN.md, and README.ja.md
 - The package published to ClawHub contains only `SKILL.md`, `LICENSE` and `scripts/`; new docs, assets and tests must also be added to `.clawhubignore`
-- Releases follow `.claude/commands/release.md` — check that no open issue is labeled `release-blocker`, then run four commands in order: `git push origin main`, `git tag vX.Y.Z && git push origin vX.Y.Z`, `npx clawhub@latest publish ./ --slug translate-book --name translate-book --version X.Y.Z`, `gh release create vX.Y.Z --verify-tag --generate-notes`. Do not skip the git tag; it's the only version anchor in the repo
+- Releases follow `.claude/commands/release.md`; agents that cannot run it as a slash command (Codex, Cursor, OpenClaw) read the file directly and follow it, replacing `$1` with the version number
 
 ## Do not
 
