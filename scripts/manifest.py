@@ -6,6 +6,86 @@ manifest.py - Manifest management for chunk tracking and merge validation.
 import os
 import json
 import hashlib
+import re
+import stat
+
+
+# Agents put chunk numbers into shell commands, so a chunk id is `chunk` and at
+# least four ASCII digits, and nothing else counts as a chunk anywhere.
+CHUNK_ID_RE = re.compile(r'chunk[0-9]{4,}')
+_CHUNK_FILE_KINDS = {
+    'source': ('', '.md'),
+    'output': ('output_', '.md'),
+    'meta': ('output_', '.meta.json'),
+}
+_MANIFEST_ENTRY_KEYS = {"id", "order", "source_file", "source_hash", "output_file"}
+
+
+def is_chunk_id(value):
+    return isinstance(value, str) and CHUNK_ID_RE.fullmatch(value) is not None
+
+
+def check_chunk_id(value):
+    """Return value if it is a chunk id such as chunk0001; raise ValueError otherwise."""
+    if not is_chunk_id(value):
+        raise ValueError(f"{value!r} is not a chunk id such as chunk0001")
+    return value
+
+
+def nth_chunk_id(n):
+    """The id convert.py gives the n-th chunk it splits off: chunk0001 to chunk9999, then chunk10000."""
+    return f"chunk{n:04d}"
+
+
+def chunk_file_name(chunk_id, kind='source'):
+    """chunk0001 -> chunk0001.md ('source'), output_chunk0001.md ('output'),
+    output_chunk0001.meta.json ('meta')."""
+    prefix, suffix = _CHUNK_FILE_KINDS[kind]
+    return f"{prefix}{check_chunk_id(chunk_id)}{suffix}"
+
+
+def chunk_id_from_file_name(name, kind='source'):
+    """Inverse of chunk_file_name(); raises ValueError for any other name."""
+    prefix, suffix = _CHUNK_FILE_KINDS[kind]
+    if name.startswith(prefix + 'chunk') and name.endswith(suffix):
+        chunk_id = name[len(prefix):len(name) - len(suffix)]
+        if is_chunk_id(chunk_id):
+            return chunk_id
+    raise ValueError(f"{name!r} is not a chunk file name such as {chunk_file_name('chunk0001', kind)}")
+
+
+def list_chunk_files(temp_dir, kind='source'):
+    """Return the names of temp_dir's chunk files of one kind, in chunk order.
+
+    Every name the glob for that kind would match (chunk*.md, output_chunk*.md
+    or output_chunk*.meta.json) must be a chunk file name, a regular file and
+    not a symlink, and no two may share a number. Raises ValueError otherwise,
+    so a stray name never reaches a plan or a prompt.
+    """
+    prefix, suffix = _CHUNK_FILE_KINDS[kind]
+    numbers = {}
+    for name in os.listdir(temp_dir):
+        if not (name.startswith(prefix + 'chunk') and name.endswith(suffix)):
+            continue
+        if kind == 'output' and name.endswith('.meta.json'):
+            continue
+        try:
+            chunk_id = chunk_id_from_file_name(name, kind)
+        except ValueError:
+            raise ValueError(
+                f"unexpected file {name!r} in {temp_dir}: chunk files are named like "
+                f"{chunk_file_name('chunk0001', kind)}. Move or rename it outside a shell "
+                f"command, since its name may hold shell syntax, and run again."
+            ) from None
+        mode = os.lstat(os.path.join(temp_dir, name)).st_mode
+        if not stat.S_ISREG(mode):
+            raise ValueError(f"{name!r} in {temp_dir} is not a regular file"
+                             + (" but a symlink" if stat.S_ISLNK(mode) else ""))
+        number = int(chunk_id[len('chunk'):])
+        if number in numbers:
+            raise ValueError(f"{numbers[number]!r} and {name!r} in {temp_dir} have the same chunk number")
+        numbers[number] = name
+    return [numbers[n] for n in sorted(numbers)]
 
 
 def file_hash(filepath):
@@ -43,9 +123,8 @@ def create_manifest(temp_dir, chunk_files, source_md_path):
     chunks = []
     for order, filename in enumerate(chunk_files, 1):
         filepath = os.path.join(temp_dir, filename)
-        # Derive output filename: chunk0001.md -> output_chunk0001.md
-        output_filename = f"output_{filename}"
-        chunk_id = os.path.splitext(filename)[0]  # e.g. "chunk0001"
+        chunk_id = chunk_id_from_file_name(filename)
+        output_filename = chunk_file_name(chunk_id, 'output')
 
         chunks.append({
             "id": chunk_id,
@@ -74,12 +153,44 @@ def save_manifest(temp_dir, manifest):
 
 
 def load_manifest(temp_dir):
-    """Load manifest.json from temp_dir. Returns None if not found."""
+    """Load manifest.json from temp_dir. Returns None if not found.
+
+    Raises ValueError unless every entry names a chunk id and that chunk's own
+    files, so neither a plan nor a merge can be pointed at another file, and
+    has exactly the fields create_manifest() writes, with their types: a
+    record missing its source_hash would skip the check that the chunk is
+    unchanged.
+    """
     manifest_path = os.path.join(temp_dir, "manifest.json")
     if not os.path.exists(manifest_path):
         return None
     with open(manifest_path, 'r', encoding='utf-8') as f:
-        return json.load(f)
+        manifest = json.load(f)
+    chunks = manifest.get("chunks") if isinstance(manifest, dict) else None
+    if not isinstance(chunks, list):
+        raise ValueError("manifest.json: 'chunks' is not a list")
+    ids, orders = set(), set()
+    for chunk in chunks:
+        chunk_id = chunk.get("id") if isinstance(chunk, dict) else None
+        if not is_chunk_id(chunk_id):
+            raise ValueError(f"manifest.json: {chunk_id!r} is not a chunk id such as chunk0001")
+        if (chunk.get("source_file") != chunk_file_name(chunk_id)
+                or chunk.get("output_file") != chunk_file_name(chunk_id, 'output')):
+            raise ValueError(f"manifest.json: the files of {chunk_id} must be "
+                             f"{chunk_file_name(chunk_id)} and {chunk_file_name(chunk_id, 'output')}")
+        if set(chunk) != _MANIFEST_ENTRY_KEYS:
+            raise ValueError(f"manifest.json: the entry of {chunk_id} has the fields "
+                             f"{', '.join(sorted(chunk))}, not {', '.join(sorted(_MANIFEST_ENTRY_KEYS))}")
+        order, source_hash = chunk["order"], chunk["source_hash"]
+        if type(order) is not int or order < 1 or not isinstance(source_hash, str) \
+                or not re.fullmatch(r'(?:[0-9a-f]{64})?', source_hash):
+            raise ValueError(f"manifest.json: {chunk_id} needs an order of 1 or more and a "
+                             f"source_hash of 64 lowercase hex digits (or empty)")
+        if chunk_id in ids or order in orders:
+            raise ValueError(f"manifest.json: {chunk_id} or its order {order} is listed twice")
+        ids.add(chunk_id)
+        orders.add(order)
+    return manifest
 
 
 def validate_for_merge(temp_dir):

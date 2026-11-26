@@ -45,11 +45,13 @@ Merge → Pandoc → HTML (with TOC) → Calibre → DOCX / EPUB / PDF
 - **manifest による検証** — SHA-256 ハッシュの追跡により、古い出力や壊れた出力がマージされるのを防ぎます
 - **複数フォーマット出力** — HTML（フローティング目次付き）、DOCX、EPUB、PDF
 - **オプションの出力設定** — EPUB 表紙の明示指定、一時ディレクトリの親ディレクトリ変更、ユーザー向けのエクスポート別名
+- **シェルに外部テキストを渡さないコマンド** — スキルのコマンドは固定のテキストだけでできています。書籍のパス、タイトル、その他の本文はファイル経由でスクリプトに渡るため、`$(rm -rf ~).epub` のような名前のファイルでも何も実行されません
 - **多言語対応** — 任意の言語コードを指定できます。例：zh、en、ja、ko、fr、de、es、イタリア語の it、地域付きの zh-TW や pt-BR
 - **PDF/DOCX/EPUB/Markdown 入力** — 変換の重い処理は Calibre が担います。数式や表の多い PDF は、レイアウトを理解するパーサーで先に Markdown へ抽出できます（[ステップ 1](#ステップ-1変換) を参照）
 
 ## 前提条件
 
+- **macOS または Linux** — ネイティブの Windows には対応しておらず、スクリプトは起動するとすぐに停止します。Windows では [WSL](https://learn.microsoft.com/windows/wsl/)（Windows Subsystem for Linux）の中でエージェントを実行してください
 - **エージェント実行環境** — Agent Skills に対応し、スキルからサブエージェントを起動できるエージェント（[互換性](#互換性) を参照）
 - **Calibre** — `ebook-convert` コマンドが使えること（[ダウンロード](https://calibre-ebook.com/)）
 - **Pandoc** — HTML↔Markdown 変換に使用（[ダウンロード](https://pandoc.org/)）
@@ -142,7 +144,7 @@ OpenCode では、依頼文に `@translate-book` を含めます。
 
 ### 3. 出力を確認する
 
-すべてのファイルは `{book_name}_temp/` にあります:
+すべてのファイルは一時ディレクトリ `{book_name}_temp/` にあります。`{book_name}` は書籍のファイル名から英字、数字、`.`、`_`、`-` だけを残したものです（`《三体》（刘慈欣）.epub` なら `三体_刘慈欣_temp/`）:
 
 | ファイル | 説明 |
 |------|-------------|
@@ -183,7 +185,7 @@ Use the translate-book skill. Do not convert again; the temp directory is /tmp/t
 
 次の 3 点をすべて満たせば合格です:
 
-1. 対話ログに `python3 /絶対パス/scripts/chunk_context.py …` が現れる。`{baseDir}` が実際のパスに解決されたことを示します。
+1. 対話ログに `python3 "/絶対パス/scripts/chunk_context.py" …` が現れる。`{baseDir}` が実際のパスに解決されたことを示します。
 2. `diligent-dick_temp/output_chunk0045*` と `output_chunk0046*` の書き込み時刻が、もう一方のサブエージェントの実行中に収まっている。メインエージェントが順番に翻訳したのではなく、並列に翻訳されたことを示します。
 3. `python3 "$S/scripts/merge_meta.py" status diligent-dick_temp` が `malformed_meta_files: 0` を出力する。
 
@@ -242,11 +244,13 @@ pull request は推奨される貢献方法ではなく、issue に切り替え�
 python3 scripts/convert.py /path/to/book.pdf --olang zh
 ```
 
-Calibre が入力を HTMLZ に変換し、それを展開して Markdown に変換したうえで、チャンク（1 つあたり約 6000 文字）に分割します。`manifest.json` には各ソースチャンクの SHA-256 ハッシュが記録され、後の検証に使われます。`source_fingerprint.json` は一時ディレクトリを、それを生成した元ファイルのバイト列に結び付けます。元ファイルを差し替えて再実行すると、古いチャンクを黙って再利用するのではなく中断します。フィンガープリント導入以前に作られた一時ディレクトリは、最初の再実行時に警告付きで引き継がれます。
+Calibre が入力を HTMLZ に変換し、それを展開して Markdown に変換したうえで、チャンク（1 つあたり約 6000 文字）に分割します。`manifest.json` には各ソースチャンクの SHA-256 ハッシュが記録され、後の検証に使われます。`source_fingerprint.json` は一時ディレクトリを、それを生成した元ファイルのバイト列、パーサーの設定、翻訳先の言語に結び付けます。元ファイル、パーサーの設定、言語のいずれかを変えて再実行すると、古いチャンクを黙って再利用するのではなく中断します。`source_fingerprint.json` が読めない場合も中断します。フィンガープリント導入以前に作られた一時ディレクトリは、その `config.txt` が同じ名前のファイルと同じ翻訳先の言語を記録していて、今回の実行がパーサーを使わない場合に限り、最初の再実行時に警告付きで引き継がれます。
 
 HTML → Markdown の段階では、Calibre のマークアップも構造的に整理します。EPUB の脚注（本文中の `<a href="#n1"><sup>1</sup></a>` のようなマーカーリンクと、そこへ戻るリンクで始まる注釈段落の組み合わせ）は Pandoc の脚注（本文に `[^1]`、段落の直後に `[^1]: …`）に変換されます。番号は書籍全体で通しになるため、章ごとの番号がマージ後に衝突することはありません。書籍内リンクはテキストだけが残り、`{lang="…"}` のような span 属性、空のページアンカー、見出しの id は削除されます。ダッシュや引用符は `---` やエスケープされた ASCII 引用符にならず、Unicode のまま残ります。戻りリンクのない注釈（EPUB 3 の `<aside>` 脚注など）は通常の段落のままです。
 
-デフォルトの作業ディレクトリは、カレントディレクトリの下の `{book_name}_temp/` です。`--temp-root /path/to/work` を使うと、同じ名前のディレクトリを別の親ディレクトリの下に作れます。
+デフォルトの作業ディレクトリは、カレントディレクトリの下の `{book_name}_temp/` です。`{book_name}` はファイル名の英字、数字、`.`、`_`、`-` だけを残したものなので、このパスはシェルのコマンドに入れても安全です。`--temp-root /path/to/work` を使うと、同じ名前のディレクトリを別の親ディレクトリの下に作れます。このパスに使えるのは英字、数字、`.`、`_`、`-`、`/` だけです。2 つのファイル名が同じ一時ディレクトリ名になる場合は、ディレクトリを作った直後に書き込まれる `source_fingerprint.json` で書籍を見分け、2 冊目は拒否されます。別の `--temp-root` を使ってください。何も変換しないうちに失敗した実行はこのフィンガープリントを取り消すので、設定を直して再実行しても拒否されません。以前のバージョンが元のファイル名のまま付けた一時ディレクトリは、同じ書籍のものと確認できた場合に新しい名前へ変更され、そうでなければそのまま残ります。
+
+スキルは書籍のパスをコマンドに入れません。エージェントが `translate-book-request.json`（キーは `input`、`target_lang`、`temp_root`、`cover`、`parser`）を書き、`python3 "{baseDir}/scripts/convert.py" --request translate-book-request.json` を実行します。変換に成功すると、`convert.py` はコピーを `<temp_dir>/request.json` に残し、リクエストファイルの内容が読み込んだときのままならそれを削除します。手動で実行する場合は、上の位置引数の形がこれまでどおり使えます。
 
 #### 数式や表の多い PDF：代わりに Markdown を変換する（任意）
 
@@ -256,6 +260,8 @@ Calibre は座標のヒューリスティクスで PDF のテキストを再構�
 mineru-kit parse paper.pdf -o paper.md          # 下の表のどのパーサーでも可
 python3 scripts/convert.py paper.md --olang zh
 ```
+
+スキルはパーサーを `convert.py` 経由で実行します。リクエストファイルで `parser` を `mineru`、`marker`、`docling` のいずれかにすると、`convert.py` はパーサーごとに決まった 1 つのコマンド（`mineru-kit parse <pdf> -o <dir>/book.md`、`marker_single <pdf> --output_dir <dir>`、`docling <pdf> --enrich-formula --output <dir>`）を実行します。`<dir>` は `<temp_dir>/parsed/` で、今回の実行が作成し、中の Markdown を変換し終えたら削除するディレクトリです。`parsed/` がすでにある場合は、それに手を付けずに停止します。パーサーが失敗すると、その出力の末尾を表示します。リクエストはほかのパーサー引数を受け付けません。お使いのパーサーのバージョンで追加の引数が必要な場合は、パーサーを自分で実行し、出力された Markdown を上の手順で変換してください。モデルやキャッシュはパーサーが通常置く場所に置かれます。
 
 出力される Markdown が次の規約に沿っていれば、どのパーサーでも使えます:
 
@@ -271,7 +277,7 @@ python3 scripts/convert.py paper.md --olang zh
 
 どのパーサーも初回実行時に ML モデルをダウンロードし、CLI はバージョンによって変わり（フラグが拒否されたら `--help` を確認してください）、ライセンスもそれぞれ異なります。パーサーが落とした数式や画像のプレースホルダー（`<!-- formula-not-decoded -->`、`<!-- image -->`）が Markdown に残っていると、`convert.py` は警告を出します。翻訳の前に、警告が示すフラグを付けて抽出し直してください。インライン数式を含む文書には MinerU か Marker を使ってください。docling が残すのは独立した行の数式だけです。独立した行の数式がいくつもあるのにインライン数式が一つもない場合も、`convert.py` は警告を出します。
 
-YAML フロントマター（`title`、`author`、`lang`）は `config.txt` に反映され、翻訳には送られません。フロントマターがない場合は、先頭の `#` 見出しが `original_title` になります。一時ディレクトリは Markdown ファイル名にちなんで命名されるため、`paper.md` なら `paper_temp/` です。そのディレクトリが `paper.pdf` から作られたものであれば、`convert.py` はソースのフィンガープリント不一致で中断するので、先に削除してください。`--strip-page-numbers` と `--detect-page-numbers` は Calibre 経由の入力にのみ適用されます。
+YAML フロントマター（`title`、`author`、`lang`）は `config.txt` に反映され、翻訳には送られません。フロントマターがない場合は、先頭の `#` 見出しが `original_title` になります。一時ディレクトリは Markdown ファイル名にちなんで命名されるため、`paper.md` なら `paper_temp/` です。そのディレクトリが `paper.pdf` から作られたものであれば、`convert.py` はソースのフィンガープリント不一致で止まります。別の `--temp-root` で変換するか、不要になった古い一時ディレクトリを削除してください。`--strip-page-numbers` と `--detect-page-numbers` は Calibre 経由の入力にのみ適用されます。
 
 ビルド時、Pandoc は `$...$` / `$$...$$` を MathML としてレンダリングします。そのため数式は `book.html` と `book.pdf` で組版され、`book.epub` でも MathML に対応したリーダーなら組版されます。Calibre の DOCX 出力は MathML を組版できないため、DOCX では数式が平坦なテキストとして表示され、その後に TeX のソースが続きます。
 
@@ -329,6 +335,8 @@ python3 scripts/merge_and_build.py --temp-dir book_temp --title "translated titl
 
 `--title` はリーダーのページヘッダーに表示されるメタデータのタイトルになるため、書名号（`《》`）や引用符を付けずに渡してください（外側の `《》` は取り除かれます）。`--cover` は、指定した画像を EPUB を生成する Calibre のステップに渡します。`--export-name` は、パイプラインの正規の成果物 `book.*` を残したまま、`translated-title.epub` のような別名のコピーを作ります。`book_doc`、`input`、`output` という名前（大文字小文字を区別しない）は予約されており、HTML の別名が一時ディレクトリ内の `book_doc.html`、`input.html`、`output.html` を上書きしてしまうため、ビルド前に拒否されます。
 
+スキルはこれらをコマンドラインで渡しません。タイトルや名前は本文と同じ扱いだからです。エージェントは翻訳後のタイトル、エクスポート名、上書きする著者を一時ディレクトリの `title.txt`、`export_name.txt`、`author.txt` に書き、`merge_and_build.py --temp-dir <temp_dir>` を実行します。フラグがなければスクリプトがこれらのファイルを読みます。`--cover` がなければ、`<temp_dir>/request.json` に書かれた表紙画像を使います。
+
 マージの前に、スクリプトは次の点を検証します:
 - すべてのソースチャンクに対応する出力ファイルがあること（1:1 の対応）
 - ソースチャンクのハッシュが manifest と一致すること（古い出力がないこと）
@@ -337,7 +345,7 @@ python3 scripts/merge_and_build.py --temp-dir book_temp --title "translated titl
 
 その後: マージ → Pandoc で HTML → 目次を挿入 → Calibre で DOCX、EPUB、PDF を生成。
 
-ビルド後も中間ファイルは一時ディレクトリに残るため、問題のある数か所を直すのに書籍全体を再翻訳する必要はありません。該当する `output_chunkNNNN.md` を編集して `python3 scripts/run_state.py record <temp_dir> chunkNNNN` を実行するか、そのファイルを削除してスキルを再実行し、再翻訳させます。`record` はそのチャンクを現在の用語集とソースに一致するものとして記録するので、先に `python3 scripts/run_state.py plan <temp_dir>` を実行してください。用語集やソースの変更によってそのチャンクが再翻訳の対象になっている場合は、その変更も編集に反映するか、代わりに再翻訳します。ソースチャンク自体を編集した場合は、`manifest.json` に変更が記録されるよう先に `convert.py` を再実行してください。そうしないとマージは "Source changed since splitting" で停止します。この再実行では `--strip-page-numbers` などのページ番号フラグを付けないでください。チャンクが存在するとそれらのフラグは中断し、エラーの指示どおりにキャッシュファイルを削除するとチャンクも失われます。再実行では、翻訳後に用語が変わった他のチャンクが再翻訳の対象に並ぶこともあります。その場合、スキルは再翻訳する前に確認します。最後に `merge_and_build.py` を再実行します。`output.md` より新しいチャンクがあれば再マージし、出力を作り直します。`output.md` 自体は編集しないでください。以降の再マージでチャンクから作り直されます。`--cleanup` は `chunk*.md`、`output_chunk*.md`、`input.*` を完全に削除するため、こうした修正はできなくなります。書籍を仕上げ終えたときだけ使ってください。
+ビルド後も中間ファイルは一時ディレクトリに残るため、問題のある数か所を直すのに書籍全体を再翻訳する必要はありません。該当する `output_chunkNNNN.md` を編集して `python3 scripts/run_state.py record <temp_dir> chunkNNNN` を実行するか、そのファイルを削除してスキルを再実行し、再翻訳させます。`record` はそのチャンクを現在の用語集とソースに一致するものとして記録するので、先に `python3 scripts/run_state.py plan <temp_dir>` を実行してください。用語集やソースの変更によってそのチャンクが再翻訳の対象になっている場合は、その変更も編集に反映するか、代わりに再翻訳します。ソースチャンク自体を編集した場合は、`manifest.json` に変更が記録されるよう先に `convert.py` を再実行してください。そうしないとマージは "Source changed since splitting" で停止します。この再実行では `--strip-page-numbers` などのページ番号フラグを付けないでください。チャンクが存在すると、それらのフラグはチャンクを捨てる代わりに `convert.py` を止めます。再実行では、翻訳後に用語が変わった他のチャンクが再翻訳の対象に並ぶこともあります。その場合、スキルは再翻訳する前に確認します。最後に `merge_and_build.py` を再実行します。`output.md` より新しいチャンクがあれば再マージし、出力を作り直します。`output.md` 自体は編集しないでください。以降の再マージでチャンクから作り直されます。`--cleanup` は `chunk*.md`、`output_chunk*.md`、`input.*`、`output.html` を完全に削除するため、こうした修正はできなくなります。書籍を仕上げ終えたときだけ使ってください。
 
 **注意:** `{book_name}_temp/` は 1 回の翻訳実行のための作業ディレクトリです。タイトル、著者、テンプレート、画像アセットを変更する場合は、新しい一時ディレクトリを使うか、再実行の前に `python3 scripts/merge_and_build.py --temp-dir book_temp --delete-outputs` を実行してください（最終成果物 `book.html`、`book_doc.html`、`output.html`、`book.docx`、`book.epub`、`book.pdf` と `--export-name` のコピーを削除し、チャンクと翻訳は残します）。出力言語を変える場合は翻訳し直しになるため、新しい一時ディレクトリを使ってください。
 
@@ -367,7 +375,13 @@ python3 scripts/merge_and_build.py --temp-dir book_temp --title "translated titl
 |---------|----------|
 | `Calibre ebook-convert not found` | Calibre をインストールし、`ebook-convert` が PATH に含まれていることを確認してください |
 | `Manifest validation failed` | 分割後にソースチャンクが変更されています — `convert.py` を再実行してください |
-| `was created from different source bytes` | 一時ディレクトリが別のソースファイルのものです — 一時ディレクトリを削除するか、新しい `--temp-root` を使ってください |
+| `was created from different source bytes` | 一時ディレクトリが別のソースファイルのものか、別の書籍のファイル名が同じ一時ディレクトリ名になっています — 別の `--temp-root`（スキルのリクエストファイルでは `temp_root`）で変換してください |
+| `temp_root ...: the part ... has characters other than letters, digits ...` | 一時ディレクトリのパスはシェルのコマンドに入るため、英字、数字、`.`、`_`、`-`、`/` しか使えません。そうしたディレクトリを選ぶか、`--temp-root` を指定しないでください |
+| `... is a symlink, and translate-book never renames a symlink` | 以前のバージョンがこの書籍用に作った一時ディレクトリがシンボリックリンクです。リンク先のディレクトリを新しい名前へ自分で移すか、別の `--temp-root` で変換してください |
+| `... already exists and is not known to hold this book's conversion` | この書籍の以前の実行は古い一時ディレクトリ名の下にあり、新しい名前はすでに使われています。新しい名前のディレクトリの名前を変えるか移動するか、別の `--temp-root` で変換してください |
+| `unexpected file 'chunk1.md'`（または他のチャンクに似た名前） | 一時ディレクトリに、チャンクに見えるのに `chunk0001.md` の形の名前ではないファイルがあります。名前にシェルの構文が含まれている可能性があるため、シェルのコマンドではなくファイルマネージャーで名前を変えるか移動してください |
+| `source_fingerprint.json cannot be read`、または `... is not empty and holds no translate-book conversion` | 一時ディレクトリに、`convert.py` がこの本のものと確認できない内容があります。解析できないかフィールドが欠けたフィンガープリント、または `convert.py` が書いていないファイルです。そこは何も変更されません。別の `--temp-root` で変換してください |
+| `... parsed already exists` | 今回の実行が作成したのではない `parsed/` ディレクトリが一時ディレクトリにあります。`convert.py` はそれを使いも変更もしません。名前を変えるか移動してから、もう一度実行してください |
 | 変換後に PDF の数式や表が崩れる | [ステップ 1](#ステップ-1変換) の表にあるパーサーで PDF を抽出し、古い一時ディレクトリを削除してから、`.md` に対して `convert.py` を実行してください |
 | `formula(s) were not decoded` / `image(s) were exported as placeholders` | パーサーがその内容を落としています — 警告が示すフラグを付けて抽出し直し、一時ディレクトリを削除してから `convert.py` を再実行してください |
 | `display formula(s) but no inline math` | パーサーがインライン数式をプレーンテキストにしています（docling の標準パイプラインはそうなります）— MinerU か Marker で抽出し直し、一時ディレクトリを削除してから `convert.py` を再実行してください。文書にもともとインライン数式がなければ無視してかまいません |
@@ -377,7 +391,7 @@ python3 scripts/merge_and_build.py --temp-dir book_temp --title "translated titl
 | 翻訳が途中で終わっている | スキルを再実行してください — 止まったところから再開します |
 | ビルド後に数か所だけ直したい | `output.md` ではなく該当する `output_chunkNNNN.md` を直し、`merge_and_build.py` を再実行してください（[ステップ 3](#ステップ-3マージとビルド) を参照） |
 | タイトル、テンプレート、アセットを変えたのに出力が更新されない | `python3 scripts/merge_and_build.py --temp-dir book_temp --delete-outputs` を実行してから、`merge_and_build.py` を再実行してください |
-| PDF 出力からページ番号のフッターを取り除きたい | PDF 入力では、単調に増えるページ番号の並び（例: `1, 2, 3, ...`）を自動検出して削除し、年（`1984`）、章番号、引用番号のような外れ値は残します。EPUB と DOCX ではページ番号がテキストではない（EPUB はアンカー、DOCX はフッター）ため、単独の数字はすべて残します。ページ番号をテキストとして印字している EPUB には `--detect-page-numbers` を指定してください。検出がうまくいかない場合は、`convert.py` に `--strip-page-numbers` を指定すると、数字だけの行をすべて積極的に削除します。どちらのフラグも、キャッシュ済みの `input.md` や `chunk*.md` がすでにあると中断します — フラグを有効にするには先にそれらを削除してください。 |
+| PDF 出力からページ番号のフッターを取り除きたい | PDF 入力では、単調に増えるページ番号の並び（例: `1, 2, 3, ...`）を自動検出して削除し、年（`1984`）、章番号、引用番号のような外れ値は残します。EPUB と DOCX ではページ番号がテキストではない（EPUB はアンカー、DOCX はフッター）ため、単独の数字はすべて残します。ページ番号をテキストとして印字している EPUB には `--detect-page-numbers` を指定してください。検出がうまくいかない場合は、`convert.py` に `--strip-page-numbers` を指定すると、数字だけの行をすべて積極的に削除します。どちらのフラグも、キャッシュ済みの `input.md` や `chunk*.md` がすでにあると `convert.py` を止めます — フラグを有効にするには別の `--temp-root` で変換してください。 |
 | `output.md exists but manifest invalid` | 古い出力です — スクリプトが自動で削除して再マージします |
 | `Glossary upgrade rejected: duplicate source` | v2 では、2 つの用語が同じ原語や別名の表記を共有できません。`glossary.json` を編集して曖昧さを解消し（例: 一方の原語を `Apple` から `Apple (Inc.)` に変える）、再読み込みしてください。 |
 | PDF の生成に失敗する | Calibre が PDF 出力に対応した状態でインストールされていることを確認してください |
@@ -415,7 +429,7 @@ python3 scripts/merge_and_build.py --temp-dir book_temp --title "translated titl
 
 最近の PR での議論から、有用なワークフロー改善もいくつか見えてきました。ただしこれらは単発のパッチより広く、リポジトリの契約（成果物の名前、一時ディレクトリの挙動、クリーンアップの意味、EPUB 互換性の範囲）に関わります。現状:
 
-- **EPUB 表紙の明示指定（リリース済み）。** `merge_and_build.py --cover <image>` は、指定した画像を HTML -> EPUB の Calibre ステップに渡します。`--cover-from <epub>` や EPUB 表紙の自動抽出は、さまざまなパッケージ構成にわたる EPUB 解析の互換性を本プロジェクトが引き受けられるようになるまで、対象外です。（context: closed #3）
+- **EPUB 表紙の明示指定（リリース済み）。** `merge_and_build.py --cover <image>` は、指定した画像を HTML -> EPUB の Calibre ステップに渡します。スキルはリクエストファイルで表紙を指定し、ビルドは一時ディレクトリにあるそのファイルのコピーから表紙を読みます。`--cover-from <epub>` や EPUB 表紙の自動抽出は、さまざまなパッケージ構成にわたる EPUB 解析の互換性を本プロジェクトが引き受けられるようになるまで、対象外です。（context: closed #3）
 - **一時作業ディレクトリの場所の設定（リリース済み）。** `convert.py --temp-root <dir>` を明示しない限り、カレントディレクトリに `{book_name}_temp/` を作るデフォルトの挙動は変わりません。（context: closed #4）
 - **Calibre/Pandoc の生成物の、より安全なクリーンアップ（一部リリース済み）。** ページ番号と Calibre マーカーの除去は回帰テストで守られており、年、章番号、単調でない単独の数字は残ります。テストを伴いながら、クリーンアップを段階的に改善していきます。（context: closed #5）
 - **ユーザー向けエクスポート名のオプション（リリース済み）。** `merge_and_build.py --export-name <stem>` は、パイプラインの正規の成果物 `book.html`、`book_doc.html`、`book.docx`、`book.epub`、`book.pdf` を残したまま、別名のコピーを作ります。（context: closed #6）

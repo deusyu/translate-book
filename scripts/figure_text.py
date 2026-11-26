@@ -35,7 +35,11 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from urllib.parse import quote, unquote
 
-from manifest import file_hash, load_manifest, save_manifest
+from manifest import file_hash, list_chunk_files, load_manifest, save_manifest
+
+if os.name == "nt":
+    sys.exit("translate-book runs on macOS and Linux only. "
+             "On Windows, run it in WSL (Windows Subsystem for Linux).")
 
 
 SIDECAR_VERSION = 1
@@ -211,7 +215,7 @@ def _sidecar_rel(sha256):
 # =============================================================================
 
 def _chunk_files(temp_dir):
-    return sorted(Path(temp_dir).glob('chunk*.md'))
+    return [Path(temp_dir) / name for name in list_chunk_files(temp_dir)]
 
 
 def _line_image_refs(line):

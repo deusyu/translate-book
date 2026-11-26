@@ -1,3 +1,4 @@
+import process_guard  # noqa: F401  first, so it guards every process the tests below start
 import json
 import sys
 import tempfile
@@ -79,6 +80,16 @@ class ChunkContextTests(unittest.TestCase):
             ctx = chunk_context.get_neighbor_context(temp_dir, "chunk0001.md")
 
         self.assertIn('"chunk_id"', json.dumps(ctx))
+
+
+
+class ChunkNameTests(unittest.TestCase):
+    def test_rejects_paths_and_other_names(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, "chunk0001.md").write_text("text", encoding="utf-8")
+            for name in ("../chunk0001.md", "chunk1.md", "/etc/passwd", "chunk0001.md/x", "output_chunk0001.md"):
+                with self.subTest(name=name), self.assertRaisesRegex(ValueError, "Expected chunk filename"):
+                    chunk_context.get_neighbor_context(tmp, name)
 
 
 if __name__ == "__main__":

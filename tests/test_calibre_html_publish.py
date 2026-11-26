@@ -1,3 +1,4 @@
+import process_guard  # noqa: F401  first, so it guards every process the tests below start
 import contextlib
 import inspect
 import io

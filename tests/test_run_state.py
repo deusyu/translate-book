@@ -1,3 +1,5 @@
+import process_guard  # noqa: F401  first, so it guards every process the tests below start
+import io
 import json
 import os
 import sys
@@ -104,6 +106,20 @@ class RunStateTests(unittest.TestCase):
         self.assertIn("chunk0002", plan["translation_chunk_ids"])
         self.assertIn("blank_output", reasons["chunk0002"])
 
+    def test_recorded_output_written_empty_is_translated_again(self):
+        # SKILL.md re-translates a chunk by having the agent write its output
+        # empty rather than delete it.
+        tmp, temp_dir = self._workspace()
+        with tmp:
+            run_state.record_chunks(str(temp_dir), ["chunk0001", "chunk0002"])
+            (temp_dir / "output_chunk0001.md").write_bytes(b"")
+            plan = run_state.plan(str(temp_dir))
+            reasons = {item["chunk_id"]: item["reasons"] for item in plan["chunks"]}
+
+        self.assertEqual(plan["translation_chunk_ids"], ["chunk0001"])
+        self.assertIn("empty_output", reasons["chunk0001"])
+        self.assertEqual(plan["unchanged_chunk_ids"], ["chunk0002"])
+
     def test_record_rejects_blank_output(self):
         tmp, temp_dir = self._workspace()
         with tmp:
@@ -199,6 +215,72 @@ class RunStateTests(unittest.TestCase):
         self.assertIn("glossary_version_used", record)
         self.assertEqual(record["entity_ids_used"], ["Tai"])
         self.assertIn("output_hash", record)
+
+
+
+class ChunkIdInputTests(unittest.TestCase):
+    def make_temp_dir(self, tmp, with_manifest=True):
+        for n in (1, 2):
+            Path(tmp, f"chunk000{n}.md").write_text(f"source {n}\n", encoding="utf-8")
+            Path(tmp, f"output_chunk000{n}.md").write_text(f"译文 {n}\n", encoding="utf-8")
+        if with_manifest:
+            Path(tmp, "input.md").write_text("source 1\n\nsource 2\n", encoding="utf-8")
+            create_manifest(tmp, ["chunk0001.md", "chunk0002.md"], str(Path(tmp, "input.md")))
+
+    def record(self, tmp, *args, stdin=""):
+        return process_guard.run_script("run_state.py", "record", tmp, *args, input=stdin)
+
+    def recorded(self, tmp):
+        return sorted(json.loads(Path(tmp, "run_state.json").read_text(encoding="utf-8"))["chunks"])
+
+    def test_reads_chunk_ids_from_standard_input(self):
+        for stdin in ("chunk0001\n\nchunk0002 chunk0001\n", '["chunk0001", "chunk0002"]\n',
+                      "\ufeffchunk0001\r\nchunk0002\r\n"):
+            with self.subTest(stdin=stdin), tempfile.TemporaryDirectory() as tmp:
+                self.make_temp_dir(tmp)
+                result = self.record(tmp, stdin=stdin)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(json.loads(result.stdout)["recorded_chunk_ids"], ["chunk0001", "chunk0002"])
+                self.assertEqual(self.recorded(tmp), ["chunk0001", "chunk0002"])
+
+    def test_rejects_anything_but_chunk_ids(self):
+        cases = [((), "chunk0001\n../../etc/passwd\n", "is not a chunk id"),
+                 ((), "chunk1\n", "is not a chunk id"),
+                 ((), '["chunk0001", 2]', "is not a chunk id"),
+                 ((), '["chunk0001"', "not valid JSON"),
+                 ((), "\n \n", "no chunk ids given"),
+                 (("chunk1",), "", "is not a chunk id"),
+                 (("$(touch x)",), "", "is not a chunk id")]
+        for args, stdin, needle in cases:
+            with self.subTest(args=args, stdin=stdin), tempfile.TemporaryDirectory() as tmp:
+                self.make_temp_dir(tmp)
+                result = self.record(tmp, *args, stdin=stdin)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn(needle, result.stderr)
+                self.assertFalse(Path(tmp, "run_state.json").exists())
+
+    def test_read_chunk_ids_checks_every_id(self):
+        for text in ("chunk0001\nchunk1\n", '["chunk0001", "chunk$(x)"]', "chunk0001 ../chunk0002"):
+            with self.subTest(text=text), self.assertRaisesRegex(ValueError, "is not a chunk id"):
+                run_state.read_chunk_ids(io.StringIO(text))
+        self.assertEqual(run_state.read_chunk_ids(io.StringIO("chunk0002 chunk0001 chunk0002")),
+                         ["chunk0002", "chunk0001"])
+
+    def test_arguments_still_work(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.make_temp_dir(tmp)
+            result = self.record(tmp, "chunk0002")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(self.recorded(tmp), ["chunk0002"])
+
+    def test_plan_without_manifest_checks_chunk_file_names(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.make_temp_dir(tmp, with_manifest=False)
+            ids = [item["chunk_id"] for item in run_state.plan(tmp)["chunks"]]
+            self.assertEqual(ids, ["chunk0001", "chunk0002"])
+            Path(tmp, "chunk$(touch x).md").write_text("x", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "unexpected file"):
+                run_state.plan(tmp)
 
 
 if __name__ == "__main__":

@@ -34,10 +34,13 @@ from pathlib import Path
 
 import glossary as glossary_mod
 import meta as meta_mod
+from manifest import chunk_id_from_file_name, is_chunk_id, list_chunk_files
+
+if os.name == "nt":
+    sys.exit("translate-book runs on macOS and Linux only. "
+             "On Windows, run it in WSL (Windows Subsystem for Linux).")
 
 
-META_GLOB = 'output_chunk*.meta.json'
-TRANSLATED_GLOB = 'output_chunk*.md'
 EVIDENCE_REFS_CAP = 5
 
 # Decision kinds and their valid choice sets.
@@ -146,7 +149,7 @@ def cmd_prepare_merge(temp_dir):
     glossary = glossary_mod.load_glossary(glossary_path)
     applied = glossary.get('applied_meta_hashes', {})
 
-    meta_paths = sorted(Path(temp_dir).glob(META_GLOB))
+    meta_paths = [Path(temp_dir) / name for name in list_chunk_files(temp_dir, 'meta')]
 
     consumed_chunk_ids = []
     malformed_chunk_ids = []
@@ -512,6 +515,9 @@ def cmd_apply_merge(temp_dir):
     # AND content hash recording. This runs even with empty auto_apply / decisions.
     consumed_metas = {}  # chunk_id -> meta data
     for chunk_id in consumed_chunk_ids:
+        if not is_chunk_id(chunk_id):
+            errors.append(f"consumed_chunk_ids: {chunk_id!r} is not a chunk id such as chunk0001")
+            continue
         meta_path = _meta_path(temp_dir, chunk_id)
         if not os.path.exists(meta_path):
             errors.append(f"no meta file for chunk_id={chunk_id} at {meta_path}")
@@ -985,16 +991,10 @@ def cmd_status(temp_dir):
     else:
         applied = {}
 
-    translated_paths = sorted(Path(temp_dir).glob(TRANSLATED_GLOB))
-    # Strip the .meta.json variants that the glob also catches if any.
-    translated_paths = [p for p in translated_paths if not p.name.endswith('.meta.json')]
-    translated_chunk_ids = set()
-    for p in translated_paths:
-        m = re.match(r'^output_(chunk\d+)\.md$', p.name)
-        if m:
-            translated_chunk_ids.add(m.group(1))
+    translated_chunk_ids = {chunk_id_from_file_name(name, 'output')
+                            for name in list_chunk_files(temp_dir, 'output')}
 
-    meta_paths = sorted(Path(temp_dir).glob(META_GLOB))
+    meta_paths = [Path(temp_dir) / name for name in list_chunk_files(temp_dir, 'meta')]
     found_chunk_ids = set()
     consumed_chunk_ids = set()
     malformed_chunk_ids = []
@@ -1042,13 +1042,20 @@ def main():
     p_stat.add_argument('temp_dir')
 
     args = parser.parse_args()
+    if not os.path.isdir(args.temp_dir):
+        sys.stderr.write(f"error: Temp directory not found: {args.temp_dir}\n")
+        sys.exit(2)
 
-    if args.cmd == 'prepare-merge':
-        cmd_prepare_merge(args.temp_dir)
-    elif args.cmd == 'apply-merge':
-        cmd_apply_merge(args.temp_dir)
-    elif args.cmd == 'status':
-        cmd_status(args.temp_dir)
+    try:
+        if args.cmd == 'prepare-merge':
+            cmd_prepare_merge(args.temp_dir)
+        elif args.cmd == 'apply-merge':
+            cmd_apply_merge(args.temp_dir)
+        elif args.cmd == 'status':
+            cmd_status(args.temp_dir)
+    except (OSError, ValueError) as e:
+        sys.stderr.write(f"error: {e}\n")
+        sys.exit(2)
 
 
 if __name__ == '__main__':

@@ -1,3 +1,4 @@
+import process_guard  # noqa: F401  first, so it guards every process the tests below start
 import json
 import os
 import sys
@@ -714,6 +715,28 @@ class SaveGlossaryAtomicTests(unittest.TestCase):
             loaded = glossary.load_glossary(path)
             self.assertEqual(loaded['terms'][0]['source'], 'Manhattan')
             self.assertEqual(loaded['terms'][1]['source'], 'Brooklyn')
+
+
+
+class ChunkNameValidationTests(unittest.TestCase):
+    def run_cli(self, *args):
+        return process_guard.run_script("glossary.py", *args)
+
+    def test_print_terms_rejects_other_names(self):
+        with temp_book_dir(chunks={"chunk0001.md": "Tai\n"}) as (tmp, _):
+            for name in ("../chunk0001.md", "chunk1.md", "chunk0001.md; rm -rf ~", "output_chunk0001.md"):
+                with self.subTest(name=name):
+                    result = self.run_cli("print-terms-for-chunk", tmp, name)
+                    self.assertEqual(result.returncode, 1)
+                    self.assertIn("Error:", result.stdout + result.stderr)
+
+    def test_count_frequencies_stops_at_a_stray_chunk_file(self):
+        empty = {"version": 2, "terms": [], "high_frequency_top_n": 20, "applied_meta_hashes": {}}
+        chunks = {"chunk0001.md": "Tai\n", "chunk$(touch x).md": "Tai\n"}
+        with temp_book_dir(chunks=chunks, glossary_data=empty) as (tmp, _):
+            result = self.run_cli("count-frequencies", tmp)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("unexpected file", result.stdout + result.stderr)
 
 
 if __name__ == '__main__':

@@ -1,11 +1,16 @@
+import process_guard  # noqa: F401  first, so it guards every process the tests below start
 import contextlib
 import io
+import json
 import os
 import shutil
-import subprocess
+import stat
 import sys
 import tempfile
+import threading
+import unicodedata
 import unittest
+import zipfile
 from pathlib import Path
 from unittest import mock
 
@@ -660,16 +665,6 @@ class CleanCalibreAstMarkupTests(unittest.TestCase):
         )
 
 
-def _pandoc_available():
-    try:
-        import pypandoc
-
-        pypandoc.get_pandoc_version()
-        return True
-    except Exception:
-        return False
-
-
 # Body of the input.html Calibre 7.6 writes for the reproduction EPUB attached
 # to issues #49 and #50.
 ISSUE_49_50_CALIBRE_HTML = """<html><head><meta http-equiv="Content-Type" content="text/html;charset=utf-8" /><title>Repro</title></head><body><div class="calibre" id="calibre_link-0">
@@ -695,8 +690,11 @@ an en dash (pp. 12&ndash;34), and a footnote ref.<a href="#calibre_link-2" id="c
 """
 
 
-@unittest.skipUnless(_pandoc_available(), "pypandoc and pandoc are required")
+@process_guard.needs("pandoc")
 class ConvertHtmlToMarkdownPandocTests(unittest.TestCase):
+    def setUp(self):
+        self.enterContext(process_guard.library_processes("pandoc"))
+
     def test_issue_49_50_reproduction(self):
         with tempfile.TemporaryDirectory() as tmp:
             html = Path(tmp) / "input.html"
@@ -830,10 +828,9 @@ class TempRootTests(unittest.TestCase):
             image_file.write_text("image", encoding="utf-8")
 
             created = convert.setup_temp_directory(
-                "/books/Alice.epub",
+                convert.build_temp_dir("/books/Alice.epub", str(root)),
                 str(html_file),
                 str(images_dir),
-                temp_root=str(root),
             )
 
             self.assertEqual(created, str(root / "Alice_temp"))
@@ -916,6 +913,7 @@ class PageNumberDetectionDefaultTests(unittest.TestCase):
             source.write_bytes(b"book bytes")
             temp_dir = Path(convert.build_temp_dir(str(source), tmp))
             temp_dir.mkdir()
+            convert._write_source_fingerprint(str(temp_dir), convert.run_identity(str(source), "zh"))
             (temp_dir / "input.html").write_text("<html></html>", encoding="utf-8")
             argv = ["convert.py", str(source), "--temp-root", tmp, *extra_args]
             with mock.patch.object(sys, "argv", argv), \
@@ -946,7 +944,7 @@ class SourceFingerprintCacheTests(unittest.TestCase):
 
             status, message = convert.check_source_cache(
                 str(Path(tmp) / "book_temp"),
-                convert.source_fingerprint(str(source)),
+                convert.run_identity(str(source), "zh"),
             )
 
         self.assertIsNone(status)
@@ -954,20 +952,61 @@ class SourceFingerprintCacheTests(unittest.TestCase):
 
     def test_adopts_cache_that_predates_fingerprinting(self):
         # Temp dirs created before this feature have no fingerprint file.
-        # They must stay resumable (trust-on-first-use), with a warning.
+        # They stay resumable (trust-on-first-use), with a warning, when
+        # their config.txt names a file of the same name.
         with tempfile.TemporaryDirectory() as tmp:
             source = Path(tmp) / "book.epub"
             temp_dir = Path(tmp) / "book_temp"
             temp_dir.mkdir()
             self._write(source, "source bytes")
             self._write(temp_dir / "input.html", "<html></html>")
+            self._write(temp_dir / "config.txt", "input_file=/elsewhere/book.epub\noutput_lang=zh_CN\n")
 
             status, message = convert.check_source_cache(
-                str(temp_dir), convert.source_fingerprint(str(source))
+                str(temp_dir), convert.run_identity(str(source), "zh-CN"), str(source)
             )
 
         self.assertEqual(status, "adopt")
         self.assertIn(convert.SOURCE_FINGERPRINT_FILE, message)
+
+    def test_unfingerprinted_cache_for_other_settings_is_not_adopted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "book.pdf"
+            temp_dir = Path(tmp) / "book_temp"
+            temp_dir.mkdir()
+            self._write(source, "source bytes")
+            self._write(temp_dir / "output_chunk0001.md", "English translation\n")
+            cases = [
+                ("output_lang=en\n", convert.run_identity(str(source), "zh"), "mismatch", "translation into en"),
+                ("", convert.run_identity(str(source), "zh"), "unknown", "target language"),
+                ("output_lang=zh; rm\n", convert.run_identity(str(source), "zh"), "unknown", "target language"),
+                ("output_lang=zh\n", convert.run_identity(str(source), "zh", "docling"), "mismatch",
+                 "without a parser"),
+            ]
+            for config, identity, expected, needle in cases:
+                with self.subTest(config=config, parser=identity["parser"]):
+                    self._write(temp_dir / "config.txt", "input_file=/old/book.pdf\n" + config)
+                    status, message = convert.check_source_cache(str(temp_dir), identity, str(source))
+                    self.assertEqual(status, expected)
+                    self.assertIn(needle, message)
+
+    def test_unfingerprinted_cache_of_another_file_name_is_not_adopted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "book.epub"
+            temp_dir = Path(tmp) / "book_temp"
+            temp_dir.mkdir()
+            self._write(source, "source bytes")
+            self._write(temp_dir / "input.html", "<html></html>")
+            for config in ("input_file=/elsewhere/Book (1).epub\n", None):
+                if config is None:
+                    (temp_dir / "config.txt").unlink()
+                else:
+                    self._write(temp_dir / "config.txt", config)
+                status, message = convert.check_source_cache(
+                    str(temp_dir), convert.run_identity(str(source), "zh"), str(source)
+                )
+                self.assertEqual(status, "unknown")
+                self.assertNotIn("elete", message)
 
     def test_mismatch_when_source_bytes_changed(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -976,13 +1015,13 @@ class SourceFingerprintCacheTests(unittest.TestCase):
             temp_dir.mkdir()
             self._write(source, "old source bytes")
             convert._write_source_fingerprint(
-                str(temp_dir), convert.source_fingerprint(str(source))
+                str(temp_dir), convert.run_identity(str(source), "zh")
             )
             self._write(temp_dir / "input.html", "<html></html>")
 
             self._write(source, "new source bytes!!")
             status, message = convert.check_source_cache(
-                str(temp_dir), convert.source_fingerprint(str(source))
+                str(temp_dir), convert.run_identity(str(source), "zh")
             )
 
         self.assertEqual(status, "mismatch")
@@ -995,12 +1034,12 @@ class SourceFingerprintCacheTests(unittest.TestCase):
             temp_dir.mkdir()
             self._write(source, "source bytes")
             convert._write_source_fingerprint(
-                str(temp_dir), convert.source_fingerprint(str(source))
+                str(temp_dir), convert.run_identity(str(source), "zh")
             )
             self._write(temp_dir / "input.html", "<html></html>")
 
             status, message = convert.check_source_cache(
-                str(temp_dir), convert.source_fingerprint(str(source))
+                str(temp_dir), convert.run_identity(str(source), "zh")
             )
 
         self.assertIsNone(status)
@@ -1014,32 +1053,107 @@ class SourceFingerprintCacheTests(unittest.TestCase):
             temp_dir.mkdir()
             self._write(source, "source bytes")
             convert._write_source_fingerprint(
-                str(temp_dir), convert.source_fingerprint(str(source))
+                str(temp_dir), convert.run_identity(str(source), "zh")
             )
             self._write(temp_dir / "input.html", "<html></html>")
 
             moved = Path(tmp) / "renamed-book.epub"
             source.rename(moved)
             status, _ = convert.check_source_cache(
-                str(temp_dir), convert.source_fingerprint(str(moved))
+                str(temp_dir), convert.run_identity(str(moved), "zh")
             )
 
         self.assertIsNone(status)
 
-    def test_corrupt_fingerprint_file_is_adopted_not_crashed(self):
+    def test_identity_records_every_field(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "book.pdf"
+            self._write(source, "source bytes")
+            identity = convert.run_identity(str(source), "zh-TW", "marker")
+            self.assertEqual(identity, {"version": 2, "path": os.path.realpath(source), "size": 12,
+                                        "sha256": convert.file_hash(str(source)), "parser": "marker",
+                                        "target_lang": "zh-TW"})
+
+    def test_fingerprint_of_an_older_version_needs_the_language_in_config(self):
+        # Versions before 2 wrote path, size and sha256 only, and converted
+        # without a parser; the target language is in config.txt or unknown.
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "book.epub"
+            temp_dir = Path(tmp) / "book_temp"
+            temp_dir.mkdir()
+            self._write(source, "source bytes")
+            self._write(temp_dir / "input.md", "# Book\n")
+            identity = convert.run_identity(str(source), "zh")
+            older = {key: identity[key] for key in ("path", "size", "sha256")}
+            self._write(temp_dir / convert.SOURCE_FINGERPRINT_FILE, json.dumps(older))
+            cases = [
+                ("output_lang=zh\n", identity, None),
+                ("output_lang=ja\n", identity, "mismatch"),
+                ("", identity, "unknown"),
+                ("output_lang=zh; rm\n", identity, "unknown"),
+                ("output_lang=zh\n", convert.run_identity(str(source), "zh", "docling"), "mismatch"),
+            ]
+            for config, wanted, expected in cases:
+                with self.subTest(config=config, parser=wanted["parser"]):
+                    self._write(temp_dir / "config.txt", config)
+                    status, message = convert.check_source_cache(str(temp_dir), wanted, str(source))
+                    self.assertEqual(status, expected, message)
+
+    def test_partial_fingerprint_without_a_language_is_not_reused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "book.epub"
+            temp_dir = Path(tmp) / "book_temp"
+            temp_dir.mkdir()
+            self._write(source, "source bytes")
+            self._write(temp_dir / "input.md", "# Book\n")
+            identity = convert.run_identity(str(source), "zh")
+            self._write(temp_dir / convert.SOURCE_FINGERPRINT_FILE,
+                        json.dumps({"sha256": identity["sha256"], "size": identity["size"]}))
+            status, message = convert.check_source_cache(str(temp_dir), identity, str(source))
+        self.assertEqual(status, "unknown")
+        self.assertIn("cannot be read", message)
+
+    def test_unreadable_fingerprint_is_refused_not_adopted(self):
         with tempfile.TemporaryDirectory() as tmp:
             source = Path(tmp) / "book.epub"
             temp_dir = Path(tmp) / "book_temp"
             temp_dir.mkdir()
             self._write(source, "source bytes")
             self._write(temp_dir / "input.html", "<html></html>")
-            self._write(temp_dir / convert.SOURCE_FINGERPRINT_FILE, "{not json")
-
-            status, _ = convert.check_source_cache(
-                str(temp_dir), convert.source_fingerprint(str(source))
-            )
-
-        self.assertEqual(status, "adopt")
+            self._write(temp_dir / "config.txt", "input_file=book.epub\noutput_lang=zh\n")
+            identity = convert.run_identity(str(source), "zh")
+            older = {key: identity[key] for key in ("path", "size", "sha256")}
+            cases = ["{not json", "[]", "null", b"\xff\xfe{}", None]
+            for record in (identity, older):
+                cases += [json.dumps({k: v for k, v in record.items() if k != key}) for key in record]
+                cases.append(json.dumps(dict(record, parser_args=[])))
+            cases += [json.dumps(dict(identity, **{key: value})) for key, value in (
+                ("version", 1), ("version", 3), ("version", "2"), ("version", True), ("path", ""),
+                ("path", 7), ("size", "12"), ("size", True), ("size", -1), ("size", 1.5),
+                ("sha256", 5), ("sha256", "0" * 63), ("sha256", "A" * 64), ("parser", "bash"),
+                ("parser", []), ("parser", ""), ("target_lang", 7), ("target_lang", None),
+                ("target_lang", "zh;x"), ("target_lang", "zh_TW"))]
+            cases += [json.dumps(dict(older, **{key: value})) for key, value in (
+                ("path", None), ("size", "12"), ("sha256", "0" * 63))]
+            fingerprint = temp_dir / convert.SOURCE_FINGERPRINT_FILE
+            for content in cases:
+                with self.subTest(content=content):
+                    if fingerprint.is_file():
+                        fingerprint.unlink()
+                    if content is None:
+                        fingerprint.mkdir()
+                    elif isinstance(content, bytes):
+                        fingerprint.write_bytes(content)
+                    else:
+                        self._write(fingerprint, content)
+                    status, message = convert.check_source_cache(
+                        str(temp_dir), convert.run_identity(str(source), "zh"), str(source)
+                    )
+                    self.assertEqual(status, "unknown")
+                    self.assertIn(f"{convert.SOURCE_FINGERPRINT_FILE} cannot be read", message)
+                    _assert_no_deletion_advice(self, message)
+                    if content is None:
+                        fingerprint.rmdir()
 
 
 class DisplayMathBlockTests(unittest.TestCase):
@@ -1439,14 +1553,13 @@ class ImportMarkdownTests(unittest.TestCase):
 
                 self.assertEqual("but no inline math" in out.getvalue(), warns)
 
-    @unittest.skipUnless(shutil.which("pandoc"), "pandoc is not installed")
+    @process_guard.needs("pandoc")
     def test_wrapped_formulas_render_as_mathml(self):
         content, _ = convert.align_display_math("\n\n".join(self.DOCLING_FORMULAS) + "\n")
-        result = subprocess.run(
-            ["pandoc", "--from", "markdown+smart+east_asian_line_breaks", "--to", "html5", "--mathml"],
-            input=content, capture_output=True, text=True, check=True,
-        )
+        result = process_guard.run_tool(
+            "pandoc", "--from", "markdown+smart+east_asian_line_breaks", "--to", "html5", "--mathml", input=content)
 
+        self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.count("<math"), 3)
         self.assertNotIn("Could not convert TeX math", result.stderr)
 
@@ -1490,15 +1603,8 @@ class MarkdownMetadataTests(unittest.TestCase):
 
 
 class MarkdownInputEndToEndTests(unittest.TestCase):
-    CONVERT = str(SCRIPT_DIR / "convert.py")
-
     def _run(self, workdir, *args):
-        import subprocess
-
-        return subprocess.run(
-            [sys.executable, self.CONVERT, *args],
-            cwd=workdir, capture_output=True, text=True,
-        )
+        return process_guard.run_script("convert.py", *args, cwd=workdir)
 
     def _setup(self, tmp):
         import base64
@@ -1643,7 +1749,1217 @@ class CalibreHtmlzLocationTests(unittest.TestCase):
         self.assertEqual(self.users_htmlz.read_text(encoding="utf-8"), "user-owned file")
         [htmlz] = self.htmlz_paths
         self.assertFalse(htmlz.exists())
-        self.assertEqual(sorted(p.name for p in self.root.iterdir()), ["book.epub", "book.htmlz"])
+        self.assertEqual(sorted(p.name for p in self.root.iterdir()), ["book.epub", "book.htmlz", "work"])
+        # The run converted nothing, so it gave up the temp dir it had claimed.
+        self.assertEqual(list((self.root / "work").iterdir()), [])
+
+
+
+SHELL_SAFE_ASCII = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
+
+
+def _assert_no_deletion_advice(test, message):
+    test.assertNotRegex(message.lower(), r"delet|remov|\brm\b")
+
+
+class SafeTempStemTests(unittest.TestCase):
+    def assert_shell_safe(self, stem):
+        self.assertTrue(stem)
+        self.assertLessEqual(len(stem.encode("utf-8")), convert.TEMP_STEM_MAX_BYTES)
+        self.assertNotIn("__", stem)
+        self.assertFalse(stem[0] in "_.-" or stem[-1] in "_.-", stem)
+        for ch in stem:
+            if ch.isascii():
+                self.assertIn(ch, SHELL_SAFE_ASCII, stem)
+            else:
+                self.assertIn(unicodedata.category(ch)[0], "LNM", (stem, ch))
+                self.assertFalse(convert._is_variation_selector(ch))
+
+    def test_examples(self):
+        cases = {
+            "《三体》（刘慈欣）": "三体_刘慈欣",
+            "O'Brien's \"tale\" $(touch x) `y` $HOME": "O_Brien_s_tale_touch_x_y_HOME",
+            "-rf --no-preserve-root": "rf_--no-preserve-root",
+            "Café": "Café",
+            "Cafe\u0301": "Café",
+            "ＡＢＣ１２３": "ABC123",
+            "\ufb01le": "file",
+            "हिन्दी पुस्तक": "हिन्दी_पुस्तक",
+            "\u0301abc": "abc",
+            "a\u202eb\u200bc": "a_b_c",
+            "line\nbreak\ttab": "line_break_tab",
+            "Book [2nd ed.] *?{x,y}~#!": "Book_2nd_ed._x_y",
+            "..": "book",
+            "": "book",
+            "\u2764\ufe0f": "book",
+            "\udc80\udcff": "book",
+            "a.tar": "a.tar",
+        }
+        for name, stem in cases.items():
+            with self.subTest(name=name):
+                self.assertEqual(convert.safe_temp_stem(name), stem)
+                self.assert_shell_safe(convert.safe_temp_stem(name))
+
+    def test_cuts_at_a_character_boundary(self):
+        four_byte = "\U00020000"
+        self.assertEqual(convert.safe_temp_stem(four_byte * 41), four_byte * 40)
+        self.assertEqual(convert.safe_temp_stem("a" + four_byte * 40), "a" + four_byte * 39)
+        self.assertEqual(convert.safe_temp_stem("a" * 159 + "_bc"), "a" * 159)
+        for size in range(150, 170):
+            with self.subTest(size=size):
+                self.assert_shell_safe(convert.safe_temp_stem("é" * size))
+
+    def test_random_hostile_names_give_safe_stems(self):
+        import random
+        alphabet = ([chr(c) for c in range(32, 127)] + list("\t\n\r\x00\x7f")
+                    + list("《》（）·…—「」é\u0301\u20dd\ufe0f\u200b\u202e\u2028\ufeff中文한국어ـا")
+                    + ["\U00020000", "\U0001F600", "\udc80"])
+        rng = random.Random(1)
+        for _ in range(2000):
+            name = "".join(rng.choice(alphabet) for _ in range(rng.randint(0, 200)))
+            self.assert_shell_safe(convert.safe_temp_stem(name))
+
+    def test_temp_dir_names(self):
+        self.assertEqual(convert.build_temp_dir("/books/《三体》（刘慈欣）.epub"), "三体_刘慈欣_temp")
+        self.assertEqual(convert.build_temp_dir("/books/$(x).pdf", "work/a"), "work/a/x_temp")
+        self.assertEqual(convert.legacy_temp_dir("/books/$(x).pdf", "work/a"), "work/a/$(x)_temp")
+
+
+class ValidateTempRootTests(unittest.TestCase):
+    def test_accepts_safe_paths(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"HOME": "/home/me"}):
+            cases = {
+                "work": "work",
+                "work/sub-1.d/": "work/sub-1.d",
+                "/srv/books_2": "/srv/books_2",
+                "~/books": "/home/me/books",
+                "书/译本": "书/译本",
+                tmp: tmp,
+            }
+            for root, expected in cases.items():
+                with self.subTest(root=root):
+                    self.assertEqual(convert.validate_temp_root(root), expected)
+
+    def test_rejects_unsafe_paths(self):
+        cases = ["-x", "work/-x", "..", "work/../x", ".", "a/./b", "a//b", "my books",
+                 "a'b", "a$b", "a`b`", 'a"b', "a\\b", "a;b", "~nobody-here/x", "/", "",
+                 "a\nb", "a\u200bb", "\u0301work", "work/\u0903x"]
+        for root in cases:
+            with self.subTest(root=root), self.assertRaises(ValueError) as raised:
+                convert.validate_temp_root(root)
+            _assert_no_deletion_advice(self, str(raised.exception))
+
+    def test_names_the_bad_part(self):
+        with self.assertRaises(ValueError) as raised:
+            convert.validate_temp_root("work/my books/x")
+        self.assertIn("'my books'", str(raised.exception))
+        self.assertIn("leave temp_root out", str(raised.exception))
+
+    def test_rejects_an_existing_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, "file").write_text("x", encoding="utf-8")
+            with self.assertRaises(ValueError):
+                convert.validate_temp_root(str(Path(tmp, "file")))
+
+
+class ReadRequestTests(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+        self.book = self.root / "《书》 O'Brien $(x).epub"
+        self.book.write_bytes(b"epub")
+        self.pdf = self.root / "paper.pdf"
+        self.pdf.write_bytes(b"%PDF")
+        self.cover = self.root / "Cover.PNG"
+        self.cover.write_bytes(b"png")
+        self.path = self.root / "translate-book-request.json"
+
+    def read(self, data):
+        if isinstance(data, (dict, list)):
+            data = json.dumps(data, ensure_ascii=False)
+        if isinstance(data, str):
+            data = data.encode("utf-8")
+        self.path.write_bytes(data)
+        return convert.read_request(str(self.path))
+
+    def assert_rejected(self, data, needle):
+        self.path.write_bytes(b"")
+        before = sorted(p.name for p in self.root.iterdir())
+        with self.assertRaises(ValueError) as raised:
+            self.read(data)
+        self.assertIn(needle, str(raised.exception))
+        self.assertEqual(sorted(p.name for p in self.root.iterdir()), before)
+
+    def test_minimal_request_gets_defaults(self):
+        raw, request, read_from = self.read({"input": str(self.book)})
+        self.assertEqual(raw, self.path.read_bytes())
+        self.assertTrue(read_from.is_this(self.path.stat()))
+        self.assertEqual(read_from.data, raw)
+        self.assertEqual(request, {"input": str(self.book), "target_lang": "zh", "temp_root": None,
+                                   "cover": None, "parser": None})
+
+    def test_full_request(self):
+        _, request, _ = self.read({"input": str(self.pdf), "target_lang": "zh_TW", "temp_root": "work/a",
+                                "cover": str(self.cover), "parser": "marker"})
+        self.assertEqual(request, {"input": str(self.pdf), "target_lang": "zh-TW", "temp_root": "work/a",
+                                   "cover": str(self.cover), "parser": "marker"})
+
+    def test_expands_home_and_accepts_bom_and_nulls(self):
+        with mock.patch.dict(os.environ, {"HOME": str(self.root)}):
+            _, request, _ = self.read("\ufeff" + json.dumps(
+                {"input": "~/paper.pdf", "temp_root": None, "cover": None, "parser": None}))
+        self.assertEqual(request["input"], str(self.pdf))
+
+    def test_parser_args_are_refused_with_the_way_to_pass_other_options(self):
+        for value in (["--force_ocr"], [], None, "--x"):
+            with self.subTest(parser_args=value):
+                self.assert_rejected({"input": str(self.pdf), "parser": "marker", "parser_args": value},
+                                     "'parser_args' is not supported")
+        self.path.write_bytes(json.dumps({"input": str(self.pdf), "parser_args": []}).encode())
+        with self.assertRaises(ValueError) as raised:
+            convert.read_request(str(self.path))
+        self.assertIn("run the parser yourself", str(raised.exception))
+        self.assertIn("as input, with parser null", str(raised.exception))
+
+    def test_rejections(self):
+        cases = [
+            (b"\xff\xfe", "not UTF-8"),
+            ("{'input': 'x'}", "double quotes"),
+            ('{"input": "a", "input": "b"}', "more than once"),
+            ([str(self.book)], "JSON object"),
+            ({"input": str(self.book), "olang": "zh"}, "unknown key"),
+            ({}, "'input' is required"),
+            ({"input": 7}, "'input' must be a string"),
+            ({"input": "  "}, "'input' is empty"),
+            ('{"input": "C:\\new\\book.epub"}', "control character"),
+            ('{"input": "/books/a\\udcff.epub"}', "lone surrogate \\udcff"),
+            ({"input": str(self.root / "missing.epub")}, "not found"),
+            ({"input": str(self.root / "translate-book-request.json")}, "Unsupported file type"),
+            ({"input": str(self.book), "target_lang": "zh; rm -rf ~"}, "language code"),
+            ({"input": str(self.book), "temp_root": "../out"}, "temp_root"),
+            ({"input": str(self.book), "temp_root": "my books"}, "temp_root"),
+            ({"input": str(self.book), "cover": str(self.book)}, "Cover image"),
+            ({"input": str(self.book), "cover": str(self.root / "none.png")}, "not found"),
+            ({"input": str(self.pdf), "parser": "bash"}, "is not one of"),
+            ({"input": str(self.pdf), "parser": []}, "is not one of"),
+            ({"input": str(self.pdf), "parser": {"name": "marker"}}, "is not one of"),
+            ({"input": str(self.pdf), "parser": 1}, "is not one of"),
+            ({"input": str(self.book), "parser": "marker"}, "only reads PDF"),
+            ({"input": str(self.book), "pad": "x" * 70000}, "larger than"),
+        ]
+        for data, needle in cases:
+            with self.subTest(data=str(data)[:60]):
+                self.assert_rejected(data, needle)
+
+    def test_missing_request_file(self):
+        with self.assertRaises(ValueError) as raised:
+            convert.read_request(str(self.root / "none.json"))
+        self.assertIn("cannot read the request file", str(raised.exception))
+        self.assertIn("Write it before each run", str(raised.exception))
+
+
+class StoreRequestTests(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+        self.temp_dir = self.root / "book_temp"
+        self.temp_dir.mkdir()
+        self.path = self.root / "translate-book-request.json"
+        self.raw = b'{"input": "/books/a.epub"}'
+        self.request = {"input": "/books/a.epub", "target_lang": "zh", "temp_root": None,
+                        "cover": None, "parser": None}
+
+    def stored(self):
+        return json.loads((self.temp_dir / "request.json").read_text(encoding="utf-8"))
+
+    def read_from(self, path):
+        """The request file at path as read_request() hands it on."""
+        return convert.Own(os.open(path, os.O_RDONLY), Path(path).read_bytes())
+
+    def store(self, path=None, request=None):
+        """store_request for the request file at path as this run read it, if it is there."""
+        path = path or self.path
+        read_from = self.read_from(path) if path.exists() else convert.Own(None, b"")
+        convert.store_request(str(self.temp_dir), str(path), request or self.request, read_from)
+
+    def test_only_a_request_convert_stored_is_read_back(self):
+        full = dict(self.request, temp_root="work/a", cover="/books/c.png", parser="marker",
+                    target_lang="pt-BR")
+        for data in (self.request, full):
+            self.assertEqual(convert.check_stored_request(data), data)
+        bad = [[], None, {}, dict(self.request, parser_args=[]), dict(self.request, extra=1),
+               dict(self.request, input="a.epub"), dict(self.request, input=7),
+               dict(self.request, input="/books/a.txt"), dict(self.request, target_lang="zh_TW"),
+               dict(self.request, target_lang=None), dict(self.request, temp_root="../x"),
+               dict(self.request, temp_root=""), dict(self.request, cover="c.png"),
+               dict(self.request, cover="/books/c.txt"), dict(self.request, cover=7),
+               dict(self.request, parser="bash"), dict(self.request, parser=[])]
+        bad += [{k: v for k, v in self.request.items() if k != key} for key in self.request]
+        for data in bad:
+            with self.subTest(data=data):
+                with self.assertRaises(ValueError):
+                    convert.check_stored_request(data)
+
+    def test_stored_request_file_is_read_strictly(self):
+        path = self.temp_dir / "request.json"
+        self.assertIsNone(convert.load_stored_request(str(self.temp_dir)))
+        path.write_text(json.dumps(self.request), encoding="utf-8")
+        self.assertEqual(convert.load_stored_request(str(self.temp_dir)), self.request)
+        elsewhere = self.root / "elsewhere.json"
+        elsewhere.write_text(json.dumps(self.request), encoding="utf-8")
+        for content in ("{", '{"my": "notes"}', b"\xff", elsewhere, None):
+            with self.subTest(content=content):
+                if path.is_dir():
+                    path.rmdir()
+                else:
+                    path.unlink()
+                if content is None:
+                    path.mkdir()
+                elif isinstance(content, Path):
+                    path.symlink_to(content)
+                else:
+                    path.write_bytes(content if isinstance(content, bytes) else content.encode())
+                with self.assertRaises(ValueError) as raised:
+                    convert.load_stored_request(str(self.temp_dir))
+                self.assertIn("request.json", str(raised.exception))
+
+    def leftovers(self):
+        return sorted(p.name for p in self.root.iterdir() if p.name.startswith("."))
+
+    def test_a_fifo_put_in_place_of_the_request_is_left_and_nothing_waits(self):
+        # Opening a FIFO waits for a writer; the check must not open what it finds.
+        self.path.write_bytes(self.raw)
+        read_from = self.read_from(self.path)
+        self.addCleanup(read_from.close)
+        os.rename(self.path, self.root / "moved.json")
+        os.mkfifo(self.path)
+        removed = []
+        worker = threading.Thread(target=lambda: removed.append(convert._remove_own_file(str(self.path), read_from)),
+                                  daemon=True)
+        worker.start()
+        worker.join(10)
+        if worker.is_alive():
+            os.close(os.open(self.path, os.O_WRONLY | os.O_NONBLOCK))
+            self.fail("removing the request waited on a FIFO")
+        self.assertEqual(removed, [False])
+        self.assertTrue(stat.S_ISFIFO(os.lstat(self.path).st_mode))
+        self.assertEqual(self.leftovers(), [])
+
+    def test_a_file_that_is_not_the_one_read_is_not_moved_at_all(self):
+        self.path.write_bytes(self.raw)
+        read_from = self.read_from(self.path)
+        self.addCleanup(read_from.close)
+        replacement = self.root / "replacement.json"
+        replacement.write_bytes(self.raw)
+        replacement.replace(self.path)
+        with mock.patch.object(convert.os, "rename", side_effect=AssertionError("moved")):
+            self.assertFalse(convert._remove_own_file(str(self.path), read_from))
+        self.assertEqual(self.path.read_bytes(), self.raw)
+        self.assertEqual(self.leftovers(), [])
+
+    def test_stores_and_removes_an_unchanged_request(self):
+        self.path.write_bytes(self.raw)
+        self.store()
+        self.assertFalse(self.path.exists())
+        self.assertEqual(self.stored(), self.request)
+        self.assertEqual(self.leftovers(), [])
+
+    def test_keeps_a_request_rewritten_meanwhile(self):
+        self.path.write_bytes(self.raw)
+        read_from = self.read_from(self.path)
+        with open(self.path, "r+b") as f:
+            f.write(b'{"input": "/books/other.epub"}')
+            f.truncate()
+        convert.store_request(str(self.temp_dir), str(self.path), self.request, read_from)
+        self.assertEqual(self.path.read_bytes(), b'{"input": "/books/other.epub"}')
+        self.assertEqual(self.stored(), self.request)
+        self.assertEqual(self.leftovers(), [])
+
+    def test_keeps_another_file_with_the_same_bytes(self):
+        # Another run wrote the same request anew: not the file this run read.
+        self.path.write_bytes(self.raw)
+        read_from = self.read_from(self.path)
+        replacement = self.root / "replacement.json"
+        replacement.write_bytes(self.raw)
+        replacement.replace(self.path)
+        convert.store_request(str(self.temp_dir), str(self.path), self.request, read_from)
+        self.assertEqual(self.path.read_bytes(), self.raw)
+        self.assertEqual(self.leftovers(), [])
+
+    def test_keeps_a_request_written_after_the_check(self):
+        # The file read is moved aside before it is checked, so a request
+        # written to the fixed name after that is not what gets removed.
+        self.path.write_bytes(self.raw)
+        unlink = os.unlink
+
+        def write_then_unlink(path, *args, **kwargs):
+            self.path.write_bytes(b'{"input": "/books/next.epub"}')
+            unlink(path, *args, **kwargs)
+
+        with mock.patch.object(convert.os, "unlink", write_then_unlink):
+            self.store()
+        self.assertEqual(self.path.read_bytes(), b'{"input": "/books/next.epub"}')
+        self.assertEqual(self.leftovers(), [])
+
+    def test_puts_back_what_is_not_the_file_read(self):
+        target = self.root / "target.json"
+        target.write_bytes(self.raw)
+        self.path.symlink_to(target)
+        read_from = self.read_from(target)
+        convert.store_request(str(self.temp_dir), str(self.path), self.request, read_from)
+        self.assertTrue(self.path.is_symlink())
+        self.assertEqual(target.read_bytes(), self.raw)
+        self.assertEqual(self.leftovers(), [])
+
+    def test_a_request_written_while_it_was_aside_is_not_overwritten(self):
+        self.path.write_bytes(self.raw)
+        read_from = self.read_from(self.path)
+        replacement = self.root / "replacement.json"
+        replacement.write_bytes(self.raw)
+        rename = os.rename
+
+        def rename_then_write(source, destination, *args, **kwargs):
+            # The file is replaced after it was checked and before it goes aside.
+            aside = Path(destination).name.startswith(".translate-book-")
+            if aside:
+                replacement.replace(source)
+            rename(source, destination, *args, **kwargs)
+            if aside:
+                self.path.write_bytes(b'{"input": "/books/next.epub"}')
+
+        with mock.patch.object(convert.os, "rename", rename_then_write), \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            convert.store_request(str(self.temp_dir), str(self.path), self.request, read_from)
+        self.assertEqual(self.path.read_bytes(), b'{"input": "/books/next.epub"}')
+        aside = self.leftovers()
+        self.assertEqual(len(aside), 1)
+        self.assertEqual((self.root / aside[0]).read_bytes(), self.raw)
+        self.assertIn(f"Warning: {self.path} changed while this run was checking it", out.getvalue())
+
+    def test_request_read_from_the_stored_copy_stays(self):
+        # --request "<temp_dir>/request.json" reads the bytes an earlier run
+        # stored, which storing again writes unchanged.
+        path = self.temp_dir / "request.json"
+        self.store()
+        raw = path.read_bytes()
+        self.store(path)
+        self.assertEqual(path.read_bytes(), raw)
+        self.assertEqual(self.stored(), self.request)
+
+    def test_stored_request_keeps_non_ascii_text_readable(self):
+        request = dict(self.request, input="/books/《三体》.epub")
+        raw = json.dumps(request, ensure_ascii=False).encode("utf-8")
+        self.path.write_bytes(raw)
+        self.store(request=request)
+        self.assertIn("《三体》", (self.temp_dir / "request.json").read_text(encoding="utf-8"))
+        self.assertEqual(self.stored(), request)
+
+
+class RequestRunTests(unittest.TestCase):
+    """convert.py --request, run the way SKILL.md's Step 2 runs it."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+        self.cwd = self.root / "cwd"
+        self.cwd.mkdir()
+        self.path_dirs, self.fake_env = [], {}
+        self.book = self.root / "books" / "《书》 O'Brien \"$(touch pwned)\" `x`.md"
+        self.book.parent.mkdir()
+        self.book.write_text("# 书\n\nBody text.\n", encoding="utf-8")
+        self.request_path = self.cwd / convert.REQUEST_FILE_NAME
+
+    def write_request(self, **fields):
+        request = {"input": str(self.book), "target_lang": "zh", **fields}
+        self.request_path.write_text(json.dumps(request, ensure_ascii=False), encoding="utf-8")
+
+    def run_step_2(self, *extra, env=None):
+        return process_guard.run_script("convert.py", "--request", convert.REQUEST_FILE_NAME, *extra,
+                                        cwd=self.cwd, path_dirs=self.path_dirs, env={**self.fake_env, **(env or {})})
+
+    def temp_dir(self, temp_root=None):
+        path = Path(convert.build_temp_dir(str(self.book), temp_root))
+        return path if path.is_absolute() else self.cwd / path
+
+    def test_request_is_stored_in_the_temp_dir_and_every_rerun_works(self):
+        self.write_request(temp_root="work/a")
+        first = self.run_step_2()
+        self.assertEqual(first.returncode, 0, first.stdout)
+        temp_dir = self.temp_dir("work/a")
+        self.assertIn(f"Input file: {self.book}\n", first.stdout)
+        self.assertIn(f"Temp directory: {convert.build_temp_dir(str(self.book), 'work/a')}\n", first.stdout)
+        self.assertFalse(self.request_path.exists())
+        stored = json.loads((temp_dir / "request.json").read_text(encoding="utf-8"))
+        self.assertEqual(stored["input"], str(self.book))
+
+        missing = self.run_step_2()
+        self.assertEqual(missing.returncode, 1)
+        self.assertIn("cannot read the request file", missing.stdout)
+
+        self.write_request(temp_root="work/a")
+        rerun = self.run_step_2()
+        self.assertEqual(rerun.returncode, 0, rerun.stdout)
+        self.assertIn("Skipping Markdown import", rerun.stdout)
+
+        shutil.rmtree(temp_dir)
+        self.write_request(temp_root="work/a")
+        fresh = self.run_step_2()
+        self.assertEqual(fresh.returncode, 0, fresh.stdout)
+        self.assertTrue((temp_dir / "chunk0001.md").is_file())
+        self.assertEqual(list(self.root.rglob("pwned*")), [])
+
+    def test_rejected_request_is_kept_and_creates_nothing(self):
+        self.write_request(temp_root="../out")
+        result = self.run_step_2()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("temp_root", result.stdout)
+        self.assertEqual(sorted(p.name for p in self.cwd.iterdir()), [convert.REQUEST_FILE_NAME])
+
+    def fake_parsers(self):
+        bin_dir = self.root / "bin"
+        bin_dir.mkdir()
+        for executable in convert.PARSERS.values():
+            path = bin_dir / executable
+            path.write_text(FAKE_PARSER.format(python=sys.executable), encoding="utf-8")
+            path.chmod(0o755)
+        self.path_dirs = [bin_dir]
+        self.fake_env = {"FAKE_PARSER_RECORD": str(self.root / "record.json")}
+
+    def test_failed_parser_run_leaves_nothing_and_says_how_to_go_on(self):
+        self.fake_parsers()
+        self.book = self.book.with_suffix(".pdf")
+        self.book.write_bytes(b"%PDF-1.4 paper")
+        self.write_request(parser="docling")
+        failed = self.run_step_2(env={"FAKE_EXIT": "2", "FAKE_OUTPUTS": "[]"})
+        self.assertEqual(failed.returncode, 1, failed.stdout)
+        self.assertIn("exited with status 2", failed.stdout)
+        self.assertIn("parser output line", failed.stdout)
+        self.assertIn("run docling yourself", failed.stdout)
+        self.assertTrue(self.request_path.exists())
+        self.assertFalse(os.path.lexists(self.temp_dir()))
+
+        self.write_request(parser="docling", target_lang="ja")
+        fixed = self.run_step_2(env={"FAKE_EXIT": "0", "FAKE_OUTPUTS": json.dumps(["paper.md"])})
+        self.assertEqual(fixed.returncode, 0, fixed.stdout)
+        self.assertTrue((self.temp_dir() / "chunk0001.md").is_file())
+        self.assertFalse(os.path.lexists(self.temp_dir() / convert.PARSED_DIR))
+        stored = convert._load_source_fingerprint(str(self.temp_dir()))
+        self.assertEqual((stored["parser"], stored["target_lang"]), ("docling", "ja"))
+
+    def test_failed_import_keeps_this_books_claim(self):
+        def import_then_fail(markdown_file, input_md, temp_dir, **kwargs):
+            os.mkdir(os.path.join(temp_dir, "images"))
+            return False
+
+        self.write_request()
+        out = io.StringIO()
+        with mock.patch.object(sys, "argv", ["convert.py", "--request", convert.REQUEST_FILE_NAME]), \
+                mock.patch.object(convert, "import_markdown_input", side_effect=import_then_fail), \
+                contextlib.chdir(self.cwd), contextlib.redirect_stdout(out), \
+                self.assertRaises(SystemExit):
+            convert.main()
+        self.assertEqual(sorted(p.name for p in self.temp_dir().iterdir()),
+                         sorted([convert.SOURCE_FINGERPRINT_FILE, "images"]))
+        shutil.rmtree(self.temp_dir() / "images")
+        rerun = self.run_step_2()
+        self.assertEqual(rerun.returncode, 0, rerun.stdout)
+
+    def test_files_the_user_keeps_in_the_temp_dir_are_never_deleted(self):
+        self.write_request(temp_root="work/a")
+        unclaimed = self.temp_dir("work/a")
+        unclaimed.mkdir(parents=True)
+        (unclaimed / "source").mkdir()
+        (unclaimed / "source" / "keep.txt").write_text("mine", encoding="utf-8")
+        refused = self.run_step_2()
+        self.assertEqual(refused.returncode, 1, refused.stdout)
+        self.assertIn("holds no translate-book conversion", refused.stdout)
+        self.assertEqual((unclaimed / "source" / "keep.txt").read_text(encoding="utf-8"), "mine")
+
+        self.write_request()
+        self.assertEqual(self.run_step_2().returncode, 0)
+        temp_dir = self.temp_dir()
+        kept = {"source/keep.txt": "a", "parsed/keep.txt": "b", "parser.log": "c", "cover.png": "d",
+                "cover.jpg": "e"}
+        for name, text in kept.items():
+            (temp_dir / name).parent.mkdir(exist_ok=True)
+            (temp_dir / name).write_text(text, encoding="utf-8")
+        cover = self.root / "c.webp"
+        cover.write_bytes(b"webp")
+        for fields in ({}, {"cover": str(cover)}, {}):
+            with self.subTest(fields=fields):
+                self.write_request(**fields)
+                result = self.run_step_2()
+                self.assertEqual(result.returncode, 0, result.stdout)
+                for name, text in kept.items():
+                    self.assertEqual((temp_dir / name).read_text(encoding="utf-8"), text, name)
+                self.assertEqual(sorted(p.name for p in temp_dir.glob("cover*")), ["cover.jpg", "cover.png"])
+
+    def test_a_directory_put_in_place_of_parsed_is_left_as_it_is(self):
+        # While the parser runs, parsed/ is renamed and another directory takes its name.
+        self.fake_parsers()
+        self.book = self.book.with_suffix(".pdf")
+        self.book.write_bytes(b"%PDF-1.4 paper")
+        self.write_request(parser="mineru")
+        result = self.run_step_2(env={"FAKE_EXIT": "1", "FAKE_SWAP": "1", "FAKE_OUTPUTS": json.dumps(["book.md"])})
+        self.assertEqual(result.returncode, 1, result.stdout)
+        parsed = self.temp_dir() / convert.PARSED_DIR
+        self.assertEqual((parsed / "secret.txt").read_text(encoding="utf-8"), "not the parser's")
+        self.assertIn(f"Warning: {convert.build_temp_dir(str(self.book), None)}/parsed was left as it is",
+                      result.stdout)
+        # The directory this run created is emptied wherever it went, and nothing else is.
+        self.assertEqual(os.listdir(f"{parsed}-held"), [])
+
+    def test_a_directory_put_in_place_of_the_scratch_dir_is_left_as_it_is(self):
+        # While the run converts, the directory it copied the book into is renamed and another
+        # directory takes its name.
+        real_import, real_rename, swapped, moved = convert.import_markdown_input, os.rename, [], []
+
+        def import_then_swap(markdown_copy, *args, **kwargs):
+            imported = real_import(markdown_copy, *args, **kwargs)
+            scratch = os.path.dirname(markdown_copy)
+            real_rename(scratch, f"{scratch}-held")
+            os.mkdir(scratch)
+            Path(scratch, "secret.txt").write_text("not this run's", encoding="utf-8")
+            swapped.append(scratch)
+            return imported
+
+        def rename(source, *args, **kwargs):
+            moved.append(os.fspath(source))
+            return real_rename(source, *args, **kwargs)
+
+        self.write_request()
+        out = io.StringIO()
+        with mock.patch.object(sys, "argv", ["convert.py", "--request", convert.REQUEST_FILE_NAME]), \
+                mock.patch.object(convert, "import_markdown_input", side_effect=import_then_swap), \
+                mock.patch.object(convert.os, "rename", side_effect=rename), \
+                contextlib.chdir(self.cwd), contextlib.redirect_stdout(out):
+            convert.main()
+        [scratch] = swapped
+        self.addCleanup(shutil.rmtree, scratch)
+        self.addCleanup(os.rmdir, f"{scratch}-held")
+        self.assertTrue((self.temp_dir() / "chunk0001.md").is_file())
+        self.assertEqual(Path(scratch, "secret.txt").read_text(encoding="utf-8"), "not this run's")
+        self.assertNotIn(scratch, moved)
+        self.assertIn(f"Warning: {scratch} was left as it is", out.getvalue())
+        self.assertEqual(os.listdir(f"{scratch}-held"), [])
+
+    def test_a_directory_that_cannot_be_listed_is_not_held_open(self):
+        opened, real_open = [], os.open
+
+        def open_and_note(*args, **kwargs):
+            opened.append(real_open(*args, **kwargs))
+            return opened[-1]
+
+        with mock.patch.object(convert.os, "open", side_effect=open_and_note), \
+                mock.patch.object(convert.os, "listdir", side_effect=OSError("cannot list")):
+            try:
+                convert.OwnDir(str(self.root))
+            except OSError as e:
+                # Its traceback keeps the half-made OwnDir alive, as a caller that keeps the error would.
+                raised = e
+            else:
+                self.fail("OwnDir took a directory it could not list")
+        self.assertEqual(str(raised), "cannot list")
+        [fd] = opened
+        with self.assertRaises(OSError):
+            os.fstat(fd)
+
+    def test_parser_output_dir_made_by_someone_else_is_not_used(self):
+        self.fake_parsers()
+        self.book = self.book.with_suffix(".pdf")
+        self.book.write_bytes(b"%PDF-1.4 paper")
+        temp_dir = self.temp_dir()
+        temp_dir.mkdir()
+        convert._write_source_fingerprint(str(temp_dir), convert.run_identity(str(self.book), "zh", "docling"))
+        (temp_dir / "parsed").mkdir()
+        (temp_dir / "parsed" / "keep.md").write_text("mine", encoding="utf-8")
+        self.write_request(parser="docling")
+        result = self.run_step_2(env={"FAKE_OUTPUTS": json.dumps(["paper.md"])})
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("already exists", result.stdout)
+        self.assertEqual((temp_dir / "parsed" / "keep.md").read_text(encoding="utf-8"), "mine")
+        self.assertFalse((self.root / "record.json").exists())
+
+    def test_request_json_written_by_someone_else_is_not_replaced(self):
+        self.write_request()
+        self.assertEqual(self.run_step_2().returncode, 0)
+        stored = self.temp_dir() / "request.json"
+        stored.write_text('{"my": "notes"}', encoding="utf-8")
+        self.write_request()
+        result = self.run_step_2()
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("request.json", result.stdout)
+        self.assertEqual(stored.read_text(encoding="utf-8"), '{"my": "notes"}')
+        self.assertTrue(self.request_path.exists())
+
+    def test_missing_calibre_creates_nothing(self):
+        self.book = self.book.with_suffix(".epub")
+        self.book.write_bytes(b"epub bytes")
+        for target_lang in ("zh", "ja"):
+            with self.subTest(target_lang=target_lang):
+                self.write_request(target_lang=target_lang)
+                out = io.StringIO()
+                with mock.patch.object(sys, "argv", ["convert.py", "--request", convert.REQUEST_FILE_NAME]), \
+                        mock.patch.object(convert, "find_calibre_convert", return_value=None), \
+                        contextlib.chdir(self.cwd), contextlib.redirect_stdout(out), \
+                        self.assertRaises(SystemExit) as raised:
+                    convert.main()
+                self.assertEqual(raised.exception.code, 1)
+                self.assertIn("Calibre ebook-convert not found", out.getvalue())
+                self.assertEqual(sorted(p.name for p in self.cwd.iterdir()), [convert.REQUEST_FILE_NAME])
+
+    def test_book_replaced_during_the_run_is_not_converted(self):
+        real_identity = convert.run_identity
+
+        def identify_then_replace(*args, **kwargs):
+            identity = real_identity(*args, **kwargs)
+            self.book.write_text("# Other\n\nAnother book entirely.\n", encoding="utf-8")
+            return identity
+
+        self.write_request()
+        out = io.StringIO()
+        with mock.patch.object(sys, "argv", ["convert.py", "--request", convert.REQUEST_FILE_NAME]), \
+                mock.patch.object(convert, "run_identity", side_effect=identify_then_replace), \
+                contextlib.chdir(self.cwd), contextlib.redirect_stdout(out), \
+                self.assertRaises(SystemExit) as raised:
+            convert.main()
+        self.assertEqual(raised.exception.code, 1)
+        self.assertIn("changed while it was being read", out.getvalue())
+        self.assertEqual(sorted(p.name for p in self.cwd.iterdir()), [convert.REQUEST_FILE_NAME])
+
+        rerun = self.run_step_2()
+        self.assertEqual(rerun.returncode, 0, rerun.stdout)
+        self.assertIn("Another book entirely.", (self.temp_dir() / "chunk0001.md").read_text(encoding="utf-8"))
+
+    def test_conversion_reads_a_verified_copy_of_the_book(self):
+        seen = []
+
+        def fake_calibre(input_file, htmlz_file, calibre_path):
+            seen.append((input_file, Path(input_file).read_bytes()))
+            with zipfile.ZipFile(htmlz_file, "w") as z:
+                z.writestr("index.html", "<html><body><p>Body text.</p></body></html>")
+            return True
+
+        def fake_markdown(html_file, md_file, *args, **kwargs):
+            Path(md_file).write_text("# Title\n\nBody text.\n", encoding="utf-8")
+            return True
+
+        self.book = self.book.with_suffix(".epub")
+        self.book.write_bytes(b"epub bytes")
+        self.write_request()
+        with mock.patch.object(sys, "argv", ["convert.py", "--request", convert.REQUEST_FILE_NAME]), \
+                mock.patch.object(convert, "find_calibre_convert", return_value="ebook-convert"), \
+                mock.patch.object(convert, "convert_to_htmlz", side_effect=fake_calibre), \
+                mock.patch.object(convert, "convert_html_to_markdown", side_effect=fake_markdown), \
+                contextlib.chdir(self.cwd), contextlib.redirect_stdout(io.StringIO()):
+            convert.main()
+        [(path, data)] = seen
+        self.assertEqual(data, b"epub bytes")
+        self.assertEqual(Path(path).name, self.book.name)
+        self.assertFalse(Path(path).is_relative_to(self.root), path)
+        self.assertFalse(Path(path).parent.exists())
+        self.assertNotIn("source", os.listdir(self.temp_dir()))
+        self.assertEqual(convert._load_source_fingerprint(str(self.temp_dir()))["sha256"],
+                         convert.file_hash(str(self.book)))
+
+    def test_parser_reads_a_verified_copy_of_the_book(self):
+        self.fake_parsers()
+        self.book = self.book.with_suffix(".pdf")
+        self.book.write_bytes(b"%PDF-1.4 paper")
+        self.write_request(parser="docling")
+        result = self.run_step_2(env={"FAKE_OUTPUTS": json.dumps(["paper.md"])})
+        self.assertEqual(result.returncode, 0, result.stdout)
+        argv = json.loads((self.root / "record.json").read_text(encoding="utf-8"))["argv"]
+        copy = Path(argv[0])
+        self.assertEqual(copy.name, self.book.name)
+        self.assertNotEqual(copy, self.book)
+        self.assertFalse(copy.is_relative_to(self.root), copy)
+        self.assertFalse(copy.parent.exists())
+        self.assertEqual(sorted(os.listdir(self.temp_dir())),
+                         sorted(["chunk0001.md", "config.txt", "input.md", "manifest.json", "request.json",
+                                 convert.SOURCE_FINGERPRINT_FILE]))
+
+    def test_markdown_images_still_come_from_the_books_directory(self):
+        (self.book.parent / "img").mkdir()
+        (self.book.parent / "img" / "fig.png").write_bytes(b"png bytes")
+        self.book.write_text("# 书\n\n![a figure](img/fig.png)\n\nBody text.\n", encoding="utf-8")
+        self.write_request()
+        result = self.run_step_2()
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertEqual((self.temp_dir() / "images" / "fig.png").read_bytes(), b"png bytes")
+        self.assertIn("images/fig.png", (self.temp_dir() / "chunk0001.md").read_text(encoding="utf-8"))
+
+    def test_request_excludes_command_line_values(self):
+        self.write_request()
+        result = self.run_step_2(str(self.book))
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("give the input file, the language and temp_root in the request file", result.stderr)
+
+    def test_cover_is_named_in_the_stored_request_and_not_copied(self):
+        png = self.root / "c.png"
+        png.write_bytes(b"png bytes")
+        for cover in (png, None):
+            with self.subTest(cover=cover):
+                self.write_request(cover=str(cover) if cover else None)
+                result = self.run_step_2()
+                self.assertEqual(result.returncode, 0, result.stdout)
+                stored = json.loads((self.temp_dir() / "request.json").read_text(encoding="utf-8"))
+                self.assertEqual(stored["cover"], str(cover) if cover else None)
+                self.assertEqual(list(self.temp_dir().glob("cover*")), [])
+
+    def test_temp_dir_on_another_file_system(self):
+        shm = Path("/dev/shm")
+        if not shm.is_dir() or shm.stat().st_dev == self.root.stat().st_dev:
+            self.skipTest("no second file system")
+        with tempfile.TemporaryDirectory(dir=shm) as other:
+            try:
+                root = convert.validate_temp_root(other)
+            except ValueError:
+                self.skipTest("the second file system's path is not a safe temp_root")
+            self.write_request(temp_root=root)
+            result = self.run_step_2()
+            self.assertEqual(result.returncode, 0, result.stdout)
+            self.assertFalse(self.request_path.exists())
+            self.assertTrue((self.temp_dir(root) / "request.json").is_file())
+
+    def test_second_book_with_the_same_temp_dir_name_is_refused(self):
+        self.write_request()
+        self.assertEqual(self.run_step_2().returncode, 0)
+        other = self.book.with_name("《书》 O_Brien _$(touch pwned)_ `x`.md")
+        other.write_text("# Another book\n", encoding="utf-8")
+        self.assertEqual(convert.build_temp_dir(str(other)), convert.build_temp_dir(str(self.book)))
+        self.request_path.write_text(json.dumps({"input": str(other)}, ensure_ascii=False), encoding="utf-8")
+
+        result = self.run_step_2()
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("different source bytes", result.stdout)
+        self.assertIn("Nothing was changed", result.stdout)
+        _assert_no_deletion_advice(self, result.stdout)
+        self.assertTrue(self.request_path.exists())
+
+    def test_another_target_language_is_refused(self):
+        self.write_request()
+        self.assertEqual(self.run_step_2().returncode, 0)
+        self.write_request(target_lang="ja")
+        result = self.run_step_2()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("translation into zh", result.stdout)
+        _assert_no_deletion_advice(self, result.stdout)
+
+
+class PrepareTempDirTests(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+        self.work = self.root / "work"
+        self.work.mkdir()
+        self.book = self.root / "《三体》 (1).epub"
+        self.book.write_bytes(b"book bytes")
+        self.identity = convert.run_identity(str(self.book), "zh")
+        self.legacy = Path(convert.legacy_temp_dir(str(self.book), str(self.work)))
+        self.new = Path(convert.build_temp_dir(str(self.book), str(self.work)))
+        self.assertEqual(self.new.name, "三体_1_temp")
+
+    def prepare(self, book=None, identity=None):
+        return self.claim(book, identity)[:2]
+
+    def claim(self, book=None, identity=None):
+        book = book or self.book
+        return convert.prepare_temp_dir(str(book), str(self.work), identity or self.identity)
+
+    def make_cache(self, path, identity=None, config_name=None):
+        path.mkdir()
+        (path / "chunk0001.md").write_text("cached chunk\n", encoding="utf-8")
+        if identity:
+            convert._write_source_fingerprint(str(path), identity)
+        if config_name:
+            (path / "config.txt").write_text(f"input_file=/old/{config_name}\n", encoding="utf-8")
+
+    def assert_refused(self, needle, book=None, identity=None):
+        before = sorted(str(p.relative_to(self.root)) for p in self.root.rglob("*"))
+        with self.assertRaises(convert.TempDirError) as raised:
+            self.prepare(book, identity)
+        self.assertIn(needle, str(raised.exception))
+        _assert_no_deletion_advice(self, str(raised.exception))
+        self.assertEqual(sorted(str(p.relative_to(self.root)) for p in self.root.rglob("*")), before)
+
+    def other_identity(self):
+        other = self.root / "other.epub"
+        other.write_bytes(b"another book")
+        return convert.run_identity(str(other), "zh")
+
+    def test_fresh_temp_dir_is_claimed_at_once(self):
+        temp_dir, notes = self.prepare()
+        self.assertEqual((temp_dir, notes), (str(self.new), []))
+        self.assertEqual(os.listdir(temp_dir), [convert.SOURCE_FINGERPRINT_FILE])
+        other = self.root / "三体 1.epub"
+        other.write_bytes(b"another book")
+        self.assertEqual(convert.build_temp_dir(str(other), str(self.work)), str(self.new))
+        self.assert_refused("different source bytes", other, convert.run_identity(str(other), "zh"))
+
+    def test_this_books_fingerprinted_legacy_dir_is_renamed(self):
+        self.make_cache(self.legacy, self.identity)
+        temp_dir, notes = self.prepare()
+        self.assertFalse(self.legacy.exists())
+        self.assertEqual((self.new / "chunk0001.md").read_text(encoding="utf-8"), "cached chunk\n")
+        self.assertTrue(notes[0].startswith(f"Renamed {self.legacy} to {self.new}"), notes)
+
+    def test_unfingerprinted_legacy_dir_of_the_same_file_name_is_renamed_and_adopted(self):
+        self.make_cache(self.legacy, config_name=self.book.name)
+        with open(self.legacy / "config.txt", "a", encoding="utf-8") as f:
+            f.write("output_lang=zh\n")
+        temp_dir, notes = self.prepare()
+        self.assertFalse(self.legacy.exists())
+        self.assertTrue(notes[0].startswith("Renamed"), notes)
+        self.assertTrue(notes[1].startswith("Warning:"), notes)
+        self.assertEqual(convert._load_source_fingerprint(temp_dir)["sha256"], self.identity["sha256"])
+
+    def test_legacy_dir_of_another_book_or_file_is_left_alone(self):
+        for identity, config_name in ((self.other_identity(), None), (None, "other.epub"), (None, None)):
+            with self.subTest(identity=bool(identity), config_name=config_name):
+                self.make_cache(self.legacy, identity, config_name)
+                temp_dir, notes = self.prepare()
+                self.assertTrue(notes[0].startswith(f"Note: {self.legacy} was left as it is"), notes)
+                self.assertTrue((self.legacy / "chunk0001.md").exists())
+                self.assertEqual(os.listdir(temp_dir), [convert.SOURCE_FINGERPRINT_FILE])
+                shutil.rmtree(self.legacy)
+                shutil.rmtree(self.new)
+
+    def test_symlinked_legacy_dir_is_refused(self):
+        real = self.root / "real_temp"
+        self.make_cache(real, self.identity)
+        self.legacy.symlink_to(real, target_is_directory=True)
+        self.assert_refused("is a symlink")
+
+    def test_legacy_file_is_ignored(self):
+        self.legacy.write_text("not a directory", encoding="utf-8")
+        temp_dir, notes = self.prepare()
+        self.assertEqual(notes, [])
+        self.assertTrue(self.legacy.is_file())
+
+    def test_new_dir_holding_this_book_wins_over_the_legacy_dir(self):
+        self.make_cache(self.legacy, self.identity)
+        self.make_cache(self.new, self.identity)
+        temp_dir, notes = self.prepare()
+        self.assertTrue(notes[0].startswith(f"Note: {self.legacy} was left as it is; using"), notes)
+        self.assertTrue(self.legacy.exists())
+
+    def test_taken_new_name_stops_the_rename(self):
+        self.make_cache(self.legacy, self.identity)
+        for setup in ("other book", "empty", "foreign file"):
+            with self.subTest(setup=setup):
+                if setup == "other book":
+                    self.make_cache(self.new, self.other_identity())
+                else:
+                    self.new.mkdir()
+                    if setup == "foreign file":
+                        (self.new / "notes.txt").write_text("mine", encoding="utf-8")
+                self.assert_refused("already exists")
+                shutil.rmtree(self.new)
+
+    def test_same_directory_under_another_spelling_is_not_renamed(self):
+        self.make_cache(self.new, self.identity)
+        spelling = os.path.join(str(self.work), ".", self.new.name)
+        with mock.patch.object(convert, "legacy_temp_dir", return_value=spelling):
+            temp_dir, notes = self.prepare()
+        self.assertEqual((temp_dir, notes), (str(self.new), []))
+        self.assertTrue((self.new / "chunk0001.md").exists())
+
+    def test_symlink_or_file_at_the_temp_dir_is_refused(self):
+        target = self.root / "elsewhere"
+        target.mkdir()
+        self.new.symlink_to(target, target_is_directory=True)
+        self.assert_refused("is a symlink")
+        self.new.unlink()
+        self.new.write_text("x", encoding="utf-8")
+        self.assert_refused("is not a directory")
+
+    def test_foreign_files_in_the_temp_dir_are_refused(self):
+        self.new.mkdir()
+        (self.new / "notes.txt").write_text("mine", encoding="utf-8")
+        self.assert_refused("holds no translate-book conversion")
+
+    def test_other_parser_settings_are_refused(self):
+        marker = dict(self.identity, parser="marker")
+        self.prepare(identity=marker)
+        (self.new / "input.md").write_text("# Parsed\n", encoding="utf-8")
+        for other in (self.identity, dict(marker, parser="docling")):
+            with self.subTest(parser=other["parser"]):
+                self.assert_refused("which would give different chunks", identity=other)
+        self.assertEqual(self.prepare(identity=dict(marker))[0], str(self.new))
+
+    def test_same_book_without_conversion_state_takes_new_settings(self):
+        # An earlier run of this book stopped (or was killed) before it made
+        # anything: its settings must not lock the directory.
+        failed = dict(self.identity, parser="docling")
+        self.prepare(identity=failed)
+        (self.new / "images").mkdir()
+        for fixed in (dict(failed, target_lang="ja"), self.identity):
+            with self.subTest(parser=fixed["parser"], target_lang=fixed["target_lang"]):
+                temp_dir, notes = self.prepare(identity=fixed)
+                self.assertEqual(temp_dir, str(self.new))
+                self.assertEqual(convert._load_source_fingerprint(temp_dir), fixed)
+        self.assert_refused("different source bytes", identity=self.other_identity())
+
+    def assert_no_leftovers(self):
+        self.assertEqual([p.name for p in self.work.iterdir() if p.name.startswith(".")], [])
+        if self.new.is_dir():
+            self.assertEqual([p.name for p in self.new.iterdir() if p.name.startswith(".")], [])
+
+    def test_failed_run_gives_up_only_a_claim_that_holds_nothing_else(self):
+        fingerprint = self.new / convert.SOURCE_FINGERPRINT_FILE
+        for made_here in (True, False):
+            with self.subTest(made_here=made_here):
+                if not made_here:
+                    self.new.mkdir()
+                _, _, claim = self.claim()
+                self.assertEqual(claim.directory is not None, made_here)
+                convert.release_temp_dir(str(self.new), claim)
+                self.assertEqual(os.path.lexists(self.new), not made_here)
+                self.assertFalse(os.path.lexists(fingerprint))
+                if not made_here:
+                    self.new.rmdir()
+        _, _, claim = self.claim()
+        (self.new / "images").mkdir()
+        convert.release_temp_dir(str(self.new), claim)
+        self.assertEqual(convert._load_source_fingerprint(str(self.new)), self.identity)
+        self.assert_no_leftovers()
+
+    def test_failed_run_that_joined_removes_nothing(self):
+        # Another run of this book claimed the temp dir; this one joined it.
+        self.claim()
+        fingerprint = self.new / convert.SOURCE_FINGERPRINT_FILE
+        before = (fingerprint.stat().st_ino, fingerprint.read_bytes())
+        _, _, joined = self.claim()
+        self.assertEqual(joined, convert.TempDirClaim(None, None))
+        convert.release_temp_dir(str(self.new), joined)
+        self.assertEqual((fingerprint.stat().st_ino, fingerprint.read_bytes()), before)
+
+    def test_failed_run_keeps_a_fingerprint_written_anew_meanwhile(self):
+        _, _, claim = self.claim()
+        # Another run of this book with other settings restarts the temp dir,
+        # then a third with this run's settings writes this run's bytes anew.
+        self.claim(identity=dict(self.identity, target_lang="ja"))
+        _, _, restarted = self.claim()
+        self.assertIsNone(restarted.directory)
+        self.assertIsNotNone(restarted.fingerprint)
+        convert.release_temp_dir(str(self.new), claim)
+        self.assertEqual(convert._load_source_fingerprint(str(self.new)), self.identity)
+        convert.release_temp_dir(str(self.new), restarted)
+        self.assertFalse(os.path.lexists(self.new / convert.SOURCE_FINGERPRINT_FILE))
+        self.assertTrue(self.new.is_dir())
+        self.assert_no_leftovers()
+
+    def test_failed_run_keeps_a_temp_dir_made_anew_meanwhile(self):
+        _, _, claim = self.claim()
+        shutil.rmtree(self.new)
+        _, _, other = self.claim()
+        self.assertIsNotNone(other.directory)
+        self.assertFalse(claim.directory.is_this(self.new.stat()))
+        convert.release_temp_dir(str(self.new), claim)
+        self.assertEqual(convert._load_source_fingerprint(str(self.new)), self.identity)
+        self.assert_no_leftovers()
+
+    def test_failed_run_keeps_a_temp_dir_put_in_its_place_after_it_was_checked(self):
+        # Between the check where it is and the move aside, another directory takes its name.
+        _, _, claim = self.claim()
+        held, rename = self.work / "held", os.rename
+
+        def swap_then_rename(source, destination, *args, **kwargs):
+            if os.fspath(source) == str(self.new) and Path(destination).name.startswith(".translate-book-"):
+                rename(source, held)
+                os.mkdir(source)
+            return rename(source, destination, *args, **kwargs)
+
+        with mock.patch.object(convert.os, "rename", swap_then_rename):
+            convert.release_temp_dir(str(self.new), claim)
+        self.assertEqual(os.listdir(self.new), [])
+        self.assertEqual(os.listdir(held), [])
+        self.assert_no_leftovers()
+
+    def test_failed_run_keeps_an_empty_temp_dir_made_anew_after_its_fingerprint_went(self):
+        _, _, claim = self.claim()
+        remove_own_file = convert._remove_own_file
+
+        def then_another_run_makes_the_dir_anew(path, own):
+            removed = remove_own_file(path, own)
+            os.rmdir(self.new)
+            os.mkdir(self.new)
+            return removed
+
+        with mock.patch.object(convert, "_remove_own_file", then_another_run_makes_the_dir_anew):
+            convert.release_temp_dir(str(self.new), claim)
+        self.assertEqual(os.listdir(self.new), [])
+        self.assert_no_leftovers()
+
+    def test_unreadable_fingerprint_is_refused(self):
+        self.make_cache(self.new)
+        (self.new / convert.SOURCE_FINGERPRINT_FILE).write_text('{"sha256": "x"', encoding="utf-8")
+        (self.new / "config.txt").write_text(
+            f"input_file=/old/{self.book.name}\noutput_lang=zh\n", encoding="utf-8")
+        self.assert_refused(f"{convert.SOURCE_FINGERPRINT_FILE} cannot be read")
+
+    def test_legacy_dir_with_unreadable_fingerprint_or_other_language_is_left_alone(self):
+        for fingerprint, config in (("{", "output_lang=zh\n"), (None, "output_lang=ja\n")):
+            with self.subTest(fingerprint=fingerprint, config=config):
+                self.make_cache(self.legacy, config_name=self.book.name)
+                with open(self.legacy / "config.txt", "a", encoding="utf-8") as f:
+                    f.write(config)
+                if fingerprint:
+                    (self.legacy / convert.SOURCE_FINGERPRINT_FILE).write_text(fingerprint, encoding="utf-8")
+                temp_dir, notes = self.prepare()
+                self.assertTrue(notes[0].startswith(f"Note: {self.legacy} was left as it is"), notes)
+                self.assertEqual(os.listdir(temp_dir), [convert.SOURCE_FINGERPRINT_FILE])
+                shutil.rmtree(self.legacy)
+                shutil.rmtree(self.new)
+
+
+FAKE_PARSER = """#!{python}
+import json, os, sys
+with open(os.environ["FAKE_PARSER_RECORD"], "w", encoding="utf-8") as f:
+    json.dump({{"argv": sys.argv[1:], "cwd": os.getcwd()}}, f)
+print("parser output line")
+for name in json.loads(os.environ.get("FAKE_OUTPUTS", "[]")):
+    os.makedirs(os.path.dirname(name) or ".", exist_ok=True)
+    with open(name, "w", encoding="utf-8") as f:
+        f.write("# Parsed\\n\\nBody.\\n")
+for link, target in json.loads(os.environ.get("FAKE_LINKS", "[]")):
+    os.symlink(target, link)
+if os.environ.get("FAKE_SWAP"):
+    # Another process renames the directory the parser writes into and puts its own in its place.
+    here = os.getcwd()
+    os.rename(here, here + "-held")
+    os.mkdir(here)
+    with open(os.path.join(here, "secret.txt"), "w", encoding="utf-8") as f:
+        f.write("not the parser's")
+sys.exit(int(os.environ.get("FAKE_EXIT", "0")))
+"""
+
+
+class RunParserTests(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+        self.bin = self.root / "bin"
+        self.bin.mkdir()
+        for executable in convert.PARSERS.values():
+            path = self.bin / executable
+            path.write_text(FAKE_PARSER.format(python=sys.executable), encoding="utf-8")
+            path.chmod(0o755)
+        self.pdf = self.root / "my book.pdf"
+        self.pdf.write_bytes(b"%PDF-1.4")
+        self.temp_dir = self.root / "work" / "my_book_temp"
+        self.temp_dir.mkdir(parents=True)
+        self.record = self.root / "record.json"
+
+    def run_parser(self, parser, outputs, exit_code=0, links=()):
+        env = {"FAKE_PARSER_RECORD": str(self.record), "FAKE_OUTPUTS": json.dumps(outputs),
+               "FAKE_EXIT": str(exit_code), "FAKE_LINKS": json.dumps(list(links))}
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), \
+                process_guard.library_processes(convert.PARSERS[parser], path_dirs=[self.bin], env=env):
+            result = convert.run_parser(parser, str(self.pdf), str(self.temp_dir))
+        return result, out.getvalue()
+
+    def assert_failed_and_left_nothing(self, result, out, needle):
+        self.assertEqual(result, (None, None))
+        self.assertIn(needle, out)
+        self.assertEqual(os.listdir(self.temp_dir), [])
+
+    def test_each_parser_gets_its_fixed_arguments_only(self):
+        parsed = str(self.temp_dir / "parsed")
+        cases = {
+            "mineru": (["parse", str(self.pdf), "-o", os.path.join(parsed, "book.md")], ["book.md"]),
+            "marker": ([str(self.pdf), "--output_dir", parsed], ["my book/my book.md"]),
+            "docling": ([str(self.pdf), "--enrich-formula", "--output", parsed], ["my book.md"]),
+        }
+        for parser, (argv, outputs) in cases.items():
+            with self.subTest(parser=parser):
+                result, out = self.run_parser(parser, outputs)
+                record = json.loads(self.record.read_text(encoding="utf-8"))
+                self.assertEqual(record["argv"], argv)
+                self.assertEqual(os.path.realpath(record["cwd"]), os.path.realpath(parsed))
+                markdown_file, held = result
+                self.assertEqual((markdown_file, held.path), (os.path.join(parsed, outputs[0]), parsed))
+                self.assertEqual(os.listdir(self.temp_dir), ["parsed"])
+                held.remove()
+                self.assertEqual(os.listdir(self.temp_dir), [])
+
+    def test_needs_exactly_one_markdown_file(self):
+        for outputs in ([], ["a.md", "sub/b.md"]):
+            with self.subTest(outputs=outputs):
+                result, out = self.run_parser("docling", outputs)
+                self.assert_failed_and_left_nothing(result, out, "expected one Markdown file")
+                self.assertIn("run docling yourself", out)
+
+    def test_markdown_output_must_be_a_regular_file_inside_parsed(self):
+        outside = self.root / "outside.md"
+        outside.write_text("# Another text\n", encoding="utf-8")
+        for target in (str(outside), "notes.txt"):
+            with self.subTest(target=target):
+                result, out = self.run_parser("docling", ["notes.txt"], links=[["book.md", target]])
+                self.assert_failed_and_left_nothing(result, out, "expected one Markdown file")
+        self.assertEqual(outside.read_text(encoding="utf-8"), "# Another text\n")
+
+    def test_existing_parsed_dir_is_neither_used_nor_changed(self):
+        elsewhere = self.root / "elsewhere"
+        elsewhere.mkdir()
+        (elsewhere / "keep.md").write_text("mine", encoding="utf-8")
+        parsed = self.temp_dir / "parsed"
+        for kind in ("directory", "file", "symlink"):
+            with self.subTest(kind=kind):
+                if kind == "directory":
+                    parsed.mkdir()
+                    (parsed / "stale.md").write_text("old", encoding="utf-8")
+                elif kind == "file":
+                    parsed.write_text("x", encoding="utf-8")
+                else:
+                    parsed.symlink_to(elsewhere, target_is_directory=True)
+                before = sorted(str(p) for p in self.root.rglob("*"))
+                result, out = self.run_parser("docling", ["my book.md"])
+                self.assertEqual(result, (None, None))
+                self.assertIn("already exists", out)
+                self.assertEqual(sorted(str(p) for p in self.root.rglob("*")), before)
+                self.assertFalse(self.record.exists())
+                if kind == "directory":
+                    shutil.rmtree(parsed)
+                else:
+                    parsed.unlink()
+        self.assertEqual((elsewhere / "keep.md").read_text(encoding="utf-8"), "mine")
+
+    def test_failure_shows_the_end_of_the_output_and_the_way_to_go_on(self):
+        result, out = self.run_parser("marker", ["partial.md"], exit_code=3)
+        self.assert_failed_and_left_nothing(result, out, "exited with status 3")
+        self.assertIn("parser output line", out)
+        self.assertIn("run marker_single yourself", out)
+        self.assertIn("as input, with parser null", out)
+
+    def test_missing_executable(self):
+        (self.bin / "marker_single").unlink()
+        with mock.patch.object(convert.shutil, "which", return_value=None):
+            result, out = self.run_parser("marker", ["x.md"])
+        self.assert_failed_and_left_nothing(result, out, "marker_single not found")
+
+
+class ConfigValueTests(unittest.TestCase):
+    def test_values_stay_on_their_line(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            convert.create_config_file(
+                tmp, "/books/a\nb.epub", "auto", "zh",
+                {"title": "Line one\nouput_lang=xx\r\x00end", "creator": "\udc80Author"},
+            )
+            values = convert._config_values(tmp)
+            self.assertEqual(values["input_file"], "/books/a b.epub")
+            self.assertEqual(values["output_lang"], "zh")
+            self.assertEqual(values["original_title"], "Line one ouput_lang=xx  end")
+            self.assertEqual(values["creator"], "\ufffdAuthor")
+            self.assertNotIn("ouput_lang", values)
 
 
 if __name__ == "__main__":

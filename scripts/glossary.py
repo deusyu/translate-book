@@ -35,6 +35,12 @@ import sys
 import tempfile
 from pathlib import Path
 
+from manifest import chunk_id_from_file_name, list_chunk_files
+
+if os.name == "nt":
+    sys.exit("translate-book runs on macOS and Linux only. "
+             "On Windows, run it in WSL (Windows Subsystem for Linux).")
+
 
 GLOSSARY_SCHEMA_VERSION = 2
 DEFAULT_TOP_N = 20
@@ -440,10 +446,7 @@ def count_frequencies(glossary_path, chunks_dir):
     glossary = load_glossary(glossary_path)
     chunks_dir_path = Path(chunks_dir)
 
-    chunk_paths = sorted(
-        p for p in chunks_dir_path.glob('chunk*.md')
-        if not p.name.startswith('output_')
-    )
+    chunk_paths = [chunks_dir_path / name for name in list_chunk_files(chunks_dir)]
 
     if not chunk_paths:
         print(f"Warning: no chunk*.md files found under {chunks_dir}", file=sys.stderr)
@@ -547,24 +550,32 @@ def main():
     p_hash.add_argument('temp_dir')
 
     args = parser.parse_args()
+    if not os.path.isdir(args.temp_dir):
+        print(f"Error: Temp directory not found: {args.temp_dir}", file=sys.stderr)
+        sys.exit(1)
     glossary_path = os.path.join(args.temp_dir, 'glossary.json')
 
-    if args.cmd == 'count-frequencies':
-        count_frequencies(glossary_path, args.temp_dir)
-    elif args.cmd == 'print-terms-for-chunk':
-        glossary = load_glossary(glossary_path)
-        chunk_path = os.path.join(args.temp_dir, args.chunk_filename)
-        with open(chunk_path, 'r', encoding='utf-8') as f:
-            chunk_text = f.read()
-        terms = select_terms_for_chunk(
-            glossary, chunk_text, top_n=args.top_n, max_terms=args.max_terms
-        )
-        table = format_terms_for_prompt(terms)
-        if table:
-            print(table)
-    elif args.cmd == 'compute-hash':
-        glossary = load_glossary(glossary_path)
-        print(glossary_hash(glossary))
+    try:
+        if args.cmd == 'count-frequencies':
+            count_frequencies(glossary_path, args.temp_dir)
+        elif args.cmd == 'print-terms-for-chunk':
+            chunk_id_from_file_name(args.chunk_filename)
+            glossary = load_glossary(glossary_path)
+            chunk_path = os.path.join(args.temp_dir, args.chunk_filename)
+            with open(chunk_path, 'r', encoding='utf-8') as f:
+                chunk_text = f.read()
+            terms = select_terms_for_chunk(
+                glossary, chunk_text, top_n=args.top_n, max_terms=args.max_terms
+            )
+            table = format_terms_for_prompt(terms)
+            if table:
+                print(table)
+        elif args.cmd == 'compute-hash':
+            glossary = load_glossary(glossary_path)
+            print(glossary_hash(glossary))
+    except (OSError, ValueError) as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == '__main__':

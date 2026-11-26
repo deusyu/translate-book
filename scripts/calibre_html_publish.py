@@ -15,6 +15,10 @@ from pathlib import Path
 import re
 import html as html_lib
 
+if os.name == "nt":
+    sys.exit("translate-book runs on macOS and Linux only. "
+             "On Windows, run it in WSL (Windows Subsystem for Linux).")
+
 def find_calibre_convert():
     """Find ebook-convert command from Calibre installation"""
     possible_paths = [

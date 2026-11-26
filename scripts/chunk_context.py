@@ -11,22 +11,24 @@ chunk to translate.
 import argparse
 import json
 import os
-import re
 import sys
 from pathlib import Path
 
+from manifest import chunk_id_from_file_name
 
-CHUNK_RE = re.compile(r'^chunk(\d+)\.md$')
+if os.name == "nt":
+    sys.exit("translate-book runs on macOS and Linux only. "
+             "On Windows, run it in WSL (Windows Subsystem for Linux).")
 
 
 def parse_chunk_name(chunk_name):
-    """Return (chunk_id, number, width) for chunkNNNN.md."""
-    base = os.path.basename(chunk_name)
-    match = CHUNK_RE.match(base)
-    if not match:
-        raise ValueError(f"Expected chunk filename like chunk0001.md, got {base!r}")
-    digits = match.group(1)
-    return f"chunk{digits}", int(digits), len(digits)
+    """Return (chunk_id, number, width) for a chunk file name such as chunk0001.md."""
+    try:
+        chunk_id = chunk_id_from_file_name(chunk_name)
+    except ValueError:
+        raise ValueError(f"Expected chunk filename like chunk0001.md, got {chunk_name!r}") from None
+    digits = chunk_id[len('chunk'):]
+    return chunk_id, int(digits), len(digits)
 
 
 def _neighbor_path(temp_dir, number, width):
@@ -55,7 +57,7 @@ def get_neighbor_context(temp_dir, chunk_name, chars=300):
 
     chunk_id, number, width = parse_chunk_name(chunk_name)
     temp_path = Path(temp_dir)
-    source_path = temp_path / os.path.basename(chunk_name)
+    source_path = temp_path / chunk_name
     if not source_path.exists():
         raise FileNotFoundError(f"Source chunk not found: {source_path}")
 
@@ -105,6 +107,9 @@ def main():
         help="Emit JSON instead of a prompt-ready markdown block",
     )
     args = parser.parse_args()
+    if not os.path.isdir(args.temp_dir):
+        print(f"Error: Temp directory not found: {args.temp_dir}", file=sys.stderr)
+        sys.exit(1)
 
     try:
         context = get_neighbor_context(args.temp_dir, args.chunk_file, args.chars)
