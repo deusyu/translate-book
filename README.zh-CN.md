@@ -327,7 +327,7 @@ python3 scripts/merge_and_build.py --temp-dir book_temp --title "译后书名"
 python3 scripts/merge_and_build.py --temp-dir book_temp --title "译后书名" --cover cover.jpg --export-name "译后书名"
 ```
 
-`--title` 会成为阅读器页眉里显示的元数据书名，传入时不要加书名号或引号（外层的 `《》` 会被去掉）。`--cover` 会把显式封面图传给 EPUB 的 Calibre 步骤。`--export-name` 会额外生成如 `译后书名.epub` 的别名副本，同时保留内部 canonical 的 `book.*` 产物。`book_doc` 是保留名称（不区分大小写），会在构建前被拒绝，因为其 HTML 别名会覆盖 `book_doc.html`。
+`--title` 会成为阅读器页眉里显示的元数据书名，传入时不要加书名号或引号（外层的 `《》` 会被去掉）。`--cover` 会把显式封面图传给 EPUB 的 Calibre 步骤。`--export-name` 会额外生成如 `译后书名.epub` 的别名副本，同时保留内部 canonical 的 `book.*` 产物。`book_doc`、`input`、`output` 是保留名称（不区分大小写），会在构建前被拒绝，因为它们的 HTML 别名会覆盖 temp 目录里的 `book_doc.html`、`input.html` 或 `output.html`。
 
 合并前校验：
 - 每个源 chunk 都有对应的输出文件（1:1 匹配）
@@ -339,7 +339,7 @@ python3 scripts/merge_and_build.py --temp-dir book_temp --title "译后书名" -
 
 构建完成后中间文件会保留在 temp 目录里，因此少量译文有问题时不必整本重译：可以直接修改对应的 `output_chunkNNNN.md`，再运行 `python3 scripts/run_state.py record <temp_dir> chunkNNNN`；也可以删除该文件后重新运行 Skill 重译它。`record` 会把这个 chunk 标记为与当前术语表和源文一致，所以先运行 `python3 scripts/run_state.py plan <temp_dir>` 看一下：如果这个 chunk 因为术语表或源文有改动而被列入重译，就在修改时一并改掉，或者改为重译。如果改动的是源 chunk 本身，要先重跑 `convert.py`，让 `manifest.json` 记下新内容，否则合并会报“Source changed since splitting”。这次重跑不要带 `--strip-page-numbers` 这类页码参数：chunk 已存在时它们会直接报错，如果按报错提示删掉缓存文件，chunk 也就没了。重新运行 Skill 时，计划里还可能列出翻译之后术语有变动的其他 chunk，Skill 会先询问再重译。然后重跑 `merge_and_build.py`：只要有 chunk 比 `output.md` 新，它就会重新合并并重新生成各格式成品。不要直接改 `output.md` — 之后任何一次重新合并都会用 chunk 重建它。`--cleanup` 会永久删除 `chunk*.md`、`output_chunk*.md` 和 `input.*`，之后就无法再做这类局部修订；只在整本书定稿后使用。
 
-**注意：** `{book_name}_temp/` 是单次翻译运行的工作目录。如果修改了标题、作者、输出语言、模板或图片资源，建议使用新的 temp 目录，或先删除已有的最终产物（`output.md`、`book*.html`、`book.docx`、`book.epub`、`book.pdf`）再重跑。
+**注意：** `{book_name}_temp/` 是单次翻译运行的工作目录。如果修改了标题、作者、模板或图片资源，建议使用新的 temp 目录，或在重跑前运行 `python3 scripts/merge_and_build.py --temp-dir book_temp --delete-outputs`：它会删除最终产物（`book.html`、`book_doc.html`、`output.html`、`book.docx`、`book.epub`、`book.pdf`）和 `--export-name` 副本，chunk 和译文都会保留。改输出语言需要重新翻译，请使用新的 temp 目录。
 
 ## 项目结构
 
@@ -376,7 +376,7 @@ python3 scripts/merge_and_build.py --temp-dir book_temp --title "译后书名" -
 | `Missing source chunk` | 源文件被删除 — 重新运行 `convert.py` 重新生成 |
 | 翻译不完整 | 重新运行 Skill，会从中断处继续 |
 | 构建后发现少量译文需要修改 | 改对应的 `output_chunkNNNN.md` 而不是 `output.md`，再重跑 `merge_and_build.py`（见[第三步](#第三步合并与构建)） |
-| 修改标题、模板或图片后输出未更新 | 删除 temp 目录中的 `output.md`、`book*.html`、`book.docx`、`book.epub`、`book.pdf`，然后重跑 `merge_and_build.py` |
+| 修改标题、模板或图片后输出未更新 | 先运行 `python3 scripts/merge_and_build.py --temp-dir book_temp --delete-outputs`，再重跑 `merge_and_build.py` |
 | 想去掉 PDF 输出中的页码 | 对 PDF 输入，默认会自动识别单调递增的页码序列（如 `1, 2, 3, ...`）并删除，同时保留年份（`1984`）、章节编号、引用编号等离散的独立数字行。EPUB 和 DOCX 默认保留所有独立数字行，因为它们的页码不是正文文字（EPUB 是锚点，DOCX 在页脚）；如果某本 EPUB 确实把页码印成了正文，可加 `--detect-page-numbers`。若识别不到你的页码格式，可给 `convert.py` 加 `--strip-page-numbers`，强制删除所有独立数字行。这两个标志在检测到已缓存的 `input.md` 或 `chunk*.md` 时会直接报错 — 需先删除这些缓存，标志才会生效 |
 | `output.md exists but manifest invalid` | 旧输出已过时 — 脚本会自动删除并重新合并 |
 | `Glossary upgrade rejected: duplicate source` | v2 不允许两个术语共用同一个 source/alias 表面词。手工编辑 `glossary.json` 消歧（例如把一个 source 从 `Apple` 改为 `Apple (Inc.)`）后重新加载。 |

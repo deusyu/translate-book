@@ -11,6 +11,11 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+SCRIPT_DIR = REPO_ROOT / "scripts"
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+import merge_and_build  # noqa: E402
 
 
 class MarketplaceManifestTest(unittest.TestCase):
@@ -118,11 +123,11 @@ class SkillShellCommandTest(unittest.TestCase):
         self.assertEqual(len(lines), 1, needle)
         return lines[0]
 
-    def run_command(self, shell, cmd, cwd, base_dir):
+    def run_command(self, shell, cmd, cwd, base_dir, temp_dir="book_temp"):
         if cmd.startswith("python3 "):
             cmd = shlex.quote(sys.executable) + cmd[len("python3"):]
         cmd = cmd.replace("{baseDir}", shlex.quote(str(base_dir)))
-        cmd = cmd.replace("<temp_dir>", "book_temp")
+        cmd = cmd.replace("<temp_dir>", temp_dir)
         return subprocess.run([shell, "-c", cmd], cwd=cwd, capture_output=True, text=True)
 
     def test_bash_blocks_take_no_book_text(self):
@@ -209,6 +214,47 @@ class SkillShellCommandTest(unittest.TestCase):
                 argv = json.loads((Path(tmp) / "argv.json").read_text(encoding="utf-8"))
                 self.assertEqual(argv, ["--temp-dir", "book_temp", "--title", self.BOOK_TEXT,
                                         "--export-name", self.EXPORT_NAME])
+                self.assertEqual(list(Path(tmp).glob("pwned*")), [])
+
+    def test_step_7_deletes_outputs_before_writing_the_name_files(self):
+        # A temp dir built before export_copies.json finds its copies through
+        # the old export_name.txt, so a rebuild must delete before writing.
+        text = (REPO_ROOT / "SKILL.md").read_text(encoding="utf-8")
+        step = text[text.index("### 7."):text.index("### 8.")]
+        delete = step.index(self.command("--delete-outputs"))
+        build = self.command('merge_and_build.py --temp-dir "<temp_dir>" --title')
+        for later in ["title.txt", "export_name.txt", "author.txt", build]:
+            with self.subTest(later=later):
+                self.assertLess(delete, step.index(later))
+
+    def test_rebuild_deletes_outputs_through_the_script(self):
+        if not self.shells:
+            self.skipTest("no POSIX shell")
+        cmd = self.command("--delete-outputs")
+        outputs = ["book.html", "book_doc.html", "output.html", "book.docx", "book.epub", "book.pdf"]
+        # A rebuild keeps these, including a file whose name starts with the export name.
+        kept = ["input.html", "input.md", "chunk0001.md", "output_chunk0001.md", "output.md",
+                "title.txt", "export_name.txt", self.EXPORT_NAME + ".md"]
+        # The temp dir is named after the book file, which can hold all of these.
+        temp_name = "-O'Brien's book_temp"
+        for shell in self.shells:
+            with self.subTest(shell=shell), tempfile.TemporaryDirectory() as tmp:
+                temp_dir = Path(tmp) / temp_name
+                temp_dir.mkdir()
+                for name in outputs + kept:
+                    (temp_dir / name).write_text(name, encoding="utf-8")
+                copies = merge_and_build.export_named_aliases(temp_dir, self.EXPORT_NAME)
+                self.assertEqual(len(copies), 5)
+                # The agent may already have written the next export name.
+                (temp_dir / "export_name.txt").write_text("Next " + self.EXPORT_NAME + "\n",
+                                                          encoding="utf-8")
+
+                result = self.run_command(shell, cmd, tmp, REPO_ROOT, temp_dir=temp_name)
+
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(result.stderr, "")
+                self.assertEqual(sorted(p.name for p in temp_dir.iterdir()),
+                                 sorted(kept + [merge_and_build.EXPORT_COPIES_FILE]))
                 self.assertEqual(list(Path(tmp).glob("pwned*")), [])
 
 

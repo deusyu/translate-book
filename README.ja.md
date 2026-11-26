@@ -327,7 +327,7 @@ python3 scripts/merge_and_build.py --temp-dir book_temp --title "translated titl
 python3 scripts/merge_and_build.py --temp-dir book_temp --title "translated title" --cover cover.jpg --export-name "translated-title"
 ```
 
-`--title` はリーダーのページヘッダーに表示されるメタデータのタイトルになるため、書名号（`《》`）や引用符を付けずに渡してください（外側の `《》` は取り除かれます）。`--cover` は、指定した画像を EPUB を生成する Calibre のステップに渡します。`--export-name` は、パイプラインの正規の成果物 `book.*` を残したまま、`translated-title.epub` のような別名のコピーを作ります。`book_doc` という名前（大文字小文字を区別しない）は予約されており、HTML の別名が `book_doc.html` を上書きしてしまうため、ビルド前に拒否されます。
+`--title` はリーダーのページヘッダーに表示されるメタデータのタイトルになるため、書名号（`《》`）や引用符を付けずに渡してください（外側の `《》` は取り除かれます）。`--cover` は、指定した画像を EPUB を生成する Calibre のステップに渡します。`--export-name` は、パイプラインの正規の成果物 `book.*` を残したまま、`translated-title.epub` のような別名のコピーを作ります。`book_doc`、`input`、`output` という名前（大文字小文字を区別しない）は予約されており、HTML の別名が一時ディレクトリ内の `book_doc.html`、`input.html`、`output.html` を上書きしてしまうため、ビルド前に拒否されます。
 
 マージの前に、スクリプトは次の点を検証します:
 - すべてのソースチャンクに対応する出力ファイルがあること（1:1 の対応）
@@ -339,7 +339,7 @@ python3 scripts/merge_and_build.py --temp-dir book_temp --title "translated titl
 
 ビルド後も中間ファイルは一時ディレクトリに残るため、問題のある数か所を直すのに書籍全体を再翻訳する必要はありません。該当する `output_chunkNNNN.md` を編集して `python3 scripts/run_state.py record <temp_dir> chunkNNNN` を実行するか、そのファイルを削除してスキルを再実行し、再翻訳させます。`record` はそのチャンクを現在の用語集とソースに一致するものとして記録するので、先に `python3 scripts/run_state.py plan <temp_dir>` を実行してください。用語集やソースの変更によってそのチャンクが再翻訳の対象になっている場合は、その変更も編集に反映するか、代わりに再翻訳します。ソースチャンク自体を編集した場合は、`manifest.json` に変更が記録されるよう先に `convert.py` を再実行してください。そうしないとマージは "Source changed since splitting" で停止します。この再実行では `--strip-page-numbers` などのページ番号フラグを付けないでください。チャンクが存在するとそれらのフラグは中断し、エラーの指示どおりにキャッシュファイルを削除するとチャンクも失われます。再実行では、翻訳後に用語が変わった他のチャンクが再翻訳の対象に並ぶこともあります。その場合、スキルは再翻訳する前に確認します。最後に `merge_and_build.py` を再実行します。`output.md` より新しいチャンクがあれば再マージし、出力を作り直します。`output.md` 自体は編集しないでください。以降の再マージでチャンクから作り直されます。`--cleanup` は `chunk*.md`、`output_chunk*.md`、`input.*` を完全に削除するため、こうした修正はできなくなります。書籍を仕上げ終えたときだけ使ってください。
 
-**注意:** `{book_name}_temp/` は 1 回の翻訳実行のための作業ディレクトリです。タイトル、著者、出力言語、テンプレート、画像アセットを変更する場合は、新しい一時ディレクトリを使うか、再実行の前に既存の最終成果物（`output.md`、`book*.html`、`book.docx`、`book.epub`、`book.pdf`）を削除してください。
+**注意:** `{book_name}_temp/` は 1 回の翻訳実行のための作業ディレクトリです。タイトル、著者、テンプレート、画像アセットを変更する場合は、新しい一時ディレクトリを使うか、再実行の前に `python3 scripts/merge_and_build.py --temp-dir book_temp --delete-outputs` を実行してください（最終成果物 `book.html`、`book_doc.html`、`output.html`、`book.docx`、`book.epub`、`book.pdf` と `--export-name` のコピーを削除し、チャンクと翻訳は残します）。出力言語を変える場合は翻訳し直しになるため、新しい一時ディレクトリを使ってください。
 
 ## プロジェクト構成
 
@@ -376,7 +376,7 @@ python3 scripts/merge_and_build.py --temp-dir book_temp --title "translated titl
 | `Missing source chunk` | ソースファイルが削除されています — `convert.py` を再実行して再生成してください |
 | 翻訳が途中で終わっている | スキルを再実行してください — 止まったところから再開します |
 | ビルド後に数か所だけ直したい | `output.md` ではなく該当する `output_chunkNNNN.md` を直し、`merge_and_build.py` を再実行してください（[ステップ 3](#ステップ-3マージとビルド) を参照） |
-| タイトル、テンプレート、アセットを変えたのに出力が更新されない | 一時ディレクトリから既存の `output.md`、`book*.html`、`book.docx`、`book.epub`、`book.pdf` を削除し、`merge_and_build.py` を再実行してください |
+| タイトル、テンプレート、アセットを変えたのに出力が更新されない | `python3 scripts/merge_and_build.py --temp-dir book_temp --delete-outputs` を実行してから、`merge_and_build.py` を再実行してください |
 | PDF 出力からページ番号のフッターを取り除きたい | PDF 入力では、単調に増えるページ番号の並び（例: `1, 2, 3, ...`）を自動検出して削除し、年（`1984`）、章番号、引用番号のような外れ値は残します。EPUB と DOCX ではページ番号がテキストではない（EPUB はアンカー、DOCX はフッター）ため、単独の数字はすべて残します。ページ番号をテキストとして印字している EPUB には `--detect-page-numbers` を指定してください。検出がうまくいかない場合は、`convert.py` に `--strip-page-numbers` を指定すると、数字だけの行をすべて積極的に削除します。どちらのフラグも、キャッシュ済みの `input.md` や `chunk*.md` がすでにあると中断します — フラグを有効にするには先にそれらを削除してください。 |
 | `output.md exists but manifest invalid` | 古い出力です — スクリプトが自動で削除して再マージします |
 | `Glossary upgrade rejected: duplicate source` | v2 では、2 つの用語が同じ原語や別名の表記を共有できません。`glossary.json` を編集して曖昧さを解消し（例: 一方の原語を `Apple` から `Apple (Inc.)` に変える）、再読み込みしてください。 |
