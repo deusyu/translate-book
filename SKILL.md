@@ -492,10 +492,24 @@ library (`merge_and_build.py` strips a wrapping `《》` anyway).
 
 ### 7. Post-process — Merge and Build
 
-Write the translated title to `<temp_dir>/title.txt` and the export name to
-`<temp_dir>/export_name.txt` with your file-writing tool, then run the build
-script. The command reads both from those files instead of quoting them (see
-"Book Text and the Shell"):
+The build skips outputs that already exist. When rebuilding after changing
+the title, author, cover or `--lang`, first delete the earlier outputs, or the
+old metadata stays inside the files even though the file names change:
+
+```bash
+python3 {baseDir}/scripts/merge_and_build.py --temp-dir "<temp_dir>" --delete-outputs
+```
+
+It deletes `book.html`, `book_doc.html`, `output.html`, `book.docx`,
+`book.epub`, `book.pdf` and the export copies of earlier builds, builds
+nothing, and keeps the chunks, translations and other intermediate files. If
+it reports an error, fix what it names and run it again before going on.
+
+After that, or straight away on a first build, write the translated title to
+`<temp_dir>/title.txt`, the export name to `<temp_dir>/export_name.txt` and
+any author override to `<temp_dir>/author.txt` with your file-writing tool.
+Then run the build script. The command reads the title and export name from
+those files instead of quoting them (see "Book Text and the Shell"):
 
 ```bash
 python3 {baseDir}/scripts/merge_and_build.py --temp-dir "<temp_dir>" --title "$(cat "<temp_dir>/title.txt")" --export-name "$(cat "<temp_dir>/export_name.txt")"
@@ -506,12 +520,6 @@ python3 {baseDir}/scripts/merge_and_build.py --temp-dir "<temp_dir>" --title "$(
 pipeline keeps using internally. Use the user's `export_name` if given,
 otherwise the translated title with characters that are invalid in file names
 removed. If the user provided `epub_cover`, add `--cover "<epub_cover>"`.
-
-The build skips outputs that already exist. To rebuild after changing the
-title, author, language, or cover, first delete `book.html`, `book_doc.html`,
-`output.html`, `book.docx`, `book.epub`, `book.pdf` and the export copies
-from the temp dir; otherwise the old metadata stays inside the files even
-though the file names change.
 
 Keep the intermediate files. The chunks, `manifest.json`, and `run_state.json`
 are what make spot fixes and selective re-translation possible after the build

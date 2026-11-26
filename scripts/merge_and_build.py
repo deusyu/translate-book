@@ -10,8 +10,11 @@ import os
 import sys
 import re
 import glob
+import json
 import shutil
+import stat
 import subprocess
+import tempfile
 import argparse
 import html as _html_lib
 from collections import Counter
@@ -1202,6 +1205,24 @@ def generate_formats(temp_dir, lang_attr, cover=None):
     return not has_failures
 
 
+# Files the pipeline keeps in temp_dir under the name the HTML alias of these
+# stems would take.
+_RESERVED_EXPORT_STEMS = {
+    "book_doc": "book_doc.html",
+    "input": "input.html",
+    "output": "output.html",
+}
+
+# What --delete-outputs removes besides the export copies; the next build
+# regenerates all of them.
+BUILD_OUTPUTS = ("book.html", "book_doc.html", "output.html", "book.docx", "book.epub", "book.pdf")
+
+EXPORT_COPIES_FILE = "export_copies.json"
+
+# The usual file name limit (NAME_MAX), in bytes.
+_MAX_FILE_NAME_BYTES = 255
+
+
 def _validate_export_name(name):
     """Validate an export filename stem. Keep aliases inside temp_dir."""
     if not name or not name.strip():
@@ -1209,11 +1230,102 @@ def _validate_export_name(name):
     if '\x00' in name or '/' in name or '\\' in name:
         raise ValueError("--export-name must be a filename stem, not a path")
     stem = name.strip()
-    # This stem maps the web HTML alias onto the canonical ebook HTML.
+    try:
+        size = len(os.fsencode(stem))
+    except UnicodeError:
+        raise ValueError("--export-name contains characters a file name cannot hold") from None
+    # Each copy name must fit in a file name. Fail here, before the build records the
+    # copies: a copy that fails halfway leaves a name --delete-outputs cannot delete.
+    longest_suffix = max(_export_copy_names("").values(), key=len)
+    room = _MAX_FILE_NAME_BYTES - len(longest_suffix)
+    if size > room:
+        raise ValueError(f"--export-name is too long: it takes {size} bytes in UTF-8, so its "
+                         f"{longest_suffix} copy would need a {size + len(longest_suffix)}-byte file "
+                         f"name, and a file name can take {_MAX_FILE_NAME_BYTES}; shorten it to {room} "
+                         f"bytes or fewer, such as {room // 3} CJK characters")
     # Check case-insensitively so the same names are safe on macOS/Windows.
-    if stem.casefold() == "book_doc":
-        raise ValueError("--export-name would overwrite reserved output book_doc.html; choose another name")
+    reserved = _RESERVED_EXPORT_STEMS.get(stem.casefold())
+    if reserved:
+        raise ValueError(f"--export-name would overwrite {reserved}, which the pipeline keeps "
+                         f"in the temp dir; choose another name")
     return stem
+
+
+def _export_copy_names(stem):
+    """Map each canonical output to the name of its copy for this stem."""
+    return {
+        "book.html": f"{stem}.html",
+        "book_doc.html": f"{stem}_doc.html",
+        "book.docx": f"{stem}.docx",
+        "book.epub": f"{stem}.epub",
+        "book.pdf": f"{stem}.pdf",
+    }
+
+
+def _export_copy_path(temp_dir, name):
+    """Return temp_dir/name if some valid export name gives a copy called name, else None."""
+    def made_with(suffix):
+        stem = name[:-len(suffix)]
+        try:
+            return name.endswith(suffix) and _validate_export_name(stem) == stem
+        except ValueError:
+            return False
+
+    if not any(made_with(suffix) for suffix in _export_copy_names("").values()):
+        return None
+    path = os.path.join(temp_dir, name)
+    # A Windows drive prefix such as "D:" would still lead out of temp_dir.
+    if os.path.dirname(os.path.abspath(path)) != os.path.abspath(temp_dir):
+        return None
+    return path
+
+
+def _read_export_copies(temp_dir):
+    """Return the names listed in export_copies.json, or None if temp_dir has no such file.
+
+    Raises ValueError if the file is there but unusable: unreadable, not the
+    JSON the build writes, or listing a name that no export copy in temp_dir has.
+    """
+    path = os.path.join(temp_dir, EXPORT_COPIES_FILE)
+    try:
+        with open(path, encoding='utf-8', errors='surrogateescape') as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        if os.path.lexists(path):
+            raise ValueError("it is a symlink to a missing file") from None
+        return None
+    except (OSError, ValueError) as e:
+        raise ValueError(str(e)) from None
+    names = data.get("copies") if isinstance(data, dict) else None
+    if not isinstance(names, list) or not all(isinstance(name, str) for name in names):
+        raise ValueError('"copies" is not a list of file names')
+    bad = [name for name in names if not _export_copy_path(temp_dir, name)]
+    if bad:
+        raise ValueError("it lists names no export copy has: " + ", ".join(map(repr, bad)))
+    return names
+
+
+def _unusable_record(reason):
+    """Explain an export_copies.json that _read_export_copies() rejected."""
+    return (f"{EXPORT_COPIES_FILE} cannot be used ({reason}). It lists the export copies of "
+            f"earlier builds; repair it, or delete it so that --delete-outputs deletes the "
+            f"copies named after export_name.txt instead.")
+
+
+def _write_export_copies(temp_dir, names):
+    path = os.path.join(temp_dir, EXPORT_COPIES_FILE)
+    fd, tmp_path = tempfile.mkstemp(prefix='.export_copies.', suffix='.json', dir=temp_dir)
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8', errors='surrogateescape') as f:
+            json.dump({"copies": names}, f, ensure_ascii=False, indent=2)
+            f.write('\n')
+        os.replace(tmp_path, path)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 def export_named_aliases(temp_dir, export_name):
@@ -1221,27 +1333,134 @@ def export_named_aliases(temp_dir, export_name):
 
     Canonical artifacts remain untouched. The alias names use export_name as a
     filename stem, with book_doc.html receiving a _doc suffix to avoid colliding
-    with the web HTML alias.
+    with the web HTML alias. Their names are added to export_copies.json before
+    the files are written, so --delete-outputs still finds the copies of an
+    earlier export name after it changes. If that file is there but unusable,
+    raises ValueError and writes nothing.
     """
     stem = _validate_export_name(export_name)
-    mappings = {
-        "book.html": f"{stem}.html",
-        "book_doc.html": f"{stem}_doc.html",
-        "book.docx": f"{stem}.docx",
-        "book.epub": f"{stem}.epub",
-        "book.pdf": f"{stem}.pdf",
-    }
-    copied = []
-    for src_name, dst_name in mappings.items():
+    pending = []
+    for src_name, dst_name in _export_copy_names(stem).items():
         src = os.path.join(temp_dir, src_name)
         if not os.path.exists(src):
             continue
         dst = os.path.join(temp_dir, dst_name)
         if os.path.exists(dst) and os.path.samefile(src, dst):
             continue
+        pending.append((src, dst, dst_name))
+    if pending:
+        recorded = [name for name in _read_export_copies(temp_dir) or []
+                    if os.path.lexists(os.path.join(temp_dir, name))]
+        _write_export_copies(temp_dir, list(dict.fromkeys(recorded + [name for _, _, name in pending])))
+    copied = []
+    for src, dst, dst_name in pending:
         shutil.copy2(src, dst)
         copied.append(dst_name)
     return copied
+
+
+def _copies_named_in_export_name_file(temp_dir):
+    """Copy names for a temp dir built before export_copies.json existed.
+
+    Those builds took the stem from `--export-name "$(cat export_name.txt)"`,
+    which _validate_export_name() strips, so the file is read the same way:
+    newline='' keeps a carriage return inside the name. Returns [] if there is
+    no export_name.txt; raises ValueError if it is there but names no copies.
+    """
+    path = os.path.join(temp_dir, 'export_name.txt')
+    try:
+        with open(path, encoding='utf-8', errors='surrogateescape', newline='') as f:
+            text = f.read()
+    except FileNotFoundError:
+        if os.path.lexists(path):
+            raise ValueError("export_name.txt is a symlink to a missing file") from None
+        return []
+    except OSError as e:
+        raise ValueError(f"export_name.txt cannot be read ({e})") from None
+    try:
+        stem = _validate_export_name(text)
+    except ValueError as e:
+        raise ValueError(f"export_name.txt holds no usable export name ({e})") from None
+    names = list(_export_copy_names(stem).values())
+    # Only a drive prefix such as "D:" on Windows leads a valid stem out of temp_dir.
+    if not all(_export_copy_path(temp_dir, name) for name in names):
+        raise ValueError("export_name.txt names copies outside the temp dir")
+    print(f"No {EXPORT_COPIES_FILE}; deleting the copies named after export_name.txt")
+    return names
+
+
+def _delete_file(path):
+    """Delete path if it is a regular file or a symlink, never a symlink's target.
+
+    Returns False when nothing is there. Raises OSError for anything else.
+    """
+    try:
+        mode = os.lstat(path).st_mode
+    except FileNotFoundError:
+        return False
+    if not (stat.S_ISREG(mode) or stat.S_ISLNK(mode)):
+        raise OSError("not a regular file")
+    os.unlink(path)
+    return True
+
+
+def delete_outputs(temp_dir):
+    """Delete the outputs and export copies of earlier builds, so a rebuild regenerates them.
+
+    Deletes BUILD_OUTPUTS and the copies listed in export_copies.json, or for
+    an older temp dir without that record, the copies named after
+    export_name.txt. Only regular files and symlinks directly inside temp_dir
+    go; chunks, translations and the other intermediates stay. Every name is
+    checked before the first file goes, and if the record or export_name.txt
+    is there but unusable, nothing is deleted. Returns False then, or if a
+    file could not be deleted.
+    """
+    print("=== Deleting build outputs ===")
+    try:
+        recorded = _read_export_copies(temp_dir)
+    except ValueError as e:
+        print(f"Error: {_unusable_record(e)} Nothing was deleted.")
+        return False
+    if recorded is None:
+        try:
+            copies = _copies_named_in_export_name_file(temp_dir)
+        except ValueError as e:
+            print(f"Error: {e}. Without {EXPORT_COPIES_FILE}, that file is how the export copies "
+                  f"of earlier builds are found: write the export name they were made with to "
+                  f"export_name.txt, or delete export_name.txt if there are none. "
+                  f"Nothing was deleted.")
+            return False
+    else:
+        copies = recorded
+
+    deleted, left = [], []
+    for name in list(BUILD_OUTPUTS) + [n for n in dict.fromkeys(copies) if n not in BUILD_OUTPUTS]:
+        try:
+            if _delete_file(os.path.join(temp_dir, name)):
+                deleted.append(name)
+        except OSError as e:
+            print(f"Error: could not delete {name!r}: {e}")
+            left.append(name)
+
+    if deleted:
+        print(f"Deleted {len(deleted)} file(s):")
+        for name in deleted:
+            print(f"  {name!r}")
+    else:
+        print("No build outputs to delete.")
+
+    ok = not left
+    if recorded is not None:
+        try:
+            _write_export_copies(temp_dir, [name for name in left if name not in BUILD_OUTPUTS])
+        except OSError as e:
+            print(f"Error: could not update {EXPORT_COPIES_FILE}: {e}")
+            ok = False
+    if ok:
+        print("Nothing was built; run the build command to rebuild.")
+    else:
+        print("Nothing was built. Fix the errors above and run --delete-outputs again first.")
+    return ok
 
 
 # =============================================================================
@@ -1257,8 +1476,12 @@ def main():
     parser.add_argument('--cover', default=None, help='Cover image path for EPUB output')
     parser.add_argument('--export-name', default=None, help='Optional filename stem for exported alias copies')
     parser.add_argument('--cleanup', action='store_true', help='Remove intermediate artifacts after successful build')
-    parser.add_argument('--headings', action='store_true',
-                        help='List the headings of output_chunk*.md, skipping fenced code, and exit without building')
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument('--headings', action='store_true',
+                      help='List the headings of output_chunk*.md, skipping fenced code, and exit without building')
+    mode.add_argument('--delete-outputs', action='store_true',
+                      help='Delete book.html, book_doc.html, output.html, book.docx, book.epub, book.pdf and '
+                           'the export copies, keeping chunks and translations, and exit without building')
 
     args = parser.parse_args()
     temp_dir = args.temp_dir
@@ -1270,6 +1493,11 @@ def main():
     if args.headings:
         rows = heading_outline(temp_dir)
         print('\n'.join(rows) if rows else "No headings in output_chunk*.md")
+        return
+
+    if args.delete_outputs:
+        if not delete_outputs(temp_dir):
+            sys.exit(1)
         return
 
     cover = args.cover
@@ -1285,6 +1513,11 @@ def main():
             export_name = _validate_export_name(args.export_name)
         except ValueError as e:
             print(f"Error: {e}")
+            sys.exit(1)
+        try:
+            _read_export_copies(temp_dir)
+        except ValueError as e:
+            print(f"Error: {_unusable_record(e)} Nothing was built.")
             sys.exit(1)
 
     # Load config as base, CLI args override
