@@ -17,7 +17,14 @@ gh issue list --label release-blocker --state open
 
 If the list is not empty, stop and show it to the user. Release only after those issues are closed, or if the user explicitly says to release anyway.
 
-Release version `$1` by running these four steps in order. Stop and report immediately if any step fails — do not attempt to recover automatically.
+Then, still before step 1, prepare the release and confirm it with the user. None of this changes anything on GitHub or ClawHub; if a check fails, stop and show the user the output.
+
+- `git branch --show-current` must print `main`, and `git status --porcelain` must print nothing. Step 2 tags the current commit, but step 3 publishes the files on disk.
+- With your file-writing tool (not with `echo`, `printf` or a heredoc), write the changelog to a file outside the repository, such as `/tmp/translate-book-changelog.txt`, so that it neither dirties the worktree nor ends up in the package; `<changelog_file>` below stands for its path. The changelog is one or two plain-text sentences that tell people who install the skill what changed for them in this version, based on the pull requests merged since the previous tag. ClawHub shows it as the version's changelog, and the CLI cannot edit a changelog after publishing. Never publish while the file is missing, empty or holds only whitespace: ClawHub trims the changelog and generates its own from the changed files when nothing is left. The step 3 command does not run clawhub in those cases.
+- Run the step 3 command with `--dry-run --json` added at the end. It uploads nothing and needs no login. In its JSON output, `folder` must be the absolute path of the repository root, which is the current directory, and `fileCount` must equal the number of files `git ls-files SKILL.md LICENSE scripts` lists. Equal counts do not prove that the file sets are the same. The clean-worktree check separately prevents uncommitted content from being published, so treat `fileCount` only as a sanity check.
+- Show the user the version, `fileCount` and the output of `cat "<changelog_file>"`, and wait for the user to confirm.
+
+Once the user confirms, release version `$1` by running these four steps in order. Stop and report immediately if any step fails — do not attempt to recover automatically.
 
 1. Push `main`:
 
@@ -36,10 +43,16 @@ Release version `$1` by running these four steps in order. Stop and report immed
 3. Publish to ClawHub:
 
    ```bash
-   npx clawhub@latest publish ./ --slug translate-book --name translate-book --version $1
+   changelog_file="<changelog_file>"; grep -q '[^[:space:]]' "$changelog_file" && CLAWHUB_WORKDIR="$PWD" npx clawhub@latest publish ./ --slug translate-book --name translate-book --version $1 --changelog "$(cat "$changelog_file")"
    ```
 
    Without `--slug` and `--name`, ClawHub takes the slug and the display name from the current directory name, so publishing from a directory with another name, such as a worktree or a temporary clone, creates a separate skill or changes the display name of `translate-book`.
+
+   `CLAWHUB_WORKDIR="$PWD"` makes clawhub resolve `./` against the current directory. Without it, on a machine with a default OpenClaw workspace configured, clawhub resolves `./` against that workspace, so the command fails or publishes the workspace as `translate-book`.
+
+   `--changelog "$(cat "$changelog_file")"` passes the text of the changelog file the user confirmed. The shell does not expand text that reaches clawhub this way, so quotes, backticks, `$` and backslashes in it stay as they are.
+
+   The path is written once, in `changelog_file`, so `grep` and `cat` read the same file. `grep -q '[^[:space:]]' "$changelog_file"` fails when the file is missing, empty or holds only whitespace, and `&&` then keeps clawhub from running, so the command fails. A missing file makes grep print an error and exit with 2; an empty or whitespace-only file makes it exit with 1 without printing anything. Run the line as a single shell command: if `changelog_file` is not set, for example because the assignment ran in an earlier shell call, grep gets an empty path, prints an error and exits with 2, and clawhub does not run.
 
 4. Create the GitHub Release:
 
