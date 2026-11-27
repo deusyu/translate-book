@@ -21,8 +21,13 @@ from collections import Counter
 from html.parser import HTMLParser
 from pathlib import Path
 
-from manifest import read_output_text, validate_for_merge
-from convert import _fenced_code_line_indices
+from manifest import (chunk_file_name, chunk_id_from_file_name, list_chunk_files, load_manifest,
+                      nth_chunk_id, read_output_text, validate_for_merge)
+from convert import _fenced_code_line_indices, check_cover_file, load_stored_request
+
+if os.name == "nt":
+    sys.exit("translate-book runs on macOS and Linux only. "
+             "On Windows, run it in WSL (Windows Subsystem for Linux).")
 
 
 # =============================================================================
@@ -98,9 +103,7 @@ def _validate_chunk_images(temp_dir):
     """
     temp_path = Path(temp_dir)
     errors = []
-    for src_chunk in sorted(temp_path.glob('chunk*.md')):
-        if src_chunk.name.startswith('output_'):
-            continue
+    for src_chunk in (temp_path / name for name in list_chunk_files(temp_dir)):
         out_chunk = temp_path / f'output_{src_chunk.name}'
         if not out_chunk.exists():
             continue  # missing-output is the manifest validator's job
@@ -170,7 +173,7 @@ def _validate_chunk_footnotes(temp_dir):
     """
     temp_path = Path(temp_dir)
     errors = []
-    for src_chunk in sorted(temp_path.glob('chunk*.md')):
+    for src_chunk in (temp_path / name for name in list_chunk_files(temp_dir)):
         out_chunk = temp_path / f'output_{src_chunk.name}'
         if not out_chunk.exists():
             continue
@@ -229,7 +232,7 @@ def _validate_chunk_figure_text(temp_dir):
     """
     temp_path = Path(temp_dir)
     errors = []
-    for src_chunk in sorted(temp_path.glob('chunk*.md')):
+    for src_chunk in (temp_path / name for name in list_chunk_files(temp_dir)):
         out_chunk = temp_path / f'output_{src_chunk.name}'
         if not out_chunk.exists():
             continue
@@ -417,10 +420,50 @@ def load_config(temp_dir):
     config = {}
     with open(config_file, 'r', encoding='utf-8') as f:
         for line in f:
-            if '=' in line and not line.strip().startswith('#'):
-                key, value = line.strip().split('=', 1)
-                config[key] = value
+            line = line.rstrip('\r\n')
+            if '=' in line and not line.lstrip().startswith('#'):
+                key, value = line.split('=', 1)
+                config[key.strip()] = value
     return config
+
+
+# SKILL.md's build command takes no book text: the agent writes the translated
+# title, the export name and an author override to these files instead.
+TITLE_FILE = 'title.txt'
+EXPORT_NAME_FILE = 'export_name.txt'
+AUTHOR_FILE = 'author.txt'
+
+
+def read_name_file(temp_dir, name):
+    """The text of <temp_dir>/<name> with surrounding whitespace removed, or None
+    when the file is missing or blank. Raises ValueError for text that is not UTF-8.
+    newline='' keeps a carriage return inside the text, as --delete-outputs reads it."""
+    try:
+        with open(os.path.join(temp_dir, name), 'r', encoding='utf-8', newline='') as f:
+            text = f.read().strip()
+    except FileNotFoundError:
+        return None
+    except UnicodeDecodeError:
+        raise ValueError(f"{name} in {temp_dir} is not UTF-8 text") from None
+    return text or None
+
+
+def stored_request_cover(temp_dir):
+    """The cover image named in the request convert.py stored in temp_dir, or None.
+    Raises ValueError when request.json is not one convert.py stored, or the
+    image it names is gone."""
+    try:
+        request = load_stored_request(temp_dir)
+    except ValueError as e:
+        raise ValueError(f"{e}. Rename or move it; the conversion step stores the request "
+                         f"again") from None
+    if request is None or request["cover"] is None:
+        return None
+    try:
+        return check_cover_file(request["cover"])
+    except ValueError as e:
+        raise ValueError(f"{e}, the cover that request.json names. Run the conversion step "
+                         f"again with the cover's current path, or with cover null") from None
 
 
 def natural_sort_key(text):
@@ -439,7 +482,7 @@ def heading_outline(temp_dir):
     Lines in fenced code are skipped: a `# comment` there is code, not a heading.
     """
     rows = []
-    paths = sorted(glob.glob(os.path.join(temp_dir, 'output_chunk*.md')), key=natural_sort_key)
+    paths = [os.path.join(temp_dir, name) for name in list_chunk_files(temp_dir, 'output')]
     for path in paths:
         text = read_output_text(path)
         if text is None:
@@ -521,22 +564,14 @@ def merge_markdown_files(temp_dir):
         print("WARNING: No manifest.json found — using legacy glob-based merge.")
         print("  For hash validation, re-run convert.py to generate manifest.json")
 
-        # Match chunk output files
-        output_files = glob.glob(os.path.join(temp_dir, 'output_chunk*.md'))
-
-        # Count original source files
-        original_files = glob.glob(os.path.join(temp_dir, 'chunk*.md'))
-        original_files = [f for f in original_files if not os.path.basename(f).startswith('output_')]
+        output_files = [os.path.join(temp_dir, name) for name in list_chunk_files(temp_dir, 'output')]
+        source_basenames = list_chunk_files(temp_dir)
 
         if not output_files:
             print("Error: No translated markdown files found.")
             return False
 
-        # Build expected output filename for each source file and verify 1:1 match
-        source_basenames = sorted(
-            [os.path.basename(f) for f in original_files],
-            key=natural_sort_key
-        )
+        # Verify a 1:1 match between source chunks and outputs
         expected_outputs = set(f"output_{name}" for name in source_basenames)
         actual_outputs = set(os.path.basename(f) for f in output_files)
 
@@ -1171,7 +1206,7 @@ def generate_formats(temp_dir, lang_attr, cover=None):
 
     html_file = os.path.join(temp_dir, "book_doc.html")
     if not os.path.exists(html_file):
-        html_files = glob.glob(os.path.join(temp_dir, "*.html"))
+        html_files = glob.glob(os.path.join(glob.escape(temp_dir), "*.html"))
         if html_files:
             html_file = max(html_files, key=os.path.getmtime)
         else:
@@ -1223,30 +1258,30 @@ EXPORT_COPIES_FILE = "export_copies.json"
 _MAX_FILE_NAME_BYTES = 255
 
 
-def _validate_export_name(name):
+def _validate_export_name(name, label='--export-name'):
     """Validate an export filename stem. Keep aliases inside temp_dir."""
     if not name or not name.strip():
-        raise ValueError("--export-name must not be empty")
+        raise ValueError(f"{label} must not be empty")
     if '\x00' in name or '/' in name or '\\' in name:
-        raise ValueError("--export-name must be a filename stem, not a path")
+        raise ValueError(f"{label} must be a filename stem, not a path")
     stem = name.strip()
     try:
         size = len(os.fsencode(stem))
     except UnicodeError:
-        raise ValueError("--export-name contains characters a file name cannot hold") from None
+        raise ValueError(f"{label} contains characters a file name cannot hold") from None
     # Each copy name must fit in a file name. Fail here, before the build records the
     # copies: a copy that fails halfway leaves a name --delete-outputs cannot delete.
     longest_suffix = max(_export_copy_names("").values(), key=len)
     room = _MAX_FILE_NAME_BYTES - len(longest_suffix)
     if size > room:
-        raise ValueError(f"--export-name is too long: it takes {size} bytes in UTF-8, so its "
+        raise ValueError(f"{label} is too long: it takes {size} bytes in UTF-8, so its "
                          f"{longest_suffix} copy would need a {size + len(longest_suffix)}-byte file "
                          f"name, and a file name can take {_MAX_FILE_NAME_BYTES}; shorten it to {room} "
                          f"bytes or fewer, such as {room // 3} CJK characters")
     # Check case-insensitively so the same names are safe on macOS/Windows.
     reserved = _RESERVED_EXPORT_STEMS.get(stem.casefold())
     if reserved:
-        raise ValueError(f"--export-name would overwrite {reserved}, which the pipeline keeps "
+        raise ValueError(f"{label} would overwrite {reserved}, which the pipeline keeps "
                          f"in the temp dir; choose another name")
     return stem
 
@@ -1365,7 +1400,8 @@ def _copies_named_in_export_name_file(temp_dir):
     Those builds took the stem from `--export-name "$(cat export_name.txt)"`,
     which _validate_export_name() strips, so the file is read the same way:
     newline='' keeps a carriage return inside the name. Returns [] if there is
-    no export_name.txt; raises ValueError if it is there but names no copies.
+    no export_name.txt and None if it is blank, as no build makes copies then;
+    raises ValueError if it is there but names no copies.
     """
     path = os.path.join(temp_dir, 'export_name.txt')
     try:
@@ -1377,6 +1413,8 @@ def _copies_named_in_export_name_file(temp_dir):
         return []
     except OSError as e:
         raise ValueError(f"export_name.txt cannot be read ({e})") from None
+    if not text.strip():
+        return None
     try:
         stem = _validate_export_name(text)
     except ValueError as e:
@@ -1404,6 +1442,52 @@ def _delete_file(path):
     return True
 
 
+def _conversion_problem(temp_dir):
+    """Why temp_dir does not look like a temp dir convert.py split a book into, or None.
+
+    Checks the shape of the manifest.json that create_manifest() writes and
+    nothing more: its three fields, at least one chunk and as many as
+    chunk_count says, a source_hash of 64 lowercase hex digits, orders 1 to
+    N, the entry of order n naming convert.py's n-th chunk file, and exactly
+    those chunk files in temp_dir, as regular files. No hash is compared with
+    a file, as chunks may change after the conversion, so a made-up manifest
+    of that shape passes.
+    """
+    try:
+        manifest = load_manifest(temp_dir)
+    except (OSError, ValueError) as e:
+        return str(e)
+    if manifest is None:
+        return "there is none"
+    if set(manifest) != {"chunk_count", "source_hash", "chunks"}:
+        return f"it has the fields {', '.join(sorted(manifest))}, not chunk_count, chunks and source_hash"
+    chunks = manifest["chunks"]
+    if not chunks or type(manifest["chunk_count"]) is not int or manifest["chunk_count"] != len(chunks):
+        return "it lists no chunks, or not as many as its chunk_count says"
+    if not isinstance(manifest["source_hash"], str) or not re.fullmatch(r"[0-9a-f]{64}", manifest["source_hash"]):
+        return "its source_hash is not 64 lowercase hex digits"
+    if sorted(chunk["order"] for chunk in chunks) != list(range(1, len(chunks) + 1)):
+        return "its orders do not run from 1 without a gap"
+    listed = []
+    for n, chunk in enumerate(sorted(chunks, key=lambda chunk: chunk["order"]), 1):
+        name = chunk_file_name(nth_chunk_id(n))
+        if chunk["source_file"] != name:
+            return f"its entry of order {n} is {chunk['source_file']}, not {name}"
+        listed.append(name)
+    try:
+        on_disk = list_chunk_files(temp_dir)
+    except (OSError, ValueError) as e:
+        return str(e)
+    on_disk_names, listed_names = set(on_disk), set(listed)
+    missing = [name for name in listed if name not in on_disk_names]
+    if missing:
+        return f"{missing[0]}, which it lists, is not there as a file"
+    unlisted = [name for name in on_disk if name not in listed_names]
+    if unlisted:
+        return f"it does not list {unlisted[0]}, which is there"
+    return None
+
+
 def delete_outputs(temp_dir):
     """Delete the outputs and export copies of earlier builds, so a rebuild regenerates them.
 
@@ -1427,9 +1511,18 @@ def delete_outputs(temp_dir):
         except ValueError as e:
             print(f"Error: {e}. Without {EXPORT_COPIES_FILE}, that file is how the export copies "
                   f"of earlier builds are found: write the export name they were made with to "
-                  f"export_name.txt, or delete export_name.txt if there are none. "
+                  f"export_name.txt, or leave export_name.txt empty if there are none. "
                   f"Nothing was deleted.")
             return False
+        if copies is None:
+            # An empty export_name.txt means no copies only in what looks like a translate-book temp dir.
+            problem = _conversion_problem(temp_dir)
+            if problem:
+                print(f"Error: export_name.txt is empty and {temp_dir} holds no usable manifest.json "
+                      f"({problem}), so it is not known to be a translate-book temp directory. "
+                      f"Nothing was deleted.")
+                return False
+            copies = []
     else:
         copies = recorded
 
@@ -1490,6 +1583,15 @@ def main():
         print(f"Error: Temp directory not found: {temp_dir}")
         sys.exit(1)
 
+    if not args.delete_outputs:
+        try:
+            load_manifest(temp_dir)
+            list_chunk_files(temp_dir)
+            list_chunk_files(temp_dir, 'output')
+        except (OSError, ValueError) as e:
+            print(f"Error: {e}")
+            sys.exit(1)
+
     if args.headings:
         rows = heading_outline(temp_dir)
         print('\n'.join(rows) if rows else "No headings in output_chunk*.md")
@@ -1500,7 +1602,14 @@ def main():
             sys.exit(1)
         return
 
-    cover = args.cover
+    try:
+        title_override = args.title or read_name_file(temp_dir, TITLE_FILE)
+        author_override = args.author or read_name_file(temp_dir, AUTHOR_FILE)
+        export_name_given = args.export_name or read_name_file(temp_dir, EXPORT_NAME_FILE)
+        cover = args.cover or stored_request_cover(temp_dir)
+    except (OSError, ValueError) as e:
+        print(f"Error: {e}")
+        sys.exit(1)
     if cover:
         if not os.path.isfile(cover):
             print(f"Error: Cover image not found: {cover}")
@@ -1508,9 +1617,10 @@ def main():
         cover = os.path.abspath(cover)
 
     export_name = None
-    if args.export_name:
+    if export_name_given:
         try:
-            export_name = _validate_export_name(args.export_name)
+            export_name = _validate_export_name(
+                export_name_given, '--export-name' if args.export_name else EXPORT_NAME_FILE)
         except ValueError as e:
             print(f"Error: {e}")
             sys.exit(1)
@@ -1526,8 +1636,8 @@ def main():
     lang_code = args.lang or config.get('output_lang', 'zh')
     lang_cfg = get_lang_config(lang_code)
 
-    title = _metadata_title(args.title or config.get('original_title', 'Translated Book'))
-    author = args.author or config.get('creator', 'Unknown Author')
+    title = _metadata_title(title_override or config.get('original_title', 'Translated Book'))
+    author = author_override or config.get('creator', 'Unknown Author')
 
     print(f"=== Merge and Build ===")
     print(f"Temp directory: {temp_dir}")
@@ -1585,7 +1695,7 @@ def cleanup_intermediate_files(temp_dir):
 
     # Remove chunk*.md and output_chunk*.md
     for pattern in ['chunk*.md', 'output_chunk*.md']:
-        for filepath in glob.glob(os.path.join(temp_dir, pattern)):
+        for filepath in glob.glob(os.path.join(glob.escape(temp_dir), pattern)):
             os.remove(filepath)
             removed.append(os.path.basename(filepath))
 

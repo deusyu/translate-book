@@ -17,7 +17,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import glossary as glossary_mod
-from manifest import file_hash, load_manifest, read_output_text
+from manifest import (check_chunk_id, chunk_file_name, chunk_id_from_file_name, file_hash,
+                      list_chunk_files, load_manifest, read_output_text)
+
+if os.name == "nt":
+    sys.exit("translate-book runs on macOS and Linux only. "
+             "On Windows, run it in WSL (Windows Subsystem for Linux).")
 
 
 RUN_STATE_VERSION = 1
@@ -80,21 +85,17 @@ def _chunk_entries_from_manifest(temp_dir):
             })
         return entries
 
-    temp_path = Path(temp_dir)
-    source_files = sorted(
-        p for p in temp_path.glob('chunk*.md')
-        if not p.name.startswith('output_')
-    )
-    return [
-        {
-            "id": p.stem,
-            "source_file": p.name,
-            "output_file": f"output_{p.name}",
+    entries = []
+    for i, name in enumerate(list_chunk_files(temp_dir), 1):
+        chunk_id = chunk_id_from_file_name(name)
+        entries.append({
+            "id": chunk_id,
+            "source_file": name,
+            "output_file": chunk_file_name(chunk_id, 'output'),
             "manifest_source_hash": "",
             "order": i,
-        }
-        for i, p in enumerate(source_files, 1)
-    ]
+        })
+    return entries
 
 
 def _load_glossary(temp_dir):
@@ -165,10 +166,29 @@ def build_chunk_record(temp_dir, chunk_id):
     }
 
 
+def read_chunk_ids(stream):
+    """Chunk ids from a file such as <temp_dir>/record_ids.txt: one per line,
+    separated by spaces, or as a JSON list; duplicates dropped. Raises
+    ValueError for anything that is not a chunk id, or for an empty list."""
+    text = stream.read().lstrip('\ufeff')
+    if text.lstrip().startswith('['):
+        try:
+            tokens = json.loads(text)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"the chunk id list is not valid JSON: {e.msg}") from None
+    else:
+        tokens = text.split()
+    ids = [check_chunk_id(token) for token in tokens]
+    if not ids:
+        raise ValueError("no chunk ids given")
+    return list(dict.fromkeys(ids))
+
+
 def record_chunks(temp_dir, chunk_ids):
     state = load_run_state(temp_dir)
     recorded = []
     for chunk_id in chunk_ids:
+        check_chunk_id(chunk_id)
         state["chunks"][chunk_id] = build_chunk_record(temp_dir, chunk_id)
         recorded.append(chunk_id)
     save_run_state(temp_dir, state)
@@ -322,9 +342,13 @@ def main():
         help="Treat existing outputs without run_state records as needing translation",
     )
 
-    p_record = sub.add_parser('record', help="Record one or more completed output chunks")
+    p_record = sub.add_parser(
+        'record',
+        help="Record one or more completed output chunks, given as arguments or on standard input",
+    )
     p_record.add_argument('temp_dir')
-    p_record.add_argument('chunk_ids', nargs='+')
+    p_record.add_argument('chunk_ids', nargs='*',
+                          help="Chunk ids such as chunk0001; read from standard input when none are given")
 
     p_record_all = sub.add_parser('record-all', help="Record every complete output chunk")
     p_record_all.add_argument('temp_dir')
@@ -333,12 +357,21 @@ def main():
     p_status.add_argument('temp_dir')
 
     args = parser.parse_args()
+    if not os.path.isdir(args.temp_dir):
+        print(f"Error: Temp directory not found: {args.temp_dir}", file=sys.stderr)
+        sys.exit(1)
 
     try:
         if args.cmd == 'plan':
             _print_json(plan(args.temp_dir, retranslate_untracked=args.retranslate_untracked))
         elif args.cmd == 'record':
-            _print_json({"recorded_chunk_ids": record_chunks(args.temp_dir, args.chunk_ids)})
+            if args.chunk_ids:
+                chunk_ids = [check_chunk_id(chunk_id) for chunk_id in args.chunk_ids]
+            elif sys.stdin is None or sys.stdin.isatty():
+                raise ValueError("give the chunk ids as arguments or on standard input")
+            else:
+                chunk_ids = read_chunk_ids(sys.stdin)
+            _print_json({"recorded_chunk_ids": record_chunks(args.temp_dir, chunk_ids)})
         elif args.cmd == 'record-all':
             plan_data = plan(args.temp_dir)
             eligible = [

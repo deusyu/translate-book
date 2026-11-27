@@ -45,11 +45,13 @@ Each chunk gets its own independent subagent with a fresh context window. This p
 - **Manifest validation** — SHA-256 hash tracking prevents stale or corrupt outputs from being merged
 - **Multi-format output** — HTML (with floating TOC), DOCX, EPUB, PDF
 - **Optional output controls** — explicit EPUB cover, custom temp root, and user-facing export aliases
+- **Shell-safe commands** — the skill's commands hold only fixed text; the book's path, title and other book text reach the scripts through files, so a file named like `$(rm -rf ~).epub` cannot run anything
 - **Multi-language** — any language code, e.g. zh, en, ja, ko, fr, de, es, it (Italian), or one with a region such as zh-TW or pt-BR
 - **PDF/DOCX/EPUB/Markdown input** — Calibre handles the conversion heavy lifting; formula- and table-heavy PDFs can be pre-extracted to Markdown with a layout-aware parser (see [Step 1](#step-1-convert))
 
 ## Prerequisites
 
+- **macOS or Linux** — native Windows is not supported, and the scripts stop as soon as they start there. On Windows, run your agent inside [WSL](https://learn.microsoft.com/windows/wsl/) (Windows Subsystem for Linux)
 - **Agent runtime** — any agent that supports Agent Skills and can launch sub-agents from a skill (see [Compatibility](#compatibility))
 - **Calibre** — `ebook-convert` command must be available ([download](https://calibre-ebook.com/))
 - **Pandoc** — for HTML↔Markdown conversion ([download](https://pandoc.org/))
@@ -142,7 +144,7 @@ The skill handles the full pipeline automatically — convert, chunk, translate 
 
 ### 3. Find your outputs
 
-All files are in `{book_name}_temp/`:
+All files are in the temp directory `{book_name}_temp/`, where `{book_name}` is the book's file name with only letters, digits, `.`, `_` and `-` kept: `《三体》（刘慈欣）.epub` gives `三体_刘慈欣_temp/`.
 
 | File | Description |
 |------|-------------|
@@ -183,7 +185,7 @@ Use the translate-book skill. Do not convert again; the temp directory is /tmp/t
 
 The agent passes when all three hold:
 
-1. The transcript shows `python3 /absolute/path/scripts/chunk_context.py …`, so `{baseDir}` was resolved to a real path.
+1. The transcript shows `python3 "/absolute/path/scripts/chunk_context.py" …`, so `{baseDir}` was resolved to a real path.
 2. The write times of `diligent-dick_temp/output_chunk0045*` and `output_chunk0046*` overlap with the other sub-agent's run, so the chunks were translated in parallel rather than one after another by the main agent.
 3. `python3 "$S/scripts/merge_meta.py" status diligent-dick_temp` reports `malformed_meta_files: 0`.
 
@@ -242,11 +244,13 @@ The channel is my running log of thinking alongside AI; the group is its discuss
 python3 scripts/convert.py /path/to/book.pdf --olang zh
 ```
 
-Calibre converts the input to HTMLZ, which is extracted and converted to Markdown, then split into chunks (~6000 chars each). A `manifest.json` records the SHA-256 hash of each source chunk for later validation, and a `source_fingerprint.json` ties the temp dir to the exact source bytes it was built from — re-running against a replaced source file aborts instead of silently reusing stale chunks. Temp dirs created before fingerprinting are adopted with a warning on first re-run.
+Calibre converts the input to HTMLZ, which is extracted and converted to Markdown, then split into chunks (~6000 chars each). A `manifest.json` records the SHA-256 hash of each source chunk for later validation, and a `source_fingerprint.json` ties the temp dir to the exact source bytes, parser settings and target language it was built for — re-running with a replaced source file, other parser settings or another language aborts instead of silently reusing stale chunks. An unreadable `source_fingerprint.json` aborts too. A temp dir created before fingerprinting is adopted with a warning on the first re-run only when its `config.txt` names a file of the same name and the same target language, and the run uses no parser.
 
 The HTML → Markdown step also cleans Calibre's markup structurally. EPUB footnotes — a marker link such as `<a href="#n1"><sup>1</sup></a>` in the text, paired with a note paragraph that opens with a link back to it — become Pandoc footnotes (`[^1]` in the text, `[^1]: …` right after the paragraph), numbered across the whole book so that per-chapter numbering cannot collide after merging. In-book links keep their text, span attributes such as `{lang="…"}`, empty page anchors, and heading ids are dropped, and typographic dashes and quotes stay as Unicode instead of `---` or escaped ASCII quotes. Notes without a back-link (for example EPUB 3 `<aside>` footnotes) stay ordinary paragraphs.
 
-By default the working directory is `{book_name}_temp/` under the current directory. Use `--temp-root /path/to/work` to keep the same leaf directory name under a different parent.
+By default the working directory is `{book_name}_temp/` under the current directory, where `{book_name}` keeps only the letters, digits, `.`, `_` and `-` of the file name, so the path is safe in a shell command. Use `--temp-root /path/to/work` to keep the same leaf directory name under a different parent; that path may contain only letters, digits, `.`, `_`, `-` and `/`. When two file names reduce to the same temp dir name, `source_fingerprint.json`, written as soon as the directory is created, tells the books apart: the second is refused and needs another `--temp-root`. A run that fails before converting anything removes the fingerprint again, so a re-run with corrected settings is not refused. A temp dir that an earlier version named after the raw file name is renamed to the new name when it verifiably holds the same book, and left alone otherwise.
+
+The skill never puts the book's path in a command. Its agent writes `translate-book-request.json` (keys `input`, `target_lang`, `temp_root`, `cover`, `parser`) and runs `python3 "{baseDir}/scripts/convert.py" --request translate-book-request.json`; after a successful run `convert.py` keeps a copy as `<temp_dir>/request.json` and deletes the request file if it still holds what was read. Run by hand, the positional form above works as before.
 
 #### Formula- and table-heavy PDFs: convert Markdown instead (optional)
 
@@ -256,6 +260,8 @@ Calibre reflows PDF text by coordinate heuristics. That works for plain prose, b
 mineru-kit parse paper.pdf -o paper.md          # or any parser from the table below
 python3 scripts/convert.py paper.md --olang zh
 ```
+
+The skill runs the parser through `convert.py` instead: with `parser` set to `mineru`, `marker` or `docling` in the request file, `convert.py` runs one fixed command per parser (`mineru-kit parse <pdf> -o <dir>/book.md`, `marker_single <pdf> --output_dir <dir>`, `docling <pdf> --enrich-formula --output <dir>`), where `<dir>` is `<temp_dir>/parsed/`, a directory it creates for the run and removes once it has converted the Markdown found there. If `parsed/` already exists, it stops and leaves it alone. When the parser fails, it prints the end of the parser's output. The request takes no other parser arguments: if your parser version needs some, run the parser yourself and convert the Markdown it writes, as above. Models and caches stay wherever the parser keeps them.
 
 Any parser works if its Markdown follows these conventions:
 
@@ -271,7 +277,7 @@ Any parser works if its Markdown follows these conventions:
 
 All of them download ML models on first run, their CLIs change between versions (check `--help` if a flag is rejected), and their licenses differ. If the Markdown still contains a parser's placeholder for a dropped formula or image (`<!-- formula-not-decoded -->`, `<!-- image -->`), `convert.py` warns: re-extract with the flag the warning names before translating. For documents with inline math, use MinerU or Marker: docling keeps display formulas only, and `convert.py` warns when it finds several display formulas but no inline math.
 
-YAML front matter (`title`, `author`, `lang`) fills `config.txt` and is not sent for translation; without it, a leading `#` heading becomes `original_title`. The temp dir is named after the Markdown file, so `paper.md` maps to `paper_temp/`. If that dir was built from `paper.pdf`, `convert.py` aborts on the source-fingerprint mismatch, so delete it first. `--strip-page-numbers` and `--detect-page-numbers` only apply to Calibre input.
+YAML front matter (`title`, `author`, `lang`) fills `config.txt` and is not sent for translation; without it, a leading `#` heading becomes `original_title`. The temp dir is named after the Markdown file, so `paper.md` maps to `paper_temp/`. If that dir was built from `paper.pdf`, `convert.py` stops on the source-fingerprint mismatch: convert under another `--temp-root`, or delete the old temp dir if you no longer need it. `--strip-page-numbers` and `--detect-page-numbers` only apply to Calibre input.
 
 At build time Pandoc renders `$...$` / `$$...$$` as MathML, so formulas are typeset in `book.html` and `book.pdf`, and in `book.epub` on readers that support MathML. Calibre's DOCX output cannot typeset MathML: formulas appear there as flattened text followed by their TeX source.
 
@@ -329,6 +335,8 @@ python3 scripts/merge_and_build.py --temp-dir book_temp --title "translated titl
 
 `--title` becomes the metadata title that readers show in page headers, so pass it without 书名号 or quotes (a wrapping `《》` is stripped). `--cover` passes an explicit image to the EPUB Calibre step. `--export-name` creates alias copies such as `translated-title.epub` while preserving the canonical `book.*` pipeline artifacts. The names `book_doc`, `input` and `output` (case-insensitive) are reserved and rejected before building, because their HTML alias would overwrite `book_doc.html`, `input.html` or `output.html` in the temp dir.
 
+The skill passes none of these on the command line, because titles and names are book text. Its agent writes the translated title, the export name and an author override to `title.txt`, `export_name.txt` and `author.txt` in the temp dir and runs `merge_and_build.py --temp-dir <temp_dir>`, which reads those files when the flags are absent. Without `--cover`, it uses the cover image that `<temp_dir>/request.json` names.
+
 Before merging, the script validates:
 - Every source chunk has a corresponding output file (1:1 match)
 - Source chunk hashes match the manifest (no stale outputs)
@@ -337,7 +345,7 @@ Before merging, the script validates:
 
 Then: merge → Pandoc HTML → inject TOC → Calibre generates DOCX, EPUB, PDF.
 
-Intermediate files stay in the temp dir after the build, so a few bad passages can be fixed without re-translating the book. Either edit the affected `output_chunkNNNN.md` and run `python3 scripts/run_state.py record <temp_dir> chunkNNNN`, or delete the file and re-run the skill to re-translate it. `record` marks the chunk as matching the current glossary and source, so run `python3 scripts/run_state.py plan <temp_dir>` first: if that chunk is queued for re-translation because the glossary or its source changed, apply those changes in your edit or re-translate it instead. If the source chunk itself was edited, re-run `convert.py` first so `manifest.json` records the change; otherwise the merge stops with "Source changed since splitting". Leave out page-number flags such as `--strip-page-numbers` on that re-run: once chunks exist they abort, and deleting the cached files as the error suggests would discard the chunks. A re-run may also queue other chunks whose glossary terms changed after they were translated; the skill asks before re-translating those. Then re-run `merge_and_build.py`: it re-merges when a chunk is newer than `output.md` and regenerates the outputs. Do not edit `output.md` itself — any later re-merge rebuilds it from the chunks. `--cleanup` permanently deletes `chunk*.md`, `output_chunk*.md`, and `input.*`, which rules such fixes out; use it only when you are done with the book.
+Intermediate files stay in the temp dir after the build, so a few bad passages can be fixed without re-translating the book. Either edit the affected `output_chunkNNNN.md` and run `python3 scripts/run_state.py record <temp_dir> chunkNNNN`, or delete the file and re-run the skill to re-translate it. `record` marks the chunk as matching the current glossary and source, so run `python3 scripts/run_state.py plan <temp_dir>` first: if that chunk is queued for re-translation because the glossary or its source changed, apply those changes in your edit or re-translate it instead. If the source chunk itself was edited, re-run `convert.py` first so `manifest.json` records the change; otherwise the merge stops with "Source changed since splitting". Leave out page-number flags such as `--strip-page-numbers` on that re-run: once chunks exist they make `convert.py` stop rather than discard the chunks. A re-run may also queue other chunks whose glossary terms changed after they were translated; the skill asks before re-translating those. Then re-run `merge_and_build.py`: it re-merges when a chunk is newer than `output.md` and regenerates the outputs. Do not edit `output.md` itself — any later re-merge rebuilds it from the chunks. `--cleanup` permanently deletes `chunk*.md`, `output_chunk*.md`, `input.*` and `output.html`, which rules such fixes out; use it only when you are done with the book.
 
 **Note:** `{book_name}_temp/` is a working directory for a single translation run. If you change the title, author, template, or image assets, either use a fresh temp directory or run `python3 scripts/merge_and_build.py --temp-dir book_temp --delete-outputs` before re-running: it deletes the final artifacts (`book.html`, `book_doc.html`, `output.html`, `book.docx`, `book.epub`, `book.pdf`) and the `--export-name` copies, and keeps the chunks and translations. A different output language needs a new translation, so use a fresh temp directory for it.
 
@@ -367,7 +375,13 @@ Intermediate files stay in the temp dir after the build, so a few bad passages c
 |---------|----------|
 | `Calibre ebook-convert not found` | Install Calibre and ensure `ebook-convert` is in PATH |
 | `Manifest validation failed` | Source chunks changed since splitting — re-run `convert.py` |
-| `was created from different source bytes` | The temp dir belongs to a different source file — delete the temp dir or use a fresh `--temp-root` |
+| `was created from different source bytes` | The temp dir belongs to a different source file, or another book's file name reduces to the same temp dir name — convert under another `--temp-root` (`temp_root` in the skill's request file) |
+| `temp_root ...: the part ... has characters other than letters, digits ...` | The temp dir path goes into shell commands, so it may contain only letters, digits, `.`, `_`, `-` and `/`. Choose such a directory, or leave `--temp-root` out |
+| `... is a symlink, and translate-book never renames a symlink` | The temp dir an earlier version made for this book is a symlink. Move the directory it points to under the new name yourself, or convert under another `--temp-root` |
+| `... already exists and is not known to hold this book's conversion` | This book's earlier run is under its old temp dir name, and the new name is taken. Rename or move the directory that has the new name, or convert under another `--temp-root` |
+| `unexpected file 'chunk1.md'` (or another chunk-like name) | A file in the temp dir looks like a chunk but is not named like `chunk0001.md`. Rename or move it in your file manager rather than in a shell command, since its name may hold shell syntax |
+| `source_fingerprint.json cannot be read`, or `... is not empty and holds no translate-book conversion` | The temp dir holds something `convert.py` cannot tie to this book: a fingerprint that does not parse or lacks a field, or files it did not write. It changes nothing there; convert under another `--temp-root` |
+| `... parsed already exists` | A `parsed/` directory that this run did not create is in the temp dir. `convert.py` neither uses nor changes it; rename or move it, then run again |
 | PDF formulas/tables garbled after conversion | Extract the PDF with a parser from the table in [Step 1](#step-1-convert), delete the old temp dir, and run `convert.py` on the `.md` |
 | `formula(s) were not decoded` / `image(s) were exported as placeholders` | The parser dropped that content — re-extract with the flag the warning names, delete the temp dir, and run `convert.py` again |
 | `display formula(s) but no inline math` | The parser turned inline math into plain text (docling's standard pipeline does) — re-extract with MinerU or Marker, delete the temp dir, and run `convert.py` again. If the document has no inline math, ignore it |
@@ -377,7 +391,7 @@ Intermediate files stay in the temp dir after the build, so a few bad passages c
 | Incomplete translation | Re-run the skill — it resumes from where it stopped |
 | A few passages need fixing after the build | Fix the affected `output_chunkNNNN.md` instead of `output.md`, then re-run `merge_and_build.py` (see [Step 3](#step-3-merge--build)) |
 | Changed title/template/assets but output didn't update | Run `python3 scripts/merge_and_build.py --temp-dir book_temp --delete-outputs`, then re-run `merge_and_build.py` |
-| Want page-number footers stripped from PDF output | For PDF input, monotonic page-number sequences (e.g. `1, 2, 3, ...`) are auto-detected and dropped while outliers like years (`1984`), chapter numbers, and citation indices stay preserved. EPUB and DOCX keep every standalone number, because their page numbers are not text (EPUB anchors, DOCX footers); pass `--detect-page-numbers` for an EPUB that does print page numbers as text. If detection misses your case, pass `--strip-page-numbers` to `convert.py` to aggressively delete every standalone-digit line. Both flags abort if a cached `input.md` or `chunk*.md` already exists — delete them first so the flag actually takes effect. |
+| Want page-number footers stripped from PDF output | For PDF input, monotonic page-number sequences (e.g. `1, 2, 3, ...`) are auto-detected and dropped while outliers like years (`1984`), chapter numbers, and citation indices stay preserved. EPUB and DOCX keep every standalone number, because their page numbers are not text (EPUB anchors, DOCX footers); pass `--detect-page-numbers` for an EPUB that does print page numbers as text. If detection misses your case, pass `--strip-page-numbers` to `convert.py` to aggressively delete every standalone-digit line. Both flags stop `convert.py` if a cached `input.md` or `chunk*.md` already exists — convert under another `--temp-root` so the flag takes effect. |
 | `output.md exists but manifest invalid` | Stale output — the script auto-deletes and re-merges |
 | `Glossary upgrade rejected: duplicate source` | v2 disallows two terms sharing a source/alias surface form. Edit `glossary.json` to disambiguate (e.g., rename one source from `Apple` to `Apple (Inc.)`) and reload. |
 | PDF generation fails | Ensure Calibre is installed with PDF output support |
@@ -415,7 +429,7 @@ Phase 1 grows the glossary batch-by-batch, so the first batch sees the smallest 
 
 Recent PR discussions also surfaced several useful workflow improvements, but these are broader than one-off patches and touch repo contracts (artifact names, temp-dir behavior, cleanup semantics, or EPUB compatibility scope). Current status:
 
-- **Explicit EPUB cover support (shipped).** `merge_and_build.py --cover <image>` passes the image through the HTML -> EPUB Calibre step. `--cover-from <epub>` / EPUB cover auto-extraction remains out of scope until the project is ready to own EPUB parsing compatibility across different package layouts. (context: closed #3)
+- **Explicit EPUB cover support (shipped).** `merge_and_build.py --cover <image>` passes the image through the HTML -> EPUB Calibre step; the skill gives the cover in its request file, and the build reads it from the copy of that file in the temp dir. `--cover-from <epub>` / EPUB cover auto-extraction remains out of scope until the project is ready to own EPUB parsing compatibility across different package layouts. (context: closed #3)
 - **Configurable temp workspace location (shipped).** `convert.py --temp-root <dir>` keeps the default cwd-local `{book_name}_temp/` behavior unless explicitly overridden. (context: closed #4)
 - **Safer Calibre/Pandoc artifact cleanup (partly shipped).** Page-number and Calibre-marker cleanup is regression-tested, preserving years, chapter numbers, and non-monotonic standalone numbers. Continue improving cleanup incrementally under tests. (context: closed #5)
 - **Optional user-facing export names (shipped).** `merge_and_build.py --export-name <stem>` creates alias copies while preserving canonical pipeline artifacts as `book.html`, `book_doc.html`, `book.docx`, `book.epub`, and `book.pdf`. (context: closed #6)

@@ -1,7 +1,7 @@
+import process_guard  # noqa: F401  first, so it guards every process the tests below start
 import io
 import json
 import os
-import subprocess
 import sys
 import tempfile
 import unittest
@@ -1900,6 +1900,25 @@ class StatusTests(unittest.TestCase):
         self.assertEqual(status['malformed_meta_files'], 1)
         self.assertIn('chunk0001', status['malformed_meta_chunk_ids'])
         self.assertEqual(status['meta_files_consumed'], 0)
+
+
+
+class ChunkIdInputValidationTests(unittest.TestCase):
+    def test_apply_merge_rejects_consumed_ids_that_are_not_chunk_ids(self):
+        with temp_workspace(glossary=make_glossary()) as tmp:
+            before = Path(tmp, "glossary.json").read_bytes()
+            decisions = {"auto_apply": [], "decisions": [], "consumed_chunk_ids": ["../../etc/passwd"]}
+            result = process_guard.run_script("merge_meta.py", "apply-merge", tmp, input=json.dumps(decisions))
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("is not a chunk id", result.stdout + result.stderr)
+            self.assertEqual(Path(tmp, "glossary.json").read_bytes(), before)
+
+    def test_prepare_merge_stops_at_a_stray_meta_file(self):
+        with temp_workspace(glossary=make_glossary()) as tmp:
+            Path(tmp, "output_chunk1.meta.json").write_text("{}", encoding="utf-8")
+            result = process_guard.run_script("merge_meta.py", "prepare-merge", tmp)
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("unexpected file", result.stdout + result.stderr)
 
 
 if __name__ == '__main__':

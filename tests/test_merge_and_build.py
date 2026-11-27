@@ -1,3 +1,4 @@
+import process_guard  # noqa: F401  first, so it guards every process the tests below start
 import contextlib
 import inspect
 import io
@@ -50,13 +51,13 @@ class ConvertWithPandocTests(unittest.TestCase):
         self.assertIn("  a & b\n", out)
         self.assertIn("  x \\quad \\\\\n", out)
 
-    @unittest.skipUnless(merge_and_build.check_pandoc_available(), "pandoc is not installed")
+    @process_guard.needs("pandoc")
     def test_real_pandoc_warning_is_recognized(self):
         with tempfile.TemporaryDirectory() as tmp:
             md = Path(tmp) / "in.md"
             md.write_text("$$a & b$$\n\n$$\\frac{1}{2}$$\n", encoding="utf-8")
             buf = io.StringIO()
-            with contextlib.redirect_stdout(buf):
+            with contextlib.redirect_stdout(buf), process_guard.library_processes("pandoc"):
                 ok = merge_and_build.convert_with_pandoc(str(md), str(Path(tmp) / "out.html"), "T", "en")
         self.assertTrue(ok)
         self.assertIn("pandoc left 1 formula(s) as raw TeX", buf.getvalue())
@@ -582,11 +583,106 @@ class DeleteOutputsTests(unittest.TestCase):
                              sorted([n for n in self.KEPT if n != "export_name.txt"] + self.SUFFIXES))
             self.assertNotIn("Error", out)
 
+    def test_without_a_record_a_blank_export_name_txt_deletes_only_the_outputs(self):
+        # No build makes copies for a blank name; the suffixes alone are what an
+        # empty name would give.
+        from manifest import create_manifest
+
+        for text in ["", "\n", "  \r\n", "\u3000\n"]:
+            with self.subTest(text=text), tempfile.TemporaryDirectory() as tmp:
+                temp_dir = self.make_temp_dir(tmp)
+                with contextlib.redirect_stdout(io.StringIO()):
+                    create_manifest(str(temp_dir), ["chunk0001.md"], str(temp_dir / "input.md"))
+                (temp_dir / "export_name.txt").write_text(text, encoding="utf-8", newline="")
+                for suffix in self.SUFFIXES:
+                    (temp_dir / suffix).write_text("keep", encoding="utf-8")
+
+                ok, out = self.delete(temp_dir)
+
+                self.assertTrue(ok)
+                self.assertEqual(self.files(temp_dir), sorted(self.KEPT + self.SUFFIXES))
+                self.assertNotIn("Error", out)
+
+    def test_a_blank_export_name_txt_without_a_conversion_deletes_nothing(self):
+        # Only a directory that looks like a translate-book temp dir says what an empty
+        # export_name.txt means: it has the manifest.json create_manifest() writes and its chunks.
+        from manifest import create_manifest
+
+        def entry(chunk_id, order):
+            return {"id": chunk_id, "order": order, "source_file": f"{chunk_id}.md", "source_hash": "",
+                    "output_file": f"output_{chunk_id}.md"}
+
+        def made_up(*entries):
+            return {"chunk_count": len(entries), "source_hash": "0" * 64, "chunks": list(entries)}
+
+        # What convert.py leaves passes, past chunk9999 too and after a chunk changes; so does a
+        # made-up manifest of that shape, as no hash is compared with a file.
+        for count in [1, 3, 10000]:
+            with self.subTest(chunks=count), tempfile.TemporaryDirectory() as tmp:
+                names = [f"chunk{n:04d}.md" for n in range(1, count + 1)]
+                for name in names:
+                    (Path(tmp) / name).write_text("# One\n", encoding="utf-8")
+                (Path(tmp) / "input.md").write_text("# Book\n", encoding="utf-8")
+                with contextlib.redirect_stdout(io.StringIO()):
+                    create_manifest(tmp, names, str(Path(tmp) / "input.md"))
+                with open(Path(tmp) / names[-1], "a", encoding="utf-8") as f:
+                    f.write("\nText in a figure\n")
+                self.assertIsNone(merge_and_build._conversion_problem(tmp))
+        full = made_up(entry("chunk0001", 1))
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "chunk0001.md").write_text("# One\n", encoding="utf-8")
+            (Path(tmp) / "manifest.json").write_text(json.dumps(full), encoding="utf-8")
+            self.assertIsNone(merge_and_build._conversion_problem(tmp))
+        # Each case breaks one thing: (manifest.json, the chunk files, the reason given).
+        one, two = ("chunk0001.md",), ("chunk0001.md", "chunk0002.md")
+        cases = [(None, one, "there is none"),
+                 ("manifest.json", one, "Expecting value"),
+                 ('{"chunks":[]}', one, "it has the fields chunks,"),
+                 (json.dumps({**full, "chunks": [], "chunk_count": 0}), one, "it lists no chunks"),
+                 (json.dumps({"chunks": full["chunks"]}), one, "it has the fields chunks,"),
+                 (json.dumps({**full, "chunk_count": 2}), one, "as its chunk_count says"),
+                 (json.dumps({**full, "chunk_count": True}), one, "as its chunk_count says"),
+                 (json.dumps({**full, "source_hash": ""}), one, "its source_hash is not 64 lowercase hex digits"),
+                 (json.dumps(made_up(entry("chunk0001", 1), entry("chunk0002", 3))), two,
+                  "its orders do not run from 1 without a gap"),
+                 (json.dumps(made_up(entry("chunk0001", 1), entry("chunk0003", 2))), ("chunk0001.md", "chunk0003.md"),
+                  "its entry of order 2 is chunk0003.md, not chunk0002.md"),
+                 (json.dumps(made_up(entry("chunk00001", 1))), ("chunk00001.md",),
+                  "its entry of order 1 is chunk00001.md, not chunk0001.md"),
+                 (json.dumps(made_up(entry("chunk0002", 1), entry("chunk0001", 2))), two,
+                  "its entry of order 1 is chunk0002.md, not chunk0001.md"),
+                 (json.dumps(full), (), "chunk0001.md, which it lists, is not there as a file"),
+                 (json.dumps(full), "symlink", "is not a regular file but a symlink"),
+                 (json.dumps(full), two, "it does not list chunk0002.md, which is there")]
+        for manifest, chunks, reason in cases:
+            with self.subTest(manifest=manifest, chunks=chunks), tempfile.TemporaryDirectory() as tmp:
+                temp_dir = Path(tmp) / "notes"
+                temp_dir.mkdir()
+                (temp_dir / "book.pdf").write_text("mine", encoding="utf-8")
+                (temp_dir / "export_name.txt").write_text("", encoding="utf-8")
+                if chunks == "symlink":
+                    (Path(tmp) / "one.md").write_text("# One\n", encoding="utf-8")
+                    (temp_dir / "chunk0001.md").symlink_to(Path(tmp) / "one.md")
+                else:
+                    for name in chunks:
+                        (temp_dir / name).write_text("# One\n", encoding="utf-8")
+                if manifest:
+                    (temp_dir / "manifest.json").write_text(manifest, encoding="utf-8")
+                before = self.contents(temp_dir)
+
+                code, out = self.run_main(temp_dir, "--delete-outputs")
+
+                self.assertEqual(code, 1)
+                self.assertIn("export_name.txt is empty and", out)
+                self.assertIn(reason, out)
+                self.assertIn("Nothing was deleted.", out)
+                self.assertEqual(self.contents(temp_dir), before)
+
     def test_without_a_record_an_unusable_export_name_txt_deletes_nothing(self):
         # The suffixes alone are what an empty name would give.
         decoys = self.SUFFIXES + ["sub\\bait.pdf"]
         reasons = {"<directory>": "cannot be read", "<dangling symlink>": "is a symlink to a missing file"}
-        for text in ["", "\n", "  \r\n", "../bait\n", "<parent>/bait\n", "sub\\bait\n",
+        for text in ["../bait\n", "<parent>/bait\n", "sub\\bait\n",
                      "nul\x00bait\n", "input\n", "BOOK_DOC\n", "a" * 247 + "\n", "<directory>",
                      "<dangling symlink>"]:
             with self.subTest(text=text), tempfile.TemporaryDirectory() as tmp:
@@ -1423,17 +1519,30 @@ class HeadingOutlineTests(unittest.TestCase):
                     "## 第一节\n"
                 ),
                 # An unclosed fence hides the rest of its own chunk only.
-                "output_chunk2.md": "```\n# still code\n",
-                "output_chunk10.md": "## 第三章\n",
-                "output_chunk3.md": "## 第二章\n",
+                "output_chunk0002.md": "```\n# still code\n",
+                "output_chunk10000.md": "## 第三章\n",
+                "output_chunk9999.md": "## 第二章\n",
             })
 
             self.assertEqual(merge_and_build.heading_outline(temp_dir), [
                 "output_chunk0001.md:1: # 第一章 标题",
                 "output_chunk0001.md:15: ## 第一节",
-                "output_chunk3.md:1: ## 第二章",
-                "output_chunk10.md:1: ## 第三章",
+                "output_chunk9999.md:1: ## 第二章",
+                "output_chunk10000.md:1: ## 第三章",
             ])
+
+    def test_stray_output_chunk_name_stops_the_outline(self):
+        for name in ("output_chunk2.md", "output_chunk$(touch x).md", "output_chunk0001 .md"):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as temp_dir:
+                self._write_chunks(temp_dir, {"output_chunk0001.md": "# 标题\n", name: "# x\n"})
+                out = io.StringIO()
+                with mock.patch.object(
+                    sys, "argv", ["merge_and_build.py", "--temp-dir", temp_dir, "--headings"]
+                ), contextlib.redirect_stdout(out), self.assertRaises(SystemExit) as raised:
+                    merge_and_build.main()
+
+                self.assertEqual(raised.exception.code, 1)
+                self.assertIn(f"Error: unexpected file {name!r}", out.getvalue())
 
     def test_main_prints_outline_without_building(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1446,6 +1555,117 @@ class HeadingOutlineTests(unittest.TestCase):
 
             self.assertEqual(out.getvalue(), "output_chunk0001.md:1: # 标题\n")
             self.assertEqual(os.listdir(temp_dir), ["output_chunk0001.md"])
+
+
+
+class NameFilesTests(unittest.TestCase):
+    BOOK_TEXT = "O'Brien's \"tale\" $(touch pwned) `touch pwned-tick` $HOME"
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+        self.temp_dir = str(self.root / "book_temp")
+        os.mkdir(self.temp_dir)
+        self.cover = self.root / "Cover.PNG"
+        self.cover.write_bytes(b"png")
+        Path(self.temp_dir, "chunk0001.md").write_text("Body\n", encoding="utf-8")
+        Path(self.temp_dir, "output_chunk0001.md").write_text("正文\n", encoding="utf-8")
+        Path(self.temp_dir, "config.txt").write_text(
+            "output_lang=zh\noriginal_title=Original\ncreator=Config Author\n", encoding="utf-8")
+
+    def build(self, *args, out=None):
+        calls = {}
+
+        def html(temp_dir, title, lang_cfg, author):
+            calls.update(title=title, author=author)
+            return True
+
+        def formats(temp_dir, lang_attr, cover=None):
+            calls["cover"] = cover
+            return True
+
+        def aliases(temp_dir, export_name):
+            calls["export_name"] = export_name
+            return []
+
+        out = out or io.StringIO()
+        argv = ["merge_and_build.py", "--temp-dir", self.temp_dir, *args]
+        with mock.patch.object(sys, "argv", argv), \
+                mock.patch.object(merge_and_build, "merge_markdown_files", return_value=True), \
+                mock.patch.object(merge_and_build, "convert_md_to_html", side_effect=html), \
+                mock.patch.object(merge_and_build, "add_toc"), \
+                mock.patch.object(merge_and_build, "generate_formats", side_effect=formats), \
+                mock.patch.object(merge_and_build, "export_named_aliases", side_effect=aliases), \
+                contextlib.redirect_stdout(out):
+            merge_and_build.main()
+        return calls, out.getvalue()
+
+    def write_stored_request(self, cover):
+        request = {"input": "/books/a.epub", "target_lang": "zh", "temp_root": None,
+                   "cover": cover, "parser": None}
+        Path(self.temp_dir, "request.json").write_text(json.dumps(request), encoding="utf-8")
+
+    def test_reads_title_author_export_name_and_cover_from_the_temp_dir(self):
+        Path(self.temp_dir, "title.txt").write_text(f"《{self.BOOK_TEXT}》\n", encoding="utf-8")
+        Path(self.temp_dir, "author.txt").write_text(self.BOOK_TEXT + "\n", encoding="utf-8")
+        Path(self.temp_dir, "export_name.txt").write_text(self.BOOK_TEXT + "\n", encoding="utf-8")
+        self.write_stored_request(str(self.cover))
+
+        calls, _ = self.build()
+
+        self.assertEqual(calls, {"title": self.BOOK_TEXT, "author": self.BOOK_TEXT,
+                                 "cover": str(self.cover), "export_name": self.BOOK_TEXT})
+
+    def test_cover_comes_only_from_the_request_or_the_command_line(self):
+        for name in ("cover.png", "cover.jpg"):
+            Path(self.temp_dir, name).write_bytes(b"not used")
+        calls, _ = self.build()
+        self.assertIsNone(calls["cover"])
+        self.write_stored_request(None)
+        calls, _ = self.build()
+        self.assertIsNone(calls["cover"])
+        self.write_stored_request(str(self.cover))
+        other = self.root / "other.jpg"
+        other.write_bytes(b"jpg")
+        calls, _ = self.build("--cover", str(other))
+        self.assertEqual(calls["cover"], str(other))
+
+    def test_without_files_uses_config_and_makes_no_copies(self):
+        calls, _ = self.build()
+        self.assertEqual(calls, {"title": "Original", "author": "Config Author", "cover": None})
+
+    def test_command_line_values_win(self):
+        Path(self.temp_dir, "title.txt").write_text("From file\n", encoding="utf-8")
+        calls, _ = self.build("--title", "From flag")
+        self.assertEqual(calls["title"], "From flag")
+
+    def test_blank_name_files_count_as_missing(self):
+        for name in ("title.txt", "author.txt", "export_name.txt"):
+            Path(self.temp_dir, name).write_text(" \n", encoding="utf-8")
+        calls, _ = self.build()
+        self.assertEqual(calls, {"title": "Original", "author": "Config Author", "cover": None})
+
+    def test_unusable_files_stop_the_build(self):
+        request = {"input": "/books/a.epub", "target_lang": "zh", "temp_root": None,
+                   "cover": str(self.cover), "parser": None}
+        cases = [("title.txt", b"\xff\xfe", "not UTF-8"),
+                 ("export_name.txt", "a/b".encode(), "export"),
+                 ("request.json", b'{"my": "notes"}', "request.json"),
+                 ("request.json", b"{", "request.json"),
+                 ("request.json", json.dumps(dict(request, parser_args=[])).encode(), "request.json"),
+                 ("request.json", json.dumps(dict(request, cover="cover.png")).encode(), "request.json"),
+                 ("request.json", json.dumps(dict(request, cover=str(self.root / "gone.png"))).encode(),
+                  "Cover image not found")]
+        for name, data, needle in cases:
+            with self.subTest(name=name, data=data[:40]):
+                Path(self.temp_dir, name).write_bytes(data)
+                out = io.StringIO()
+                with self.assertRaises(SystemExit) as raised:
+                    self.build(out=out)
+                self.assertEqual(raised.exception.code, 1)
+                self.assertIn(needle, out.getvalue())
+                os.unlink(os.path.join(self.temp_dir, name))
 
 
 if __name__ == "__main__":

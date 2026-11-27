@@ -45,11 +45,13 @@ Calibre ebook-convert → HTMLZ → HTML → Markdown
 - **Manifest 校验** — SHA-256 hash 追踪，防止过时或损坏的输出被合并
 - **多格式输出** — HTML（含浮动目录）、DOCX、EPUB、PDF
 - **可选输出控制** — 显式 EPUB 封面、自定义 temp root、面向用户的导出别名
+- **命令不经手外部文本** — Skill 的命令只含固定文本；书的路径、书名和其他书中文字都经文件交给脚本，所以 `$(rm -rf ~).epub` 这样的文件名也执行不了任何东西
 - **多语言** — 任意语言代码，例如 zh、en、ja、ko、fr、de、es、意大利语 it，也可以带地区，例如 zh-TW、pt-BR
 - **多格式输入** — PDF/DOCX/EPUB/Markdown，Calibre 负责格式转换；公式、表格密集的 PDF 可先用版面感知解析器转成 Markdown（见[第一步](#第一步转换)）
 
 ## 前置要求
 
+- **macOS 或 Linux** — 不支持原生 Windows，脚本在那里一启动就会停下。Windows 上请在 [WSL](https://learn.microsoft.com/windows/wsl/)（适用于 Linux 的 Windows 子系统）里运行 agent
 - **Agent 运行环境** — 任何支持 Agent Skills、能从 Skill 里派出子 agent 的 agent（见[兼容性](#兼容性)）
 - **Calibre** — `ebook-convert` 命令可用（[下载](https://calibre-ebook.com/)）
 - **Pandoc** — 用于 HTML↔Markdown 转换（[下载](https://pandoc.org/)）
@@ -142,7 +144,7 @@ Skill 自动处理完整流程 — 转换、拆分、并行翻译、校验、合
 
 ### 3. 查看输出
 
-所有文件在 `{book_name}_temp/` 目录下：
+所有文件在 temp 目录 `{book_name}_temp/` 下，其中 `{book_name}` 是书的文件名只保留字母、数字、`.`、`_` 和 `-` 后的结果：`《三体》（刘慈欣）.epub` 对应 `三体_刘慈欣_temp/`。
 
 | 文件 | 说明 |
 |------|------|
@@ -183,7 +185,7 @@ python3 "$S/scripts/convert.py" "$S/tests/baselines/diligent-dick/diligent-dick.
 
 三条都满足才算通过：
 
-1. 对话记录里出现过 `python3 /绝对路径/scripts/chunk_context.py …`，说明 `{baseDir}` 被解析成了真实路径。
+1. 对话记录里出现过 `python3 "/绝对路径/scripts/chunk_context.py" …`，说明 `{baseDir}` 被解析成了真实路径。
 2. `diligent-dick_temp/output_chunk0045*` 和 `output_chunk0046*` 的写入时间落在另一个子 agent 的运行期间，说明两个 chunk 是并行翻译的，不是主 agent 自己挨个翻。
 3. `python3 "$S/scripts/merge_meta.py" status diligent-dick_temp` 输出 `malformed_meta_files: 0`。
 
@@ -242,11 +244,13 @@ Bug 和功能需求请按上一节的要求提 [GitHub issue](https://github.com
 python3 scripts/convert.py /path/to/book.pdf --olang zh
 ```
 
-Calibre 将输入文件转为 HTMLZ，解压后转为 Markdown，再拆分为 chunk（每个约 6000 字符）。`manifest.json` 记录每个源 chunk 的 SHA-256 hash，用于后续校验；`source_fingerprint.json` 则把 temp 目录与生成它的源文件字节绑定 — 若源文件被替换后重跑，会直接报错中止，而不是静默复用过时的 chunk。指纹机制之前创建的 temp 目录会在首次重跑时打印警告并被接管。
+Calibre 将输入文件转为 HTMLZ，解压后转为 Markdown，再拆分为 chunk（每个约 6000 字符）。`manifest.json` 记录每个源 chunk 的 SHA-256 hash，用于后续校验；`source_fingerprint.json` 则把 temp 目录与生成它的源文件字节、解析器设置和目标语言绑定 — 换了源文件、解析器设置或目标语言后重跑，会直接报错中止，而不是静默复用过时的 chunk。`source_fingerprint.json` 读不出来时同样中止。指纹机制之前创建的 temp 目录，只有在其 `config.txt` 记录的文件名和目标语言都与本次相同、且本次不用解析器时，才会在首次重跑时打印警告并被接管。
 
 HTML → Markdown 这一步还会按结构清理 Calibre 的标记。EPUB 脚注（正文里的标记链接如 `<a href="#n1"><sup>1</sup></a>`，配上开头带回链指向它的注释段落）会转成 Pandoc 脚注（正文 `[^1]`，定义 `[^1]: …` 紧跟在该段之后），编号全书连续，合并后不会因每章从 1 重新编号而撞号。书内链接只保留文字，`{lang="…"}` 之类的 span 属性、空的页码锚点和标题 id 会被去掉，弯引号和破折号保持 Unicode 原样，而不是变成 `---` 或转义的 ASCII 引号。没有回链的注释（例如 EPUB 3 的 `<aside>` 脚注）仍保持普通段落。
 
-默认工作目录是当前目录下的 `{book_name}_temp/`。如果要换父目录，可使用 `--temp-root /path/to/work`；叶子目录名仍保持 `{book_name}_temp/`。
+默认工作目录是当前目录下的 `{book_name}_temp/`，其中 `{book_name}` 只保留文件名里的字母、数字、`.`、`_` 和 `-`，因此这个路径放进 shell 命令也安全。如果要换父目录，可使用 `--temp-root /path/to/work`；叶子目录名仍保持 `{book_name}_temp/`，父目录路径只能含字母、数字、`.`、`_`、`-` 和 `/`。两个文件名化简后得到同一个 temp 目录名时，靠目录一创建就写入的 `source_fingerprint.json` 区分两本书：后一本会被拒绝，需要换一个 `--temp-root`。还没转换出任何东西就失败的运行会撤回这份指纹，所以改正设置后重跑不会被拒绝。旧版本按原始文件名命名的 temp 目录，能确认是同一本书时会改名为新名称，否则原样保留。
+
+Skill 从不把书的路径写进命令。agent 先写好 `translate-book-request.json`（键为 `input`、`target_lang`、`temp_root`、`cover`、`parser`），再运行 `python3 "{baseDir}/scripts/convert.py" --request translate-book-request.json`；转换成功后 `convert.py` 在 `<temp_dir>/request.json` 保留一份副本，请求文件内容仍与读取时相同才删除它。手动运行时，上面的位置参数写法照常可用。
 
 #### 公式、表格密集的 PDF：改为转换 Markdown（可选）
 
@@ -256,6 +260,8 @@ Calibre 靠坐标启发式重排 PDF 文本，对普通正文够用，但学术�
 mineru-kit parse paper.pdf -o paper.md          # 换成下表中任一解析器均可
 python3 scripts/convert.py paper.md --olang zh
 ```
+
+Skill 则通过 `convert.py` 运行解析器：请求文件里把 `parser` 设为 `mineru`、`marker` 或 `docling`，`convert.py` 就对每种解析器运行一条固定命令（`mineru-kit parse <pdf> -o <dir>/book.md`、`marker_single <pdf> --output_dir <dir>`、`docling <pdf> --enrich-formula --output <dir>`），其中 `<dir>` 是 `<temp_dir>/parsed/`：这个目录由本次运行创建，转换完其中的 Markdown 后删除。`parsed/` 已经存在时，它会停下，不动这个目录。解析器失败时，它会打印解析器输出的末尾。请求不接受其他解析器参数：如果你的解析器版本需要额外参数，就自己运行解析器，再按上文转换它生成的 Markdown。模型和缓存照常放在解析器自己的位置。
 
 只要输出的 Markdown 符合以下约定，用哪个解析器都可以：
 
@@ -271,7 +277,7 @@ python3 scripts/convert.py paper.md --olang zh
 
 这些解析器首次运行都会下载模型，命令行参数随版本变化（参数被拒时查看 `--help`），许可证也各不相同。如果 Markdown 里还留着解析器为丢弃的公式或图片写下的占位符（`<!-- formula-not-decoded -->`、`<!-- image -->`），`convert.py` 会给出警告：翻译前请按警告里的参数重新提取。有行内公式的文档请用 MinerU 或 Marker：docling 只保留独立成行的公式；Markdown 里有好几个独立成行的公式、却没有一个行内公式时，`convert.py` 也会给出警告。
 
-YAML front matter（`title`、`author`、`lang`）会写入 `config.txt`，不会送去翻译；没有 front matter 时，开头的 `#` 标题作为 `original_title`。temp 目录按 Markdown 文件名命名，`paper.md` 对应 `paper_temp/`；如果该目录之前由 `paper.pdf` 生成，`convert.py` 会因源文件指纹不一致而中止，需先删除它。`--strip-page-numbers` 和 `--detect-page-numbers` 只对 Calibre 输入生效。
+YAML front matter（`title`、`author`、`lang`）会写入 `config.txt`，不会送去翻译；没有 front matter 时，开头的 `#` 标题作为 `original_title`。temp 目录按 Markdown 文件名命名，`paper.md` 对应 `paper_temp/`；如果该目录之前由 `paper.pdf` 生成，`convert.py` 会因源文件指纹不一致而停下：换一个 `--temp-root` 转换，或者在不再需要时删除旧 temp 目录。`--strip-page-numbers` 和 `--detect-page-numbers` 只对 Calibre 输入生效。
 
 生成成品时，Pandoc 会把 `$...$` / `$$...$$` 渲染为 MathML，因此 `book.html`、`book.pdf` 中的公式会被正确排版，`book.epub` 在支持 MathML 的阅读器中同样如此。Calibre 生成的 DOCX 无法排版 MathML，其中的公式会显示为压平的文本加上对应的 TeX 源码。
 
@@ -329,6 +335,8 @@ python3 scripts/merge_and_build.py --temp-dir book_temp --title "译后书名" -
 
 `--title` 会成为阅读器页眉里显示的元数据书名，传入时不要加书名号或引号（外层的 `《》` 会被去掉）。`--cover` 会把显式封面图传给 EPUB 的 Calibre 步骤。`--export-name` 会额外生成如 `译后书名.epub` 的别名副本，同时保留内部 canonical 的 `book.*` 产物。`book_doc`、`input`、`output` 是保留名称（不区分大小写），会在构建前被拒绝，因为它们的 HTML 别名会覆盖 temp 目录里的 `book_doc.html`、`input.html` 或 `output.html`。
 
+Skill 不在命令行上传这些值，因为书名和文件名都属于书中文字。agent 把译后书名、导出名和要覆盖的作者分别写进 temp 目录里的 `title.txt`、`export_name.txt` 和 `author.txt`，再运行 `merge_and_build.py --temp-dir <temp_dir>`；没有对应参数时，脚本会读取这些文件。没有 `--cover` 时，它使用 `<temp_dir>/request.json` 里写的封面图片。
+
 合并前校验：
 - 每个源 chunk 都有对应的输出文件（1:1 匹配）
 - 源 chunk hash 与 manifest 一致（无过时输出）
@@ -337,7 +345,7 @@ python3 scripts/merge_and_build.py --temp-dir book_temp --title "译后书名" -
 
 校验通过后：合并 → Pandoc 生成 HTML → 注入目录 → Calibre 生成 DOCX、EPUB、PDF。
 
-构建完成后中间文件会保留在 temp 目录里，因此少量译文有问题时不必整本重译：可以直接修改对应的 `output_chunkNNNN.md`，再运行 `python3 scripts/run_state.py record <temp_dir> chunkNNNN`；也可以删除该文件后重新运行 Skill 重译它。`record` 会把这个 chunk 标记为与当前术语表和源文一致，所以先运行 `python3 scripts/run_state.py plan <temp_dir>` 看一下：如果这个 chunk 因为术语表或源文有改动而被列入重译，就在修改时一并改掉，或者改为重译。如果改动的是源 chunk 本身，要先重跑 `convert.py`，让 `manifest.json` 记下新内容，否则合并会报“Source changed since splitting”。这次重跑不要带 `--strip-page-numbers` 这类页码参数：chunk 已存在时它们会直接报错，如果按报错提示删掉缓存文件，chunk 也就没了。重新运行 Skill 时，计划里还可能列出翻译之后术语有变动的其他 chunk，Skill 会先询问再重译。然后重跑 `merge_and_build.py`：只要有 chunk 比 `output.md` 新，它就会重新合并并重新生成各格式成品。不要直接改 `output.md` — 之后任何一次重新合并都会用 chunk 重建它。`--cleanup` 会永久删除 `chunk*.md`、`output_chunk*.md` 和 `input.*`，之后就无法再做这类局部修订；只在整本书定稿后使用。
+构建完成后中间文件会保留在 temp 目录里，因此少量译文有问题时不必整本重译：可以直接修改对应的 `output_chunkNNNN.md`，再运行 `python3 scripts/run_state.py record <temp_dir> chunkNNNN`；也可以删除该文件后重新运行 Skill 重译它。`record` 会把这个 chunk 标记为与当前术语表和源文一致，所以先运行 `python3 scripts/run_state.py plan <temp_dir>` 看一下：如果这个 chunk 因为术语表或源文有改动而被列入重译，就在修改时一并改掉，或者改为重译。如果改动的是源 chunk 本身，要先重跑 `convert.py`，让 `manifest.json` 记下新内容，否则合并会报“Source changed since splitting”。这次重跑不要带 `--strip-page-numbers` 这类页码参数：chunk 已存在时它们会让 `convert.py` 停下，而不是丢掉 chunk。重新运行 Skill 时，计划里还可能列出翻译之后术语有变动的其他 chunk，Skill 会先询问再重译。然后重跑 `merge_and_build.py`：只要有 chunk 比 `output.md` 新，它就会重新合并并重新生成各格式成品。不要直接改 `output.md` — 之后任何一次重新合并都会用 chunk 重建它。`--cleanup` 会永久删除 `chunk*.md`、`output_chunk*.md`、`input.*` 和 `output.html`，之后就无法再做这类局部修订；只在整本书定稿后使用。
 
 **注意：** `{book_name}_temp/` 是单次翻译运行的工作目录。如果修改了标题、作者、模板或图片资源，建议使用新的 temp 目录，或在重跑前运行 `python3 scripts/merge_and_build.py --temp-dir book_temp --delete-outputs`：它会删除最终产物（`book.html`、`book_doc.html`、`output.html`、`book.docx`、`book.epub`、`book.pdf`）和 `--export-name` 副本，chunk 和译文都会保留。改输出语言需要重新翻译，请使用新的 temp 目录。
 
@@ -367,7 +375,13 @@ python3 scripts/merge_and_build.py --temp-dir book_temp --title "译后书名" -
 |------|----------|
 | `Calibre ebook-convert not found` | 安装 Calibre，确保 `ebook-convert` 在 PATH 中 |
 | `Manifest validation failed` | 源 chunk 在拆分后被修改 — 重新运行 `convert.py` |
-| `was created from different source bytes` | temp 目录属于另一个源文件 — 删除 temp 目录或换一个 `--temp-root` |
+| `was created from different source bytes` | temp 目录属于另一个源文件，或另一本书的文件名化简后得到了同一个 temp 目录名 — 换一个 `--temp-root`（Skill 请求文件里的 `temp_root`）再转换 |
+| `temp_root ...: the part ... has characters other than letters, digits ...` | temp 目录路径会放进 shell 命令，只能含字母、数字、`.`、`_`、`-` 和 `/`。换一个这样的目录，或者不设 `--temp-root` |
+| `... is a symlink, and translate-book never renames a symlink` | 旧版本为这本书建的 temp 目录是个符号链接。自己把它指向的目录移到新名称下，或者换一个 `--temp-root` 转换 |
+| `... already exists and is not known to hold this book's conversion` | 这本书之前的运行在旧 temp 目录名下，而新名称已被占用。把占用新名称的目录改名或移走，或者换一个 `--temp-root` 转换 |
+| `unexpected file 'chunk1.md'`（或其他像 chunk 的文件名） | temp 目录里有个文件看着像 chunk，却不是 `chunk0001.md` 这样的名字。用文件管理器改名或移走它，不要用 shell 命令，因为它的名字里可能带有 shell 语法 |
+| `source_fingerprint.json cannot be read`，或 `... is not empty and holds no translate-book conversion` | temp 目录里有 `convert.py` 无法确认属于这本书的内容：解析不了或缺字段的指纹，或者不是它写的文件。它不会改动那里的任何东西；换一个 `--temp-root` 来转换 |
+| `... parsed already exists` | temp 目录里有一个不是本次运行创建的 `parsed/` 目录。`convert.py` 既不使用也不改动它；把它改名或移走后再运行 |
 | PDF 转换后公式、表格错乱 | 用[第一步](#第一步转换)表格中的解析器转出 Markdown，删除旧 temp 目录，再对 `.md` 运行 `convert.py` |
 | `formula(s) were not decoded` / `image(s) were exported as placeholders` | 解析器丢弃了这些内容 — 按警告里的参数重新提取，删除 temp 目录，再运行 `convert.py` |
 | `display formula(s) but no inline math` | 解析器把行内公式压成了普通文字（docling 的标准流程就会这样）— 改用 MinerU 或 Marker 重新提取，删除 temp 目录，再运行 `convert.py`。如果文档本来就没有行内公式，忽略即可 |
@@ -377,7 +391,7 @@ python3 scripts/merge_and_build.py --temp-dir book_temp --title "译后书名" -
 | 翻译不完整 | 重新运行 Skill，会从中断处继续 |
 | 构建后发现少量译文需要修改 | 改对应的 `output_chunkNNNN.md` 而不是 `output.md`，再重跑 `merge_and_build.py`（见[第三步](#第三步合并与构建)） |
 | 修改标题、模板或图片后输出未更新 | 先运行 `python3 scripts/merge_and_build.py --temp-dir book_temp --delete-outputs`，再重跑 `merge_and_build.py` |
-| 想去掉 PDF 输出中的页码 | 对 PDF 输入，默认会自动识别单调递增的页码序列（如 `1, 2, 3, ...`）并删除，同时保留年份（`1984`）、章节编号、引用编号等离散的独立数字行。EPUB 和 DOCX 默认保留所有独立数字行，因为它们的页码不是正文文字（EPUB 是锚点，DOCX 在页脚）；如果某本 EPUB 确实把页码印成了正文，可加 `--detect-page-numbers`。若识别不到你的页码格式，可给 `convert.py` 加 `--strip-page-numbers`，强制删除所有独立数字行。这两个标志在检测到已缓存的 `input.md` 或 `chunk*.md` 时会直接报错 — 需先删除这些缓存，标志才会生效 |
+| 想去掉 PDF 输出中的页码 | 对 PDF 输入，默认会自动识别单调递增的页码序列（如 `1, 2, 3, ...`）并删除，同时保留年份（`1984`）、章节编号、引用编号等离散的独立数字行。EPUB 和 DOCX 默认保留所有独立数字行，因为它们的页码不是正文文字（EPUB 是锚点，DOCX 在页脚）；如果某本 EPUB 确实把页码印成了正文，可加 `--detect-page-numbers`。若识别不到你的页码格式，可给 `convert.py` 加 `--strip-page-numbers`，强制删除所有独立数字行。这两个标志在检测到已缓存的 `input.md` 或 `chunk*.md` 时会让 `convert.py` 停下 — 换一个 `--temp-root` 转换，标志才会生效 |
 | `output.md exists but manifest invalid` | 旧输出已过时 — 脚本会自动删除并重新合并 |
 | `Glossary upgrade rejected: duplicate source` | v2 不允许两个术语共用同一个 source/alias 表面词。手工编辑 `glossary.json` 消歧（例如把一个 source 从 `Apple` 改为 `Apple (Inc.)`）后重新加载。 |
 | PDF 生成失败 | 确认 Calibre 已安装且支持 PDF 输出 |
@@ -415,7 +429,7 @@ Phase 1 让术语表按批次增长,因此第一批看到的术语表最小,drif
 
 最近几轮 PR 讨论也暴露出一些有价值的工作流改进,但它们都不属于“一次性小补丁”：会触及仓库契约（产物命名、temp-dir 行为、清理语义、或 EPUB 兼容性边界）。当前状态：
 
-- **显式 EPUB 封面支持（已发布）**。`merge_and_build.py --cover <image>` 会在 HTML -> EPUB 的 Calibre 步骤透传封面图。`--cover-from <epub>` / EPUB 封面自动提取仍不纳入当前范围,等项目准备好承担不同 EPUB 包布局的解析兼容性后再考虑。(context: closed #3)
+- **显式 EPUB 封面支持（已发布）**。`merge_and_build.py --cover <image>` 会在 HTML -> EPUB 的 Calibre 步骤透传封面图；Skill 在请求文件里给出封面，构建时从 temp 目录里那份请求副本读取。`--cover-from <epub>` / EPUB 封面自动提取仍不纳入当前范围,等项目准备好承担不同 EPUB 包布局的解析兼容性后再考虑。(context: closed #3)
 - **可配置的 temp 工作目录位置（已发布）**。`convert.py --temp-root <dir>` 保留默认 cwd-local `{book_name}_temp/` 行为，只有显式传参时才改变父目录。(context: closed #4)
 - **更安全的 Calibre/Pandoc 噪声清理（部分已发布）**。页码和 Calibre marker 清理已有回归测试保护，保留年份、章节编号和非单调独立数字。后续清理规则继续在测试下增量增加。(context: closed #5)
 - **可选的面向用户导出文件名（已发布）**。`merge_and_build.py --export-name <stem>` 生成 alias/copy，同时流水线内部 canonical 产物仍保持 `book.html`、`book_doc.html`、`book.docx`、`book.epub`、`book.pdf`。(context: closed #6)

@@ -20,6 +20,10 @@ translate-book is an Agent Skill for Claude Code, Codex, Cursor, OpenClaw, and o
 - `scripts/calibre_html_publish.py` — Calibre format conversion wrapper
 - `scripts/template.html`, `scripts/template_ebook.html` — HTML templates
 
+## Prerequisites
+
+- **macOS or Linux.** Native Windows is not supported: every script in `scripts/` that has a command line, and `tests/process_guard.py`, stops at once with a message that points to WSL (Windows Subsystem for Linux). `tests/test_platform.py` and `tests/test_process_guard.py` check this.
+
 ## Testing changes
 
 Use a small file for quick checks, or the checked-in baseline book for the repository's full-pipeline test.
@@ -49,7 +53,9 @@ Verify: all output_chunk*.md files exist, manifest validation passes, output for
 - Only `chunk*.md` naming — no `page*` legacy support
 - Pipeline output artifacts use the canonical names `book.html`, `book_doc.html`, `book.docx`, `book.epub`, `book.pdf`. Internal scripts and skip/cache logic depend on these names; if title-based filenames are added later they must be optional aliases/copies, not silent replacements
 - SKILL.md frontmatter must stay single-line per field (OpenClaw parser requirement)
-- Script paths in SKILL.md use `{baseDir}` not hardcoded paths
+- Script paths in SKILL.md use `"{baseDir}"` (quoted) not hardcoded paths
+- SKILL.md commands hold only fixed text and the placeholders `"{baseDir}"`, `<temp_dir>` and `<NNNN>`; book paths, titles and other external text reach the scripts through files (the Step 2 request file, fixed files in the temp dir). `tests/test_packaging.py` fails on any other command shape and on Markdown outside the plain subset it reads. Fences open with ```` ```bash ````, each line a command, or ```` ```json ````, one object whose fields are in `JSON_FIELDS` and whose strings are in `JSON_STRINGS` or hold no shell syntax; inline code with a space is a command unless it is listed in `PROSE_SPANS`
+- Every test module's first statement is `import process_guard` (`tests/process_guard.py`): from then on a test can start a process only through its runners (`run_skill_command`, `run_script`, `run_tool`, `library_processes`), which give the process its own `HOME`, `TMPDIR` and working directory under a temporary root; any other way that Python code or an audit event can take fails the test, and the guard's docstring lists what it cannot see, such as code that turns it off on purpose. `tests/test_process_guard.py` checks this. A test that runs Pandoc or zsh asks for it with `process_guard.needs()` or `process_guard.installed()`, so that it fails instead of skipping where `TRANSLATE_BOOK_REQUIRED_TOOLS` names the tool
 - SKILL.md defines `{baseDir}` right under its title (the directory containing SKILL.md); only OpenClaw substitutes it, other hosts rely on that definition
 - When the host cannot spawn sub-agents, SKILL.md tells the user and stops; it never falls back to translating chunks sequentially in the main context
 - `.claude-plugin/marketplace.json` has no `version` field, so hosts use the commit SHA as the version and releases need no manifest bump
@@ -73,7 +79,7 @@ Verify: all output_chunk*.md files exist, manifest validation passes, output for
 
 - Python 3.12+ is pre-installed; no version manager needed.
 - System dependencies (Calibre, Pandoc) and pip packages (pypandoc, beautifulsoup4) are installed by the update script.
-- Unit tests depend only on the Python stdlib (no pip packages or external binaries needed; `python3 -m unittest discover` runs as-is).
+- Unit tests depend only on the Python stdlib (no pip packages or external binaries needed; `python3 -m unittest discover` runs as-is). Tests that need Pandoc or zsh skip without them; set `TRANSLATE_BOOK_REQUIRED_TOOLS="pandoc zsh"`, as CI does, to make them fail instead.
 
 ### Running tests
 

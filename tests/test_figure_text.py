@@ -1,12 +1,11 @@
+import process_guard  # noqa: F401  first, so it guards every process the tests below start
 import contextlib
 import hashlib
 import html
 import io
 import json
 import re
-import shutil
 import struct
-import subprocess
 import sys
 import tempfile
 import unittest
@@ -121,13 +120,13 @@ class EscapeTests(unittest.TestCase):
         self.assertEqual(figure_text.escape_markdown("  two\n lines  "), "two lines")
         self.assertEqual(figure_text.escape_markdown("e.g. this"), "e.g. this")
 
-    @unittest.skipUnless(shutil.which("pandoc"), "pandoc is not installed")
+    @process_guard.needs("pandoc")
     def test_pandoc_renders_every_item_literally(self):
         md = "\n".join(f"- {figure_text.escape_markdown(text)}" for text in self.CASES) + "\n"
-        rendered = subprocess.run(
-            ["pandoc", "--from", "markdown+smart+east_asian_line_breaks", "--to", "html5", "--wrap=none"],
-            input=md, capture_output=True, text=True, check=True,
-        ).stdout
+        result = process_guard.run_tool(
+            "pandoc", "--from", "markdown+smart+east_asian_line_breaks", "--to", "html5", "--wrap=none", input=md)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        rendered = result.stdout
         items = [html.unescape(item) for item in re.findall(r"<li>(.*?)</li>", rendered, re.S)]
         self.assertEqual(items, self.CASES)
 
@@ -349,7 +348,7 @@ class InjectTests(WorkspaceMixin, unittest.TestCase):
         [invalid] = result["invalid_sidecars"]
         self.assertEqual(invalid["file"], f"figure_text/{sha256(self.FLOW)}.json")
 
-    @unittest.skipUnless(shutil.which("pandoc"), "pandoc is not installed")
+    @process_guard.needs("pandoc")
     def test_translated_blocks_render_below_their_figure(self):
         import merge_and_build
 
@@ -360,7 +359,7 @@ class InjectTests(WorkspaceMixin, unittest.TestCase):
             for name in ("chunk0001.md", "chunk0002.md"):
                 text = (temp_dir / name).read_text(encoding="utf-8")
                 (temp_dir / f"output_{name}").write_text(text.replace("- Client", "- 客户端"), encoding="utf-8")
-            with contextlib.redirect_stdout(io.StringIO()):
+            with contextlib.redirect_stdout(io.StringIO()), process_guard.library_processes("pandoc"):
                 self.assertTrue(merge_and_build.merge_markdown_files(str(temp_dir)))
                 self.assertTrue(merge_and_build.convert_with_pandoc(
                     str(temp_dir / "output.md"), str(temp_dir / "output.html"), "T", "zh-CN"))
@@ -409,6 +408,19 @@ class CliTests(WorkspaceMixin, unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("pandoc not found", err)
         self.assertEqual(chunk1, self.CHUNK1)
+
+
+
+class ChunkNameValidationTests(unittest.TestCase):
+    def test_stray_chunk_file_stops_the_run(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, "chunk0001.md").write_text("text\n", encoding="utf-8")
+            Path(tmp, "chunk1.md").write_text("text\n", encoding="utf-8")
+            out = io.StringIO()
+            with contextlib.redirect_stderr(out), contextlib.redirect_stdout(out):
+                code = figure_text.main(["plan", tmp])
+            self.assertNotEqual(code, 0)
+            self.assertIn("unexpected file", out.getvalue())
 
 
 if __name__ == "__main__":

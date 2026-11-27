@@ -31,8 +31,9 @@ sub-agent fill it would create a hallucination hole.
 import hashlib
 import json
 import os
-import re
 import tempfile
+
+from manifest import chunk_id_from_file_name
 
 
 META_SCHEMA_VERSION = 1
@@ -49,8 +50,6 @@ VALID_TOP_LEVEL_KEYS = frozenset({
 
 VALID_ATTRIBUTE_CONFIDENCES = ('low', 'medium', 'high')
 
-_CHUNK_ID_RE = re.compile(r'^output_(chunk\d+)\.meta\.json$')
-
 
 def chunk_id_from_meta_path(path):
     """Extract the chunk identifier from a meta filename.
@@ -59,13 +58,13 @@ def chunk_id_from_meta_path(path):
     payload to provide it.
     """
     basename = os.path.basename(path)
-    m = _CHUNK_ID_RE.match(basename)
-    if not m:
+    try:
+        return chunk_id_from_file_name(basename, 'meta')
+    except ValueError:
         raise ValueError(
             f"Meta filename {basename!r} does not match expected pattern "
             f"'output_chunk<NNNN>.meta.json'. Cannot derive chunk_id."
-        )
-    return m.group(1)
+        ) from None
 
 
 def _canonical_json(data):
