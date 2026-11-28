@@ -347,7 +347,7 @@ python3 scripts/merge_and_build.py --temp-dir book_temp --title "translated titl
 
 ビルド後も中間ファイルは一時ディレクトリに残るため、問題のある数か所を直すのに書籍全体を再翻訳する必要はありません。該当する `output_chunkNNNN.md` を編集して `python3 scripts/run_state.py record <temp_dir> chunkNNNN` を実行するか、そのファイルを削除してスキルを再実行し、再翻訳させます。`record` はそのチャンクを現在の用語集とソースに一致するものとして記録するので、先に `python3 scripts/run_state.py plan <temp_dir>` を実行してください。用語集やソースの変更によってそのチャンクが再翻訳の対象になっている場合は、その変更も編集に反映するか、代わりに再翻訳します。ソースチャンク自体を編集した場合は、`manifest.json` に変更が記録されるよう先に `convert.py` を再実行してください。そうしないとマージは "Source changed since splitting" で停止します。この再実行では `--strip-page-numbers` などのページ番号フラグを付けないでください。チャンクが存在すると、それらのフラグはチャンクを捨てる代わりに `convert.py` を止めます。再実行では、翻訳後に用語が変わった他のチャンクが再翻訳の対象に並ぶこともあります。その場合、スキルは再翻訳する前に確認します。最後に `merge_and_build.py` を再実行します。`output.md` より新しいチャンクがあれば再マージし、出力を作り直します。`output.md` 自体は編集しないでください。以降の再マージでチャンクから作り直されます。`--cleanup` は `chunk*.md`、`output_chunk*.md`、`input.*`、`output.html` を完全に削除するため、こうした修正はできなくなります。書籍を仕上げ終えたときだけ使ってください。
 
-**注意:** `{book_name}_temp/` は 1 回の翻訳実行のための作業ディレクトリです。タイトル、著者、テンプレート、画像アセットを変更する場合は、新しい一時ディレクトリを使うか、再実行の前に `python3 scripts/merge_and_build.py --temp-dir book_temp --delete-outputs` を実行してください（最終成果物 `book.html`、`book_doc.html`、`output.html`、`book.docx`、`book.epub`、`book.pdf` と `--export-name` のコピーを削除し、チャンクと翻訳は残します）。出力言語を変える場合は翻訳し直しになるため、新しい一時ディレクトリを使ってください。
+**注意:** `{book_name}_temp/` は 1 回の翻訳実行のための作業ディレクトリです。タイトル、著者、テンプレート、画像アセットを変更する場合は、新しい一時ディレクトリを使うか、再実行の前に `python3 scripts/merge_and_build.py --temp-dir book_temp --delete-outputs` を実行してください（以前のビルドが `build_outputs.json` に記録し、その後変更されていない最終成果物 `book.html`、`book_doc.html`、`output.html`、`book.docx`、`book.epub`、`book.pdf` と `--export-name` のコピーを削除し、チャンクと翻訳は残します。これらの名前のほかのファイル、たとえば記録を残さない旧バージョンが作った成果物や、その後編集したファイルは、理由を示して残し、エラーで終了します。それらを自分で削除または移動してから、もう一度実行してください）。出力言語を変える場合は翻訳し直しになるため、新しい一時ディレクトリを使ってください。
 
 ## プロジェクト構成
 
@@ -391,6 +391,7 @@ python3 scripts/merge_and_build.py --temp-dir book_temp --title "translated titl
 | 翻訳が途中で終わっている | スキルを再実行してください — 止まったところから再開します |
 | ビルド後に数か所だけ直したい | `output.md` ではなく該当する `output_chunkNNNN.md` を直し、`merge_and_build.py` を再実行してください（[ステップ 3](#ステップ-3マージとビルド) を参照） |
 | タイトル、テンプレート、アセットを変えたのに出力が更新されない | `python3 scripts/merge_and_build.py --temp-dir book_temp --delete-outputs` を実行してから、`merge_and_build.py` を再実行してください |
+| `--delete-outputs` がファイルを残してエラーで終了した | ビルドが記録し、その後変更されていない成果物だけを削除します。残したファイルとその理由はすべて表示されます。それらを自分で削除または移動してから、もう一度実行してください |
 | PDF 出力からページ番号のフッターを取り除きたい | PDF 入力では、単調に増えるページ番号の並び（例: `1, 2, 3, ...`）を自動検出して削除し、年（`1984`）、章番号、引用番号のような外れ値は残します。EPUB と DOCX ではページ番号がテキストではない（EPUB はアンカー、DOCX はフッター）ため、単独の数字はすべて残します。ページ番号をテキストとして印字している EPUB には `--detect-page-numbers` を指定してください。検出がうまくいかない場合は、`convert.py` に `--strip-page-numbers` を指定すると、数字だけの行をすべて積極的に削除します。どちらのフラグも、キャッシュ済みの `input.md` や `chunk*.md` がすでにあると `convert.py` を止めます — フラグを有効にするには別の `--temp-root` で変換してください。 |
 | `output.md exists but manifest invalid` | 古い出力です — スクリプトが自動で削除して再マージします |
 | `Glossary upgrade rejected: duplicate source` | v2 では、2 つの用語が同じ原語や別名の表記を共有できません。`glossary.json` を編集して曖昧さを解消し（例: 一方の原語を `Apple` から `Apple (Inc.)` に変える）、再読み込みしてください。 |

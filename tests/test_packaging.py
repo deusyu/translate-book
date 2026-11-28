@@ -1131,8 +1131,7 @@ class SkillShellCommandTest(unittest.TestCase):
             self.assertIn(f"`<temp_dir>/{name}`", step)
 
     def test_step_7_deletes_outputs_before_writing_the_name_files(self):
-        # A temp dir built before export_copies.json finds its copies through
-        # the old export_name.txt, so a rebuild must delete before writing.
+        # The deletion is the first thing a rebuild does, before any file it reads changes.
         step = self.text[self.text.index("### 7."):self.text.index("### 8.")]
         delete = step.index(self.command("--delete-outputs"))
         build = re.search(rf"^{re.escape(self.BUILD)}$", step, re.M).start()
@@ -1155,8 +1154,11 @@ class SkillShellCommandTest(unittest.TestCase):
             with self.subTest(shell=shell), tempfile.TemporaryDirectory() as tmp:
                 temp_dir = Path(tmp) / temp_name
                 temp_dir.mkdir()
-                for name in outputs + kept:
+                for name in kept:
                     (temp_dir / name).write_text(name, encoding="utf-8")
+                for name in outputs:
+                    (temp_dir / name).write_text(name, encoding="utf-8")
+                merge_and_build._record_outputs(str(temp_dir), *outputs)
                 copies = merge_and_build.export_named_aliases(temp_dir, self.EXPORT_NAME)
                 self.assertEqual(len(copies), 5)
                 # The agent may already have written the next export name.
@@ -1168,7 +1170,7 @@ class SkillShellCommandTest(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertEqual(result.stderr, "")
                 self.assertEqual(sorted(p.name for p in temp_dir.iterdir()),
-                                 sorted(kept + [merge_and_build.EXPORT_COPIES_FILE]))
+                                 sorted(kept + [merge_and_build.OUTPUTS_RECORD]))
                 self.assertEqual(list(Path(tmp).glob("pwned*")), [])
 
 
@@ -1307,6 +1309,44 @@ class SkillCommandRunGuardTest(unittest.TestCase):
                    if key[0] != type(self).__name__ and key[1].startswith("test")
                    and reaches_entry(node, key[0], set())}
         self.assertEqual(runners, set(self.RUNNERS))
+
+
+class DirectoryRemovalTest(unittest.TestCase):
+    """A reminder to review any new place where the scripts remove a directory.
+
+    It lists the rmtree, rmdir and removedirs calls it finds in scripts/*.py by
+    name, and expects only the two in convert.OwnDir: an OwnDir is one this
+    run created new (mkdtemp, or mkdir of a name that is not taken) and holds
+    open, and remove() empties it through that descriptor, where rmtree runs
+    with dir_fd on what is inside, and rmdir removes it only while its path
+    still leads to it. A new call fails it until the list here changes, so it
+    gets a look in review. It is not a proof: a call made through another name
+    or getattr gets past it.
+    """
+
+    def removals(self, path):
+        """(function, call, passes dir_fd) for each rmtree, rmdir or removedirs in the file at path."""
+        found = []
+
+        def visit(node, function):
+            for child in ast.iter_child_nodes(node):
+                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    visit(child, child.name)
+                    continue
+                if isinstance(child, ast.Call):
+                    func = child.func
+                    name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
+                    if name in ("rmtree", "rmdir", "removedirs"):
+                        found.append((function, name, any(k.arg == "dir_fd" for k in child.keywords)))
+                visit(child, function)
+
+        visit(ast.parse(path.read_text(encoding="utf-8")), None)
+        return found
+
+    def test_directories_are_removed_only_through_own_dir(self):
+        removals = {path.name: sorted(self.removals(path)) for path in sorted(SCRIPT_DIR.glob("*.py"))}
+        self.assertEqual({name: calls for name, calls in removals.items() if calls},
+                         {"convert.py": sorted([("_remove_own_dir", "rmdir", False), ("_empty_own_dir", "rmtree", True)])})
 
 
 if __name__ == "__main__":

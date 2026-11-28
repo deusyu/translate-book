@@ -19,6 +19,8 @@ if os.name == "nt":
     sys.exit("translate-book runs on macOS and Linux only. "
              "On Windows, run it in WSL (Windows Subsystem for Linux).")
 
+from convert import OwnDir
+
 def find_calibre_convert():
     """Find ebook-convert command from Calibre installation"""
     possible_paths = [
@@ -373,23 +375,27 @@ def main():
     print()
     
     try:
-        # Create temp directory in the same directory as input HTML
+        # A new directory next to the input HTML, which only this run uses and
+        # removes, whether the conversion succeeds or not.
         input_dir = os.path.dirname(os.path.abspath(input_html))
         base_name = os.path.splitext(os.path.basename(input_html))[0]
-        temp_dir = os.path.join(input_dir, f"{base_name}_conversion_temp")
-        os.makedirs(temp_dir, exist_ok=True)
-        
-        print(f"Working directory: {temp_dir}")
-        
-        # Copy images into the working dir so Calibre can embed them
-        copy_images_if_needed(input_html, temp_dir)
-        
-        # Prepare HTML with styling
-        work_html = prepare_html_for_conversion(input_html, temp_dir, args.lang)
-        
-        # Convert to specified format. DOCX/EPUB/PDF embed their images during
-        # conversion, so nothing from the working copy needs to be copied back.
-        if convert_html_with_calibre(work_html, final_output, format_type, args.timeout, args.lang, cover=args.cover):
+        work_dir = OwnDir.make_temp(f"{base_name}_conversion_", dir=input_dir)
+        try:
+            print(f"Working directory: {work_dir.path}")
+
+            # Copy images into the working dir so Calibre can embed them
+            copy_images_if_needed(input_html, work_dir.path)
+
+            # Prepare HTML with styling
+            work_html = prepare_html_for_conversion(input_html, work_dir.path, args.lang)
+
+            # Convert to specified format. DOCX/EPUB/PDF embed their images during
+            # conversion, so nothing from the working copy needs to be copied back.
+            converted = convert_html_with_calibre(work_html, final_output, format_type, args.timeout,
+                                                  args.lang, cover=args.cover)
+        finally:
+            work_dir.remove()
+        if converted:
             print("\n" + "="*50)
             print("Conversion completed successfully!")
             print(f"File: {final_output}")
@@ -399,14 +405,7 @@ def main():
         else:
             print(f"\nERROR: Conversion to {format_type.upper()} failed!")
             sys.exit(1)
-        
-        # Clean up temp directory
-        try:
-            shutil.rmtree(temp_dir)
-            print(f"Cleaned up temporary directory: {temp_dir}")
-        except Exception as e:
-            print(f"Warning: Could not clean up temp directory: {e}")
-                
+
     except KeyboardInterrupt:
         print("\nConversion interrupted by user")
         sys.exit(1)

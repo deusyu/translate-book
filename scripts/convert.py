@@ -434,8 +434,8 @@ def _aside(path):
     return os.path.join(os.path.dirname(path) or '.', f".translate-book-{os.urandom(8).hex()}.removing")
 
 
-def _put_back(aside, path):
-    """Move aside back to path, never over something that appeared at path meanwhile."""
+def _put_back(aside, path, why="changed while this run was checking it"):
+    """Move aside back to path, never over something that appeared at path meanwhile; return whether it did."""
     try:
         if os.path.isdir(aside) and not os.path.islink(aside):
             if os.path.lexists(path):
@@ -445,8 +445,9 @@ def _put_back(aside, path):
             os.link(aside, path, follow_symlinks=False)
             os.unlink(aside)
     except OSError:
-        print(f"Warning: {path} changed while this run was checking it. What was there is "
-              f"now {aside}; if it is yours, rename it back.")
+        print(f"Warning: {path} {why}. What was there is now {aside}; if it is yours, rename it back.")
+        return False
+    return True
 
 
 def _remove_own_file(path, own, same_bytes=True):
@@ -457,7 +458,9 @@ def _remove_own_file(path, own, same_bytes=True):
     the file is compared by inode, and its bytes are read through own's
     descriptor. path is moved to a name of this run's own in the same
     directory before the last check, so that the file checked is the file
-    removed; anything else is moved back.
+    removed; anything else is moved back, and so is the file if it cannot be
+    removed. If it can be neither removed nor moved back, a warning says
+    where it is and the OSError of the removal is raised.
     """
     try:
         if not own.is_this(os.lstat(path)):
@@ -474,11 +477,16 @@ def _remove_own_file(path, own, same_bytes=True):
         is_own = stat.S_ISREG(found.st_mode) and own.is_this(found) and (not same_bytes or own.unchanged())
     except OSError:
         is_own = False
-    if is_own:
+    if not is_own:
+        _put_back(aside, path)
+        return False
+    try:
         os.unlink(aside)
-        return True
-    _put_back(aside, path)
-    return False
+    except OSError as e:
+        if not _put_back(aside, path, f"could not be removed ({e.strerror})"):
+            raise
+        return False
+    return True
 
 
 def _remove_own_dir(path, own):
@@ -546,9 +554,9 @@ class OwnDir:
         return cls(path)
 
     @classmethod
-    def make_temp(cls, prefix):
-        """Create a new directory in tempfile's directory."""
-        return cls(tempfile.mkdtemp(prefix=prefix))
+    def make_temp(cls, prefix, dir=None):
+        """Create a new directory in dir, or in tempfile's directory."""
+        return cls(tempfile.mkdtemp(prefix=prefix, dir=dir))
 
     def fileno(self):
         return self._own.fileno()

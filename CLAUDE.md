@@ -58,6 +58,7 @@ Verify: all output_chunk*.md files exist, manifest validation passes, output for
 
 - Only `chunk*.md` naming — no `page*` legacy support
 - Pipeline output artifacts use the canonical names `book.html`, `book_doc.html`, `book.docx`, `book.epub`, `book.pdf`. Internal scripts and skip/cache logic depend on these names; if title-based filenames are added later they must be optional aliases/copies, not silent replacements
+- `--delete-outputs` deletes only the files a build recorded in `build_outputs.json` (size and SHA-256), and only while they are unchanged; it never deletes by name. Code that writes an output or copy must call `merge_and_build._record_outputs` once the write has succeeded, and not for a file a step skipped; `--delete-outputs` leaves every file that is not recorded
 - SKILL.md frontmatter must stay single-line per field (OpenClaw parser requirement)
 - Script paths in SKILL.md use `"{baseDir}"` (quoted) not hardcoded paths
 - SKILL.md commands hold only fixed text and the placeholders `"{baseDir}"`, `<temp_dir>` and `<NNNN>`; book paths, titles and other external text reach the scripts through files (the Step 2 request file, fixed files in the temp dir). `tests/test_packaging.py` fails on any other command shape and on Markdown outside the plain subset it reads. Fences open with ```` ```bash ````, each line a command, or ```` ```json ````, one object whose fields are in `JSON_FIELDS` and whose strings are in `JSON_STRINGS` or hold no shell syntax; inline code with a space is a command unless it is listed in `PROSE_SPANS`
