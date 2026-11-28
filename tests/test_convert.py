@@ -3,6 +3,7 @@ import contextlib
 import io
 import json
 import os
+import re
 import shutil
 import stat
 import sys
@@ -11,6 +12,7 @@ import threading
 import unicodedata
 import unittest
 import zipfile
+from collections import Counter
 from pathlib import Path
 from unittest import mock
 
@@ -563,6 +565,545 @@ class CleanCalibreAstPandocNoteTests(unittest.TestCase):
         self.assertEqual(len(_notes(doc)), 1)
 
 
+def _ordered(*items):
+    return {"t": "OrderedList", "c": [[1, {"t": "Decimal"}, {"t": "Period"}], [list(i) for i in items]]}
+
+
+def _bullets(*items):
+    return {"t": "BulletList", "c": [list(i) for i in items]}
+
+
+def _plain(*inlines):
+    return {"t": "Plain", "c": list(inlines)}
+
+
+# Samples for convert_footnotes, in the shapes pandoc reads from HTML. A
+# sample wraps the blocks that must become note k in _mark(k, ...), a div of
+# class note-k; a span of that class, which HTML samples use where a div would
+# change what pandoc reads, marks the block it is in. The reference to note k
+# is the link with id rk. Only for the reader, a reference with marker K
+# follows the word xK and the words of note K start with nK.
+def _ref(k):
+    return [_str(f"x{k}"), _link(f"#n{k}", _sup(_str(k)), ident=f"r{k}")]
+
+
+def _back(k, words):
+    return [_link(f"#r{k}", _str(k)), SPACE, *_words(words)]
+
+
+def _refs(*ks):
+    return _para(*_words("Text"), *[x for k in ks for x in (SPACE, *_ref(k))], _str("."))
+
+
+def _anchor():
+    return _plain(_span(ident="page_7"))
+
+
+def _mark(k, *blocks):
+    return {"t": "Div", "c": [["", [f"note-{k}"], []], list(blocks)]}
+
+
+def _quote(*blocks):
+    return {"t": "BlockQuote", "c": list(blocks)}
+
+
+def _definitions(term, *definitions):
+    return {"t": "DefinitionList", "c": [[_words(term), [list(d) for d in definitions]]]}
+
+
+def _table(*cells):
+    """A table of one row, as pandoc reads <table><tr><td>...</td></tr></table>."""
+    attr = ["", [], []]
+    return {"t": "Table", "c": [
+        attr, [None, []], [[{"t": "AlignDefault"}, {"t": "ColWidthDefault"}] for _ in cells], [attr, []],
+        [[attr, 0, [], [[attr, [[attr, {"t": "AlignDefault"}, 1, 1, list(cell)] for cell in cells]]]]],
+        [attr, []],
+    ]}
+
+
+def _figure(caption, *body):
+    return {"t": "Figure", "c": [["", [], []], [None, list(caption)], list(body)]}
+
+
+_IMAGE = {"t": "Image", "c": [["", [], []], [], ["a.png", ""]]}
+
+
+def _heading(*inlines):
+    return {"t": "Header", "c": [2, ["", [], []], list(inlines)]}
+
+
+FOOTNOTE_SHAPES = [
+    ("a paragraph",
+     [_refs("1"), _mark("1", _para(*_back("1", "n1a n1b.")))]),
+    ("a div the reference points at, with two paragraphs",
+     [_refs("1"), _div("n1", _mark("1", _para(*_back("1", "n1a.")), _para(*_words("n1b."))))]),
+    ("a div the reference points at, holding two notes",
+     [_refs("1", "2"), _div("n1", _mark("1", _para(*_back("1", "n1a."))), _mark("2", _para(*_back("2", "n2a."))))]),
+    ("divs the reference does not point at, holding a note and other text",
+     [_refs("1", "2"), _div("chapter", _para(*_words("keepa.")), _mark("1", _para(*_back("1", "n1a.")))),
+      _div("other", _mark("2", _para(*_back("2", "n2a."))), _para(*_words("keepb.")))]),
+    # Pandoc keeps the id of an <li id> with inline content on a span.
+    ("<li id> items with inline text, in spans nested once or twice",
+     [_refs("1", "2"),
+      _ordered([_mark("1", _plain(_span(*_back("1", "n1a."), ident="n1")))],
+               [_mark("2", _plain(_span(_span(*_back("2", "n2a.")), ident="n2")))])]),
+    # ... and an <li id> with paragraphs as a div around them (an id on a <p> is dropped).
+    ("<li id> items with paragraphs, after anchors",
+     [_refs("1", "2"),
+      _ordered([_div("n1", _mark("1", _para(*_back("1", "n1a.")), _para(*_words("n1b."))))],
+               [_anchor(), _div("li2", _div("", _mark("2", _para(*_back("2", "n2a.")))),
+                                _mark("2", _para(*_words("n2b.")))),
+                _mark("2", _para(*_words("n2c.")))])]),
+    ("an <li id> whose paragraphs hold two notes",
+     [_para(*_words("Text"), _str("x1"), _link("#li1", _sup(_str("1")), ident="r1"), SPACE, *_ref("2")),
+      _ordered([_div("li1", _mark("1", _para(*_back("1", "n1a."))), _mark("2", _para(*_back("2", "n2a."))))])]),
+    ("an <li> holding two <div id> notes",
+     [_refs("1", "2"),
+      _ordered([_div("n1", _mark("1", _para(*_back("1", "n1a.")))),
+                _div("n2", _mark("2", _para(*_back("2", "n2a."))))])]),
+    ("an item holding two notes and text of its own",
+     [_refs("1", "2"),
+      _ordered([_mark("1", _para(*_back("1", "n1a."))), _para(*_words("keepa.")),
+                _mark("2", _para(*_back("2", "n2a.")))])]),
+    ("note items among an ordinary, an empty and an anchor-only item",
+     [_refs("1", "2"),
+      _ordered([_anchor()], [_mark("1", _plain(*_back("1", "n1a.")))], [_plain(*_words("keepa."))], [],
+               [_mark("2", _plain(*_back("2", "n2a.")))])]),
+    ("a list of notes in an item with text of its own",
+     [_refs("1"),
+      _bullets([_plain(*_words("keepa")), _ordered([_mark("1", _plain(*_back("1", "n1a.")))])])]),
+    ("lists left alone while a note elsewhere is paired",
+     [_refs("1"), _mark("1", _para(*_back("1", "n1a."))),
+      _ordered([_anchor()], [_plain(*_words("keepa."))]), _bullets([]), _bullets()]),
+    ("an item whose note goes on in a block quote",
+     [_refs("1"), _ordered([_mark("1", _para(*_back("1", "n1a.")), _quote(_para(*_words("n1b."))))])]),
+    ("a second note in a block quote of an <li id> note",
+     [_para(*_words("Text"), _str("x1"), _link("#li1", _sup(_str("1")), ident="r1"), SPACE, *_ref("2")),
+      _ordered([_div("li1", _mark("1", _para(*_back("1", "n1a."))),
+                     _quote(_mark("2", _para(*_back("2", "n2a.")))))])]),
+    ("a second note in a block quote after an item's note",
+     [_refs("1", "2"),
+      _ordered([_mark("1", _para(*_back("1", "n1a."))), _quote(_mark("2", _para(*_back("2", "n2a."))))])]),
+    ("a second note in a definition after an item's note",
+     [_refs("1", "2"),
+      _ordered([_mark("1", _para(*_back("1", "n1a."))),
+                _definitions("keepa", [_mark("2", _para(*_back("2", "n2a.")))])])]),
+    # Notes in tables and figures stay where they are, but keep the note around them from taking them in.
+    ("a second note in a table cell after an item's note",
+     [_refs("1", "2"),
+      _ordered([_mark("1", _para(*_back("1", "n1a."))),
+                _table([_plain(*_words("keepa"))], [_plain(*_back("2", "keepb."))])])]),
+    ("a second note in a figure caption after an item's note",
+     [_refs("1", "2"),
+      _ordered([_mark("1", _para(*_back("1", "n1a."))),
+                _figure([_para(*_back("2", "keepb."))], _plain(_IMAGE))])]),
+    ("notes in a table cell, a figure caption and a figure body",
+     [_refs("1", "2", "3"), _table([_plain(*_back("1", "keepa."))]),
+      _figure([_para(*_back("2", "keepb."))], _plain(_IMAGE)), _figure([], _para(*_back("3", "keepc.")))]),
+    ("a table and a figure in a note",
+     [_refs("1"),
+      _ordered([_mark("1", _para(*_back("1", "n1a.")), _table([_plain(*_words("n1b"))]),
+                       _figure([_para(*_words("n1c."))], _plain(_IMAGE)))])]),
+    ("a second note in a list inside an item's note",
+     [_refs("1", "2"),
+      _ordered([_mark("1", _para(*_back("1", "n1a."))), _bullets([_mark("2", _plain(*_back("2", "n2a.")))])])]),
+    # Only a paragraph that opens with a back-link of the same marker is a note.
+    ("a back-link to another reference in a heading of an item's note",
+     [_refs("1", "2"),
+      _ordered([_mark("1", _para(*_back("1", "n1a.")), _heading(*_back("2", "n1b")))])]),
+    ("cross-references to another reference and its note inside a note",
+     [_refs("1", "2"),
+      _ordered([_mark("1", _para(*_back("1", "n1a.")),
+                       _para(*_words("n1b see"), SPACE, _link("#r2", *_words("reference two")), SPACE,
+                             _link("#r2", _str("2")), SPACE, _link("#n2", _sup(_str("2"))), _str(".")),
+                       _para(_link("#r2", *_words("Reference two")), SPACE, *_words("n1c.")))],
+               [_mark("2", _plain(*_back("2", "n2a.")))])]),
+    # A paragraph of note 1 that opens like note 2 cuts note 1 short and stays,
+    # unless no other note 2 carries the id reference 2 points at.
+    ("a paragraph of a note that opens like another note, with no id to tell them apart",
+     [_refs("1", "2"),
+      _ordered([_mark("1", _para(*_back("1", "n1a."))), _mark("2", _para(*_back("2", "n2a."))),
+                _para(*_words("keepa."))],
+               [_plain(*_back("2", "keepb."))])]),
+    ("a paragraph of a note that opens like another note, before the note with its id",
+     [_refs("1", "2"),
+      _ordered([_div("n1", _mark("1", _para(*_back("1", "n1a."))), _para(*_back("2", "keepa.")),
+                     _para(*_words("keepb.")))],
+               [_div("n2", _mark("2", _para(*_back("2", "n2a."))))])]),
+    ("a paragraph of a note that opens like another note, before that note in a div with its id",
+     [_refs("1", "2", "3"),
+      _ordered([_mark("1", _para(*_back("1", "n1a."))), _para(*_back("2", "keepa.")), _para(*_words("keepb."))]),
+      _div("n2", _mark("2", _para(*_back("2", "n2a."))), _mark("3", _para(*_back("3", "n3a."))))]),
+    ("a paragraph of a note that opens like another note, after that note",
+     [_refs("1", "2"),
+      _ordered([_mark("2", _plain(*_back("2", "n2a.")))],
+               [_mark("1", _para(*_back("1", "n1a."))), _para(*_back("2", "keepa.")), _para(*_words("keepb."))])]),
+    ("a paragraph of a note that opens like another note, before that note with its id on an anchor",
+     [_refs("1", "2", "3"),
+      _ordered([_mark("1", _para(*_back("1", "n1a."))), _para(*_back("2", "keepa.")), _para(*_back("3", "keepb."))],
+               [_mark("2", _para(_span(ident="n2"), *_back("2", "n2a.")))],
+               [_plain(_span(ident="n3")), _mark("3", _para(*_back("3", "n3a.")))])]),
+    ("a paragraph of a note that opens like another note, before that note with its id on a back-link",
+     [_refs("1", "2", "3"),
+      _ordered([_mark("1", _para(*_back("1", "n1a."))), _para(*_back("2", "keepa.")), _para(*_back("3", "keepb."))],
+               [_mark("2", _para(_link("#r2", _str("2"), ident="n2"), SPACE, *_words("n2a.")))],
+               [_mark("3", _para(_link("#r3", ident="n3"), *_back("3", "n3a.")))])]),
+    ("a paragraph of a note that opens like another note, with its id after the back-link, before that note",
+     [_refs("1", "2"),
+      _ordered([_mark("1", _para(*_back("1", "n1a."))),
+                _para(*_back("2", "keepa."), SPACE, _span(*_words("keepb."), ident="n2"))],
+               [_div("n2", _mark("2", _para(*_back("2", "n2a."))))])]),
+    ("a definition that is a note",
+     [_refs("1"), _definitions("keepa", [_mark("1", _para(*_back("1", "n1a.")), _para(*_words("n1b.")))])]),
+    ("a definition holding two notes",
+     [_refs("1", "2"),
+      _definitions("keepa", [_mark("1", _para(*_back("1", "n1a."))), _mark("2", _para(*_back("2", "n2a.")))])]),
+    ("a reference inside a note",
+     [_refs("7"), _mark("7", _para(*_back("7", "n7a n7b"), SPACE, *_ref("8"))), _para(*_back("8", "n8a."))]),
+    ("a back-link with another marker",
+     [_refs("9"), _ordered([_plain(_link("#r9", _str("10")), SPACE, *_words("n9a."))])]),
+    ("contents entries linking to their chapters",
+     [_ordered([_plain(_link("#ch1", _str("1"), ident="toc1"), SPACE, *_words("keepa"))]),
+      _para(_link("#toc1", _str("1"), ident="ch1"), SPACE, *_words("keepb"))]),
+    ("no references",
+     [_para(*_words("keepa.")), _ordered([_anchor()], []), _div("d", _plain())]),
+]
+
+
+def _nodes(node):
+    """node and every dict and list inside it."""
+    yield node
+    if isinstance(node, dict) and isinstance(node.get("c"), list):
+        yield from _nodes(node["c"])
+    elif isinstance(node, list):
+        for x in node:
+            yield from _nodes(x)
+
+
+def _elements(node, t):
+    return [x for x in _nodes(node) if isinstance(x, dict) and x.get("t") == t]
+
+
+def _mark_of(node):
+    """k when node is a div or span marking note k."""
+    if isinstance(node, dict) and node.get("t") in ("Div", "Span"):
+        ident, classes, attrs = node["c"][0]
+        if not ident and not attrs and len(classes) == 1 and classes[0].startswith("note-"):
+            return classes[0][len("note-"):]
+    return None
+
+
+def _unmarked(node):
+    """A copy of node without its marks: each gives way to what it holds."""
+    if isinstance(node, list):
+        out = []
+        for x in node:
+            out.extend(_unmarked(x["c"][1]) if _mark_of(x) else [_unmarked(x)])
+        return out
+    if isinstance(node, dict):
+        return {key: _unmarked(value) for key, value in node.items()}
+    return node
+
+
+def _item_lists(block):
+    """The lists of items in block (list items, or one term's definitions)."""
+    if block.get("t") == "BulletList":
+        return [block["c"]]
+    if block.get("t") == "OrderedList":
+        return [block["c"][1]]
+    if block.get("t") == "DefinitionList":
+        return [definitions for _term, definitions in block["c"]]
+    return []
+
+
+def _inner_lists(block):
+    """Every block list directly inside block, for any pandoc block that holds blocks."""
+    t, c = block.get("t"), block.get("c")
+    if t == "BlockQuote":
+        return [c]
+    if t == "Div":
+        return [c[1]]
+    if t == "Figure":
+        return [c[1][1], c[2]]
+    if t == "Table":
+        head, bodies, foot = c[3], c[4], c[5]
+        rows = head[1] + [row for body in bodies for row in body[2] + body[3]] + foot[1]
+        return [c[1][1]] + [cell[4] for row in rows for cell in row[1]]
+    return [item for items in _item_lists(block) for item in items]
+
+
+def _blank_inline(x):
+    return x["t"] in ("Space", "SoftBreak", "LineBreak") or (
+        x["t"] in ("Span", "Link") and all(_blank_inline(y) for y in x["c"][1]))
+
+
+def _blank(blocks):
+    """True when blocks show nothing: paragraphs of nothing but spaces and empty links and spans (such as
+    anchors), lists without items, and divs and quotes of those; anything else shows."""
+    return all(
+        (b["t"] in ("Para", "Plain") and all(_blank_inline(x) for x in b["c"]))
+        or (b["t"] in ("Div", "BlockQuote") and all(_blank(x) for x in _inner_lists(b)))
+        or (b["t"] in ("BulletList", "OrderedList") and not _inner_lists(b))
+        for b in blocks
+    )
+
+
+def _take_marked(blocks, notes):
+    """Move the marked blocks out of blocks into notes (k -> blocks), and drop what that empties.
+
+    A pairing empties an item, definition, div, block quote or list when it
+    takes at least one block out of it, at any depth, and what is left shows
+    nothing (_blank); such a container goes with what is left in it. All
+    else stays, blank or not: what lost nothing, and tables, figures and
+    definition list terms. Returns whether blocks lost anything.
+    """
+    lost = False
+    kept = []
+    for block in blocks:
+        spans = [_mark_of(x) for x in _elements(block, "Span") if _mark_of(x)]
+        if _mark_of(block) or (block["t"] in ("Para", "Plain") and spans):
+            k = _mark_of(block) or spans[0]
+            notes.setdefault(k, []).extend(_unmarked(block["c"][1] if _mark_of(block) else [block]))
+            lost = True
+            continue
+        block_lost = False
+        for items in _item_lists(block):
+            left = []
+            for item in items:
+                item_lost = _take_marked(item, notes)
+                block_lost = block_lost or item_lost
+                if not (item_lost and _blank(item)):
+                    left.append(item)
+            items[:] = left
+        if not _item_lists(block):
+            for inner in _inner_lists(block):
+                block_lost = _take_marked(inner, notes) or block_lost
+        lost = lost or block_lost
+        if not (block_lost and _blank([block])):
+            kept.append(block)
+    blocks[:] = kept
+    return lost
+
+
+def _note_from(blocks):
+    """The note that blocks make: the first a paragraph without the anchors, back-link and space that open it."""
+    inlines = blocks[0]["c"]
+    while len(inlines) == 1 and inlines[0]["t"] == "Span":
+        inlines = inlines[0]["c"][1]
+    while inlines and _blank_inline(inlines[0]):
+        inlines = inlines[1:]
+    if inlines[0]["t"] != "Link" or inlines[1] != SPACE:
+        raise ValueError(f"a marked note does not open with a back-link and a space: {blocks[0]}")
+    return {"t": "Note", "c": [_para(*inlines[2:])] + blocks[1:]}
+
+
+def expected_footnotes(marked):
+    """What convert_footnotes must make of the sample without its marks, and how many notes.
+
+    The marked blocks move out of their places, which drops what that
+    empties, and into a note that stands in place of the reference; all else
+    stays as it was.
+    """
+    blocks = json.loads(json.dumps(marked))
+    notes = {}
+    _take_marked(blocks, notes)
+    placed = set()
+    for node in list(_nodes(blocks)):
+        if isinstance(node, list):
+            for i, x in enumerate(node):
+                k = x["c"][0][0][1:] if isinstance(x, dict) and x.get("t") == "Link" else None
+                if k in notes and x["c"][0][0] == f"r{k}" and k not in placed:
+                    node[i] = _note_from(notes[k])
+                    placed.add(k)
+    if placed != set(notes):
+        raise ValueError(f"marked notes without a reference: {set(notes) - placed}")
+    return blocks, len(notes)
+
+
+_CONTAINERS = ("Div", "BlockQuote", "BulletList", "OrderedList", "DefinitionList", "Table", "Figure")
+
+
+def compare_footnotes(test, blocks, expected):
+    """Check that convert_footnotes made exactly what it must, naming the first invariant broken."""
+    def text(node):
+        """The words, but for link text such as markers."""
+        return (Counter(x["c"] for x in _elements(node, "Str"))
+                - Counter(x["c"] for link in _elements(node, "Link") for x in _elements(link, "Str")))
+
+    def skeleton(node):
+        return [(x["t"], len(_inner_lists(x))) for t in _CONTAINERS for x in _elements(node, t)]
+
+    test.assertEqual(text(blocks), text(expected), "invariant 1: text lost or doubled")
+    test.assertEqual(_elements(blocks, "Note"), _elements(expected, "Note"), "invariant 2: notes")
+    test.assertEqual(skeleton(blocks), skeleton(expected), "invariant 4: containers dropped or kept")
+    test.assertEqual(blocks, expected, "invariant 3: the rest")
+
+
+def check_footnotes(test, marked, blocks=None):
+    """Run convert_footnotes on the sample without its marks (or on blocks) and compare with what the marks say."""
+    expected, count = expected_footnotes(marked)
+    if blocks is None:
+        blocks = _unmarked(marked)
+    converted = convert.convert_footnotes(blocks)
+    compare_footnotes(test, blocks, expected)
+    test.assertEqual(converted, count, "count returned")
+
+
+class ConvertFootnotesInvariantTests(unittest.TestCase):
+    def test_every_shape_comes_out_as_marked(self):
+        for name, marked in FOOTNOTE_SHAPES:
+            with self.subTest(shape=name):
+                check_footnotes(self, marked)
+
+    def test_what_a_pairing_empties_goes_with_what_is_left_in_it(self):
+        marked = [
+            _refs("1", "2"),
+            _div("chapter", _mark("1", _para(*_back("1", "n1a."))), _bullets(), _div("empty")),
+            _ordered([_quote(), _anchor(), _mark("2", _plain(*_back("2", "n2a.")))], [_plain(*_words("keepa."))], []),
+            _bullets(),
+        ]
+        expected = [
+            _para(*_words("Text"), SPACE, _str("x1"), {"t": "Note", "c": [_para(_str("n1a."))]},
+                  SPACE, _str("x2"), {"t": "Note", "c": [_para(_str("n2a."))]}, _str(".")),
+            _ordered([_plain(*_words("keepa."))], []),
+            _bullets(),
+        ]
+        self.assertEqual(expected_footnotes(marked), (expected, 2))
+        blocks = _unmarked(marked)
+        self.assertEqual(convert.convert_footnotes(blocks), 2)
+        self.assertEqual(blocks, expected)
+
+    def _converted(self, name):
+        marked = dict(FOOTNOTE_SHAPES)[name]
+        blocks = _unmarked(marked)
+        convert.convert_footnotes(blocks)
+        return blocks, expected_footnotes(marked)[0]
+
+    def test_the_check_sees_an_untouched_item_move(self):
+        blocks, expected = self._converted("note items among an ordinary, an empty and an anchor-only item")
+        items = blocks[1]["c"][1]
+        self.assertEqual(items, [[_anchor()], [_plain(*_words("keepa."))], []])
+        items.insert(1, items.pop(0))
+        with self.assertRaisesRegex(AssertionError, "invariant 3"):
+            compare_footnotes(self, blocks, expected)
+
+    def test_the_check_sees_an_untouched_item_go(self):
+        blocks, expected = self._converted("note items among an ordinary, an empty and an anchor-only item")
+        items = blocks[1]["c"][1]
+        self.assertEqual(items, [[_anchor()], [_plain(*_words("keepa."))], []])
+        del items[0]
+        with self.assertRaisesRegex(AssertionError, "invariant 4"):
+            compare_footnotes(self, blocks, expected)
+
+
+class PrepareCalibreHtmlTests(unittest.TestCase):
+    def test_drops_the_contents_page_list_and_landmarks_navs(self):
+        html = (
+            '<p>Before.</p>'
+            '<nav type="toc" id="calibre_link-50" role="doc-toc"><h1>Contents</h1>'
+            '<ol><li><a href="#c1">Chapter</a></li></ol></nav>\n'
+            '<nav type="landmarks" hidden="hidden"><ol><li><a type="toc" href="#t">Contents</a></li></ol></nav>'
+            '<nav role="doc-pagelist"><h2>Page List</h2><ol><li><a href="#p1">1</a></li></ol></nav>'
+            '<nav epub:type="page-list"><ol><li><a href="#p2">2</a></li></ol></nav>'
+            '<nav class="site"><a href="#c1">Kept</a></nav>'
+            '<p>After.</p>'
+        )
+
+        self.assertEqual(
+            convert.prepare_calibre_html(html),
+            '<p>Before.</p>\n<nav class="site"><a href="#c1">Kept</a></nav><p>After.</p>',
+        )
+
+    def test_a_nav_inside_a_dropped_nav_goes_with_it(self):
+        html = ('<nav type="toc"><nav><a href="#n1" role="doc-noteref">1</a></nav>'
+                '<ol><li><a href="#c1">One</a></li></ol></nav><p>Text.</p>')
+
+        self.assertEqual(convert.prepare_calibre_html(html), '<p>Text.</p>')
+
+    def test_a_self_closing_nav_ends_where_it_starts(self):
+        html = ('<nav type="landmarks" hidden="hidden"/><p>Body.</p></nav>'
+                '<nav type="toc"><nav/><ol><li><a href="#c1">One</a></li></ol></nav>'
+                '<p>A<a href="#n1" role="doc-noteref">1</a></p><p id="n1">Note.</p>')
+
+        self.assertEqual(
+            convert.prepare_calibre_html(html),
+            '<p>Body.</p></nav><p>A<a href="#n1">1</a></p><p id="n1">Note.</p>',
+        )
+
+    def test_a_reference_pandoc_resolves_keeps_its_role(self):
+        # Pandoc 3.6+ fills the note from an <li> whose nearest list is an <ol>
+        # below an element whose role is exactly "doc-endnotes". In an <ol>
+        # nested in another there, 3.6 fills it and 3.14 loses its text either way.
+        for notes in (
+            '<section role="doc-endnotes"><div><ol><li id="n1"><p>Note.</p></li></ol></div></section>',
+            '<section role=doc-endnotes><ol><li id="n1">Note.</li></ol></section>',
+            '<section role="doc-endnotes"><ul><li>Part<ol><li id="n1">Note.</li></ol></li></ul></section>',
+            '<ol><li>Part<section role="doc-endnotes"><ol><li id="n1">Note.</li></ol></section></li></ol>',
+            '<section role="doc-endnotes"><ol><li>Part<ol><li id="n1">Note.</li></ol></li></ol></section>',
+        ):
+            with self.subTest(notes=notes):
+                html = '<p>Text<a href="#n1" role="doc-noteref"><sup>1</sup></a></p>' + notes
+
+                self.assertEqual(convert.prepare_calibre_html(html), html)
+
+    def test_references_pandoc_would_leave_empty_lose_their_role(self):
+        for notes in (
+            '<ol role="doc-endnotes"><li id="n1">Note.</li></ol>',
+            '<section role="doc-endnotes region"><ol><li id="n1">Note.</li></ol></section>',
+            '<section role="DOC-ENDNOTES"><ol><li id="n1">Note.</li></ol></section>',
+            '<section role="doc-endnotes"><ul><li id="n1">Note.</li></ul></section>',
+            '<section role="doc-endnotes"><ol><li>Part<ul><li id="n1">Note.</li></ul></li></ol></section>',
+        ):
+            with self.subTest(notes=notes):
+                html = '<p>Text<a href="#n1" role="doc-noteref"><sup>1</sup></a></p>' + notes
+
+                self.assertEqual(convert.prepare_calibre_html(html),
+                                 html.replace(' role="doc-noteref"', ''))
+
+        html = ('<p>Text<a href="#n1" role="doc-noteref">1</a></p>'
+                '<nav type="toc"><section role="doc-endnotes"><ol><li id="n1">In a nav.</li></ol></section></nav>')
+
+        self.assertEqual(convert.prepare_calibre_html(html), '<p>Text<a href="#n1">1</a></p>')
+
+    def test_other_references_lose_doc_noteref(self):
+        html = (
+            '<p>A<a href="#n1" id="r1" role="doc-noteref"><sup>1</sup></a>'
+            ' B<a type="noteref" role="doc-noteref" href="#n2"><sup>2</sup></a>'
+            ' C<a href="#n3"role="doc-noteref">3</a>'
+            ' D<a title="see role=\'x\'" href="#n4" role=doc-noteref>4</a></p>'
+            '<aside role="doc-footnote" id="n1"><p>Footnote.</p></aside>'
+            '<section type="note"><ol><li type="rearnote" id="n2"><a href="#r1">2</a> Rear note.</li></ol></section>'
+            '<section role="doc-endnotes"><ul><li id="n3">Bulleted.</li></ul></section>'
+            '<p id="n4">Paragraph note.</p>'
+        )
+
+        self.assertEqual(
+            convert.prepare_calibre_html(html),
+            html.replace(' role="doc-noteref"', '').replace('role="doc-noteref"', '')
+                .replace(' role=doc-noteref', ''),
+        )
+
+    def test_attributes_around_a_removed_role_stay_apart(self):
+        html = ('<p>A<a role="doc-noteref"href="#n1" id="r1">1</a>'
+                ' B<a href=#n2 role="doc-noteref"id="r2">2</a></p>')
+
+        self.assertEqual(convert.prepare_calibre_html(html),
+                         '<p>A<a href="#n1" id="r1">1</a> B<a href=#n2 id="r2">2</a></p>')
+
+    def test_a_role_pandoc_does_not_read_as_a_reference_is_left(self):
+        # Pandoc makes a note only of a link whose role is exactly "doc-noteref".
+        html = ('<p>A<a href="#n1" role="link doc-noteref">1</a>'
+                ' B<a href="#n2" role="DOC-NOTEREF">2</a></p>'
+                '<p id="n1">One.</p><p id="n2">Two.</p>')
+
+        self.assertEqual(convert.prepare_calibre_html(html), html)
+
+    def test_text_without_navs_or_references_is_unchanged(self):
+        html = '<p>A <a href="#x">link</a> &amp; <br/> text.</p>\n<img src="a.png">'
+
+        self.assertEqual(convert.prepare_calibre_html(html), html)
+
+
 class CleanCalibreAstMarkupTests(unittest.TestCase):
     def test_unwraps_in_book_links_and_spans_and_drops_inline_anchors(self):
         doc = _doc(
@@ -690,6 +1231,173 @@ an en dash (pp. 12&ndash;34), and a footnote ref.<a href="#calibre_link-2" id="c
 """
 
 
+# Parts of the input.html Calibre 7.6 writes for the fixture attached to
+# issues #88 and #89 (epub-layout-regression-fixture.epub), with the lists
+# shortened: its nav document is in the spine, and its endnotes are <li>
+# items of a section with epub:type="note" but no role="doc-endnotes".
+ISSUE_88_89_CALIBRE_HTML = """<html><head><meta http-equiv="Content-Type" content="text/html;charset=utf-8" /><title>Fixture</title></head><body>
+<div class="calibre" id="calibre_link-10">
+<nav type="toc" id="calibre_link-50" role="doc-toc">
+<h1 class="toc-title" id="calibre_link-51">Contents</h1>
+<ol class="none" type="list">
+<li class="toc-front" id="calibre_link-56"><a href="#calibre_link-15">Introduction: Synthetic Navigation Test</a></li>
+<li class="toc-front" id="calibre_link-57"><a href="#calibre_link-0">1 Synthetic First Chapter</a></li>
+<li class="toc-front" id="calibre_link-63"><a href="#calibre_link-3">Notes</a></li>
+</ol>
+</nav>
+<nav type="landmarks" hidden="hidden">
+<ol class="none">
+<li class="toc-front"><a type="toc" href="#calibre_link-10">Table of Contents</a></li>
+<li class="toc-front"><a type="bodymatter" href="#calibre_link-12">Start of Content</a></li>
+</ol>
+</nav>
+<nav type="page-list" hidden="hidden" role="doc-pagelist">
+<h2 class="calibre1">Page List</h2>
+<ol class="none">
+<li class="toc-front"><a href="#calibre_link-24">1</a></li>
+<li class="toc-front"><a href="#calibre_link-25">9</a></li>
+</ol>
+</nav>
+</div>
+<div class="calibre" id="calibre_link-15">
+<section aria-labelledby="hd-introduction" type="frontmatter introduction" id="calibre_link-66" role="doc-introduction">
+<h1 class="toc-title" id="calibre_link-67">Introduction: Synthetic Navigation Test</h1>
+<p id="calibre_link-69" class="copyright-space"><span type="pagebreak" id="calibre_link-24" role="doc-pagebreak" title="1"></span>Synthetic paragraph 1 before the test note <a type="noteref" href="#calibre_link-27" id="calibre_link-4" role="doc-noteref"><sup class="calibre2">1</sup></a> and synthetic prose after the reference. </p>
+<p id="calibre_link-70" class="copyright-space">Synthetic paragraph 2 before the test note <a type="noteref" href="#calibre_link-28" id="calibre_link-5" role="doc-noteref"><sup class="calibre2">2</sup></a> and synthetic prose after the reference. </p>
+</section>
+</div>
+<div class="calibre" id="calibre_link-0">
+<section aria-labelledby="hd-chapter001" type="bodymatter chapter" id="calibre_link-72" role="doc-chapter">
+<h1 class="toc-title" id="calibre_link-73">1 Synthetic First Chapter</h1>
+<p id="calibre_link-74" class="copyright-space"><span type="pagebreak" id="calibre_link-25" role="doc-pagebreak" title="9"></span>Synthetic paragraph 3 before the test note <a type="noteref" href="#calibre_link-1" id="calibre_link-6" role="doc-noteref"><sup class="calibre2">1</sup></a> and synthetic prose after the reference. </p>
+</section>
+</div>
+<div class="calibre" id="calibre_link-3">
+<section aria-label="endnotes" type="note" id="calibre_link-111">
+<h1 class="toc-title" id="calibre_link-112">Notes</h1>
+<div class="calibre3"></div><h2 class="calibre1" id="calibre_link-113">Synthetic Note Section 1</h2>
+<ol class="none">
+<li class="endnote" type="rearnote" id="calibre_link-27"><a href="#calibre_link-4">1</a> Synthetic note text 1, created only for this regression test.</li>
+<li class="endnote" type="rearnote" id="calibre_link-28"><a href="#calibre_link-5">2</a> Synthetic note text 2, created only for this regression test.</li>
+</ol>
+<div class="calibre3"></div><h2 class="calibre1" id="calibre_link-114">Synthetic Note Section 2</h2>
+<ol class="none">
+<li class="endnote" type="rearnote" id="calibre_link-1"><a href="#calibre_link-6">1</a> Synthetic note text 3, created only for this regression test.</li>
+</ol>
+</section>
+</div>
+</body></html>
+"""
+
+
+# Samples of FOOTNOTE_SHAPES as HTML, for what pandoc makes of them. <note-k>
+# marks note k with a div of class note-k, <inote-k> with a span; a sample
+# without them is what pandoc reads, and the test checks that the marks do not
+# change that.
+def _html_refs(*ks, role=""):
+    return "<p>Text" + "".join(f' x{k}<a{role} href="#n{k}" id="r{k}"><sup>{k}</sup></a>' for k in ks) + ".</p>"
+
+
+def _html_marked(html):
+    html = re.sub(r"<note-(\d+)>", r'<div class="note-\1">', html)
+    html = re.sub(r"<inote-(\d+)>", r'<span class="note-\1">', html)
+    return re.sub(r"</note-\d+>", "</div>", re.sub(r"</inote-\d+>", "</span>", html))
+
+
+def _html_unmarked(html):
+    return re.sub(r"</?i?note-\d+>", "", html)
+
+
+_HTML_LI1_REFS = '<p>Text x1<a href="#li1" id="r1"><sup>1</sup></a> x2<a href="#n2" id="r2"><sup>2</sup></a>.</p>'
+
+HTML_FOOTNOTE_SHAPES = [
+    ("a paragraph",
+     _html_refs("1") + '<note-1><p id="n1"><a href="#r1">1</a> n1a n1b.</p></note-1>'),
+    ("a div the reference points at, holding two notes",
+     _html_refs("1", "2") + '<div id="n1"><note-1><p><a href="#r1">1</a> n1a.</p></note-1>'
+     '<note-2><p><a href="#r2">2</a> n2a.</p></note-2></div>'),
+    ("<li id> items with inline text (#88)",
+     _html_refs("1", "2") + '<section type="note"><ol><li id="n1"><inote-1><a href="#r1">1</a> n1a.</inote-1></li>'
+     '<li id="n2"><inote-2><a href="#r2">2</a> n2a.</inote-2></li></ol></section>'),
+    ("<li id> items with paragraphs",
+     _html_refs("1", "2") + '<ol><li id="n1"><note-1><p><a href="#r1">1</a> n1a.</p><p>n1b.</p></note-1></li>'
+     '<li id="li2"><a id="page_7"></a><p id="n2"><inote-2><a href="#r2">2</a> n2a.</inote-2></p>'
+     '<p><inote-2>n2b.</inote-2></p></li></ol>'),
+    ("an <li id> whose paragraphs hold two notes",
+     _HTML_LI1_REFS + '<ol><li id="li1"><note-1><p><a href="#r1">1</a> n1a.</p></note-1>'
+     '<note-2><p id="n2"><a href="#r2">2</a> n2a.</p></note-2></li></ol>'),
+    ("an <li> holding two <div id> notes",
+     _html_refs("1", "2") + '<ol><li><div id="n1"><note-1><p><a href="#r1">1</a> n1a.</p></note-1></div>'
+     '<div id="n2"><note-2><p><a href="#r2">2</a> n2a.</p></note-2></div></li></ol>'),
+    ("a list left alone while a note elsewhere is paired",
+     _html_refs("1") + '<note-1><p id="n1"><a href="#r1">1</a> n1a.</p></note-1>'
+     '<ol><li><a id="page-1"></a></li><li>keepa.</li></ol>'),
+    ("doc-noteref references to notes pandoc would leave empty",
+     '<p>Text x1<a role="doc-noteref" href="#n1" id="r1"><sup>1</sup></a>'
+     ' x2<a role="doc-noteref"href="#n2" id="r2"><sup>2</sup></a>.</p>'
+     '<ol role="doc-endnotes"><li id="n1"><inote-1><a href="#r1">1</a> n1a.</inote-1></li></ol>'
+     '<section role="doc-endnotes region"><ol><li id="n2"><inote-2><a href="#r2">2</a> n2a.</inote-2></li></ol>'
+     '</section>'),
+    ("a second note in a block quote of an <li id> note",
+     _HTML_LI1_REFS + '<ol><li id="li1"><note-1><p><a href="#r1">1</a> n1a.</p></note-1>'
+     '<blockquote><note-2><p id="n2"><a href="#r2">2</a> n2a.</p></note-2></blockquote></li></ol>'),
+    ("a second note in a block quote after an item's note",
+     _html_refs("1", "2") + '<ol><li><note-1><p><a href="#r1">1</a> n1a.</p></note-1>'
+     '<blockquote><note-2><p><a href="#r2">2</a> n2a.</p></note-2></blockquote></li></ol>'),
+    ("a second note in a definition after an item's note",
+     _html_refs("1", "2") + '<ol><li><note-1><p><a href="#r1">1</a> n1a.</p></note-1>'
+     '<dl><dt>keepa</dt><dd><note-2><p><a href="#r2">2</a> n2a.</p></note-2></dd></dl></li></ol>'),
+    ("a second note in a table cell after an item's note",
+     _html_refs("1", "2") + '<ol><li><note-1><p><a href="#r1">1</a> n1a.</p></note-1>'
+     '<table><tr><td>keepa</td><td><p><a href="#r2">2</a> keepb.</p></td></tr></table></li></ol>'),
+    ("a second note in a figure caption after an item's note",
+     _html_refs("1", "2") + '<ol><li><note-1><p><a href="#r1">1</a> n1a.</p></note-1><figure><img src="a.png" alt="">'
+     '<figcaption><p><a href="#r2">2</a> keepb.</p></figcaption></figure></li></ol>'),
+    ("notes in a table cell and a figure caption",
+     _html_refs("1", "2") + '<table><tr><td><p><a href="#r1">1</a> keepa.</p></td></tr></table>'
+     '<figure><img src="a.png" alt=""><figcaption><p><a href="#r2">2</a> keepb.</p></figcaption></figure>'),
+    ("a table in a note",
+     _html_refs("1") + '<ol><li><note-1><p><a href="#r1">1</a> n1a.</p>'
+     '<table><tr><td>n1b</td></tr></table></note-1></li></ol>'),
+    ("cross-references to another reference and its note inside a note",
+     _html_refs("1", "2") + '<ol><li id="n1"><note-1><p><a href="#r1">1</a> n1a.</p>'
+     '<p>n1b see <a href="#r2">reference two</a> and <a href="#n2">note two</a>.</p><p>n1c.</p></note-1></li>'
+     '<li id="n2"><p><inote-2><a href="#r2">2</a> n2a.</inote-2></p></li></ol>'),
+    ("a paragraph of a note that opens like another note, before the note with its id on the <li>",
+     _html_refs("1", "2") + '<ol><li><note-1><p><a href="#r1">1</a> n1a.</p></note-1>'
+     '<p><a href="#r2">2</a> keepa.</p><p>keepb.</p></li>'
+     '<li id="n2"><p><inote-2><a href="#r2">2</a> n2a.</inote-2></p></li></ol>'),
+    ("a paragraph of a note that opens like another note, before the note with its id on an <li> of text",
+     _html_refs("1", "2") + '<ol><li id="n1"><note-1><p><a href="#r1">1</a> n1a.</p></note-1>'
+     '<p><a href="#r2">2</a> keepa.</p></li>'
+     '<li id="n2"><inote-2><a href="#r2">2</a> n2a.</inote-2></li></ol>'),
+    ("a paragraph of a note that opens like another note, before the note with its id on the <p>",
+     _html_refs("1", "2") + '<ol><li><note-1><p><a href="#r1">1</a> n1a.</p></note-1>'
+     '<note-2><p><a href="#r2">2</a> n2a.</p></note-2><p>keepa.</p></li>'
+     '<li><p id="n2"><a href="#r2">2</a> keepb.</p></li></ol>'),
+    ("a paragraph of a note that opens like another note, after that note",
+     _html_refs("1", "2") + '<ol><li id="n2"><p><inote-2><a href="#r2">2</a> n2a.</inote-2></p></li>'
+     '<li id="n1"><note-1><p><a href="#r1">1</a> n1a.</p></note-1><p><a href="#r2">2</a> keepa.</p></li></ol>'),
+    ("a paragraph of a note that opens like another note, before that note with its id on an anchor",
+     _html_refs("1", "2", "3") + '<ol><li><note-1><p><a href="#r1">1</a> n1a.</p></note-1>'
+     '<p><a href="#r2">2</a> keepa.</p><p><a href="#r3">3</a> keepb.</p></li>'
+     '<li><p><a id="n2"></a><inote-2><a href="#r2">2</a> n2a.</inote-2></p></li>'
+     '<li><a id="n3"></a><p><inote-3><a href="#r3">3</a> n3a.</inote-3></p></li></ol>'),
+    ("a paragraph of a note that opens like another note, before that note with its id on a back-link",
+     _html_refs("1", "2", "3") + '<ol><li><note-1><p><a href="#r1">1</a> n1a.</p></note-1>'
+     '<p><a href="#r2">2</a> keepa.</p><p><a href="#r3">3</a> keepb.</p></li>'
+     '<li><p><inote-2><a id="n2" href="#r2">2</a> n2a.</inote-2></p></li>'
+     '<li><p><inote-3><a id="n3" href="#r3"></a><a href="#r3">3</a> n3a.</inote-3></p></li></ol>'),
+    ("a paragraph of a note that opens like another note, with its id after the back-link, before that note",
+     _html_refs("1", "2") + '<ol><li><note-1><p><a href="#r1">1</a> n1a.</p></note-1>'
+     '<p><a href="#r2">2</a> keepa. <span id="n2">keepb.</span></p></li>'
+     '<li id="n2"><p><inote-2><a href="#r2">2</a> n2a.</inote-2></p></li></ol>'),
+    ("a second note in a list inside an item's note",
+     _html_refs("1", "2") + '<ol><li><note-1><p><a href="#r1">1</a> n1a.</p></note-1>'
+     '<ul><li><inote-2><a href="#r2">2</a> n2a.</inote-2></li></ul></li></ol>'),
+]
+
+
 @process_guard.needs("pandoc")
 class ConvertHtmlToMarkdownPandocTests(unittest.TestCase):
     def setUp(self):
@@ -728,6 +1436,77 @@ class ConvertHtmlToMarkdownPandocTests(unittest.TestCase):
                     ]
                 ),
             )
+
+    def test_issue_88_89_reproduction(self):
+        # Pandoc 3.6+ read the references as empty notes and older pandoc left
+        # them as superscripts; either way the notes stayed in lists at the end,
+        # after the contents, landmarks and page list read as body text.
+        with tempfile.TemporaryDirectory() as tmp:
+            html = Path(tmp) / "input.html"
+            md = Path(tmp) / "input.md"
+            html.write_text(ISSUE_88_89_CALIBRE_HTML, encoding="utf-8")
+
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertTrue(convert.convert_html_to_markdown(str(html), str(md)))
+
+            self.assertEqual(
+                md.read_text(encoding="utf-8").strip(),
+                "\n".join(
+                    [
+                        "# Introduction: Synthetic Navigation Test",
+                        "",
+                        "Synthetic paragraph 1 before the test note [^1] and synthetic prose after the reference.",
+                        "",
+                        "Synthetic paragraph 2 before the test note [^2] and synthetic prose after the reference.",
+                        "",
+                        "[^1]: Synthetic note text 1, created only for this regression test.",
+                        "",
+                        "[^2]: Synthetic note text 2, created only for this regression test.",
+                        "",
+                        "# 1 Synthetic First Chapter",
+                        "",
+                        "Synthetic paragraph 3 before the test note [^3] and synthetic prose after the reference.",
+                        "",
+                        "[^3]: Synthetic note text 3, created only for this regression test.",
+                        "",
+                        "# Notes",
+                        "",
+                        "## Synthetic Note Section 1",
+                        "",
+                        "## Synthetic Note Section 2",
+                    ]
+                ),
+            )
+
+    def _markdown(self, html_text):
+        with tempfile.TemporaryDirectory() as tmp:
+            html = Path(tmp) / "input.html"
+            md = Path(tmp) / "input.md"
+            html.write_text(html_text, encoding="utf-8")
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertTrue(convert.convert_html_to_markdown(str(html), str(md)))
+            return md.read_text(encoding="utf-8").strip()
+
+    def test_footnotes_come_out_as_marked_from_what_pandoc_reads(self):
+        def read(html):
+            return json.loads(convert._pandoc_html_to_json(convert.prepare_calibre_html(html)))["blocks"]
+
+        for name, html in HTML_FOOTNOTE_SHAPES:
+            with self.subTest(shape=name):
+                marked, blocks = read(_html_marked(html)), read(_html_unmarked(html))
+                self.assertEqual(_unmarked(marked), blocks, "the marks change what pandoc reads")
+                check_footnotes(self, marked, blocks)
+
+    def test_a_self_closing_nav_does_not_hide_the_references_after_it(self):
+        self.assertEqual(
+            self._markdown(
+                '<html><body><nav type="landmarks" hidden="hidden"/>'
+                '<p>One<a href="#n1" id="r1" role="doc-noteref"><sup>1</sup></a>.</p>'
+                '<section type="note"><ol><li id="n1"><a href="#r1">1</a> Note one.</li></ol></section>'
+                '</body></html>'
+            ),
+            "One[^1].\n\n[^1]: Note one.",
+        )
 
     def test_chapter_number_after_page_anchor_survives_and_unwrapped_number_is_escaped(self):
         # Dropping the anchor line too early would put the "1" next to the
@@ -776,6 +1555,19 @@ class PandocWithoutPypandocTests(unittest.TestCase):
 
         self.assertEqual([c[0] for c in calls], ["pandoc", "pandoc"])
         self.assertIn("--reference-location=block", calls[1])
+
+    def test_reports_an_html_file_it_cannot_read(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bad = Path(tmp) / "bad.html"
+            bad.write_bytes(b"<p>\xff\xfe</p>")
+            for html in (Path(tmp) / "missing.html", bad):
+                with self.subTest(html=html.name):
+                    out = io.StringIO()
+                    with mock.patch.object(convert, "_pandoc_html_to_json") as to_json, \
+                            contextlib.redirect_stdout(out):
+                        self.assertFalse(convert.convert_html_to_markdown(str(html), str(Path(tmp) / "o.md")))
+                    to_json.assert_not_called()
+                    self.assertIn(f"Cannot read {html}", out.getvalue())
 
     def test_reports_missing_pandoc(self):
         out = io.StringIO()
