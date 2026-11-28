@@ -1,11 +1,17 @@
 import process_guard  # noqa: F401  first, so it guards every process the tests below start
 import contextlib
+import errno
+import hashlib
 import inspect
 import io
 import json
 import os
+import shutil
+import stat
+import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from html.parser import HTMLParser
 from pathlib import Path
@@ -194,6 +200,25 @@ class MissingCoverPathTests(unittest.TestCase):
             generate_formats_mock.assert_not_called()
 
 
+def _content(path):
+    """The size and SHA-256 of the file at path, which build_outputs.json records."""
+    data = Path(path).read_bytes()
+    return {"size": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+
+
+def _recorded(temp_dir):
+    """The files build_outputs.json lists, or None if there is no such file."""
+    path = Path(temp_dir) / merge_and_build.OUTPUTS_RECORD
+    return json.loads(path.read_text(encoding="utf-8"))["files"] if path.exists() else None
+
+
+def _build(temp_dir, files):
+    """Write files, a {name: bytes} dict, in temp_dir as a build step does, and record them as it does."""
+    for name, data in files.items():
+        (Path(temp_dir) / name).write_bytes(data)
+    merge_and_build._record_outputs(str(temp_dir), *files)
+
+
 class ExportAliasTests(unittest.TestCase):
     def _write(self, path, content="x"):
         Path(path).write_text(content, encoding="utf-8")
@@ -255,7 +280,7 @@ class ExportAliasTests(unittest.TestCase):
                 self.assertEqual(len(copied), 0 if same_files else 5)
                 for name, content in originals.items():
                     self.assertEqual((root / name).read_bytes(), content)
-                record = {merge_and_build.EXPORT_COPIES_FILE} if copied else set()
+                record = {merge_and_build.OUTPUTS_RECORD} if copied else set()
                 self.assertEqual({p.name for p in root.iterdir()} - set(originals), set(copied) | record)
 
     def test_export_name_rejects_pipeline_html_without_writing(self):
@@ -277,22 +302,63 @@ class ExportAliasTests(unittest.TestCase):
 
                 self.assertEqual({p.name: p.read_bytes() for p in root.iterdir()}, originals)
 
-    def test_copies_stay_recorded_until_their_files_are_gone(self):
+    def test_the_copies_of_every_export_name_are_recorded(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             for name in ["book.html", "book_doc.html", "book.docx", "book.epub", "book.pdf"]:
                 self._write(root / name, name)
-            record_path = root / merge_and_build.EXPORT_COPIES_FILE
 
             first = merge_and_build.export_named_aliases(temp_dir, "Old Title")
             second = merge_and_build.export_named_aliases(temp_dir, "New Title")
-            self.assertEqual(json.loads(record_path.read_text(encoding="utf-8")),
-                             {"copies": first + second})
 
-            (root / "Old Title.pdf").unlink()
-            merge_and_build.export_named_aliases(temp_dir, "New Title")
-            self.assertEqual(json.loads(record_path.read_text(encoding="utf-8")),
-                             {"copies": [n for n in first if n != "Old Title.pdf"] + second})
+            self.assertEqual(set(_recorded(root)), set(first + second))
+            for name, entry in _recorded(root).items():
+                self.assertEqual(entry, _content(root / name))
+
+    def test_copies_made_before_one_fails_are_recorded_and_that_one_is_not(self):
+        canonical = ["book.html", "book_doc.html", "book.docx", "book.epub", "book.pdf"]
+        for earlier in [None, b"the copy an earlier build made"]:
+            with self.subTest(earlier=earlier), tempfile.TemporaryDirectory() as temp_dir:
+                root = Path(temp_dir)
+                for name in canonical:
+                    self._write(root / name, name)
+                if earlier is not None:
+                    (root / "My Book.docx").write_bytes(earlier)
+                real_copy2 = shutil.copy2
+
+                def disk_full_at_docx(src, dst, *args, **kwargs):
+                    if os.path.basename(src) == "book.docx":
+                        Path(dst).write_bytes(b"half a copy")
+                        raise OSError(errno.ENOSPC, "No space left on device")
+                    return real_copy2(src, dst, *args, **kwargs)
+
+                with mock.patch.object(shutil, "copy2", disk_full_at_docx), self.assertRaises(OSError):
+                    merge_and_build.export_named_aliases(temp_dir, "My Book")
+
+                self.assertEqual(set(_recorded(root)), {"My Book.html", "My Book_doc.html"})
+                if earlier is None:
+                    self.assertFalse(os.path.lexists(root / "My Book.docx"))
+                else:
+                    self.assertEqual((root / "My Book.docx").read_bytes(), earlier)
+                self.assertEqual({p.name for p in root.iterdir()},
+                                 set(canonical) | {"My Book.html", "My Book_doc.html", merge_and_build.OUTPUTS_RECORD}
+                                 | ({"My Book.docx"} if earlier is not None else set()))
+
+    def test_a_symlink_under_a_copy_name_is_replaced_and_its_target_left(self):
+        with tempfile.TemporaryDirectory() as temp_dir, tempfile.TemporaryDirectory() as elsewhere:
+            root = Path(temp_dir)
+            for name in ["book.html", "book_doc.html", "book.docx", "book.epub", "book.pdf"]:
+                self._write(root / name, name)
+            target = Path(elsewhere) / "mine.pdf"
+            target.write_bytes(b"the user's file")
+            (root / "My Book.pdf").symlink_to(target)
+
+            merge_and_build.export_named_aliases(temp_dir, "My Book")
+
+            self.assertEqual(target.read_bytes(), b"the user's file")
+            self.assertFalse((root / "My Book.pdf").is_symlink())
+            self.assertEqual(_recorded(root)["My Book.pdf"], _content(root / "My Book.pdf"))
+            self.assertEqual((root / "My Book.pdf").read_text(encoding="utf-8"), "book.pdf")
 
     def test_main_rejects_export_collision_before_building(self):
         for export_name, kept in [("book_doc", "book_doc.html"), ("input", "input.html"),
@@ -324,8 +390,7 @@ class ExportAliasTests(unittest.TestCase):
 
                 self.assertEqual(len(copied), 5)
                 self.assertTrue((root / (export_name + "_doc.html")).is_file())
-                record = json.loads((root / merge_and_build.EXPORT_COPIES_FILE).read_text(encoding="utf-8"))
-                self.assertEqual(record, {"copies": copied})
+                self.assertEqual(set(_recorded(root)), set(copied))
 
     def test_export_name_whose_longest_copy_takes_256_bytes_is_rejected_without_writing(self):
         for kind, export_name in [("ascii", "a" * 247), ("multibyte", "书" * 81 + "éé")]:
@@ -355,55 +420,350 @@ class ExportAliasTests(unittest.TestCase):
                 merge_mock.assert_not_called()
                 self.assertEqual({p.name: p.read_bytes() for p in root.iterdir()}, originals)
 
-    def test_export_aliases_refuse_an_unusable_record(self):
-        for text in ["{not json", '{"copies": ["../outside.pdf"]}']:
-            with self.subTest(text=text), tempfile.TemporaryDirectory() as temp_dir:
-                root = Path(temp_dir)
-                for name in ["book.html", "book_doc.html", "book.docx", "book.epub", "book.pdf"]:
-                    self._write(root / name, name)
-                (root / merge_and_build.EXPORT_COPIES_FILE).write_text(text, encoding="utf-8")
-                originals = {p.name: p.read_bytes() for p in root.iterdir()}
+class OutputsRecordTests(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+        self.temp_dir = self.root / "book_temp"
+        self.temp_dir.mkdir()
 
-                with self.assertRaisesRegex(ValueError, "no export copy has|Expecting"):
-                    merge_and_build.export_named_aliases(temp_dir, "New Title")
+    def assert_recorded_as_they_are(self, names):
+        files = _recorded(self.temp_dir)
+        self.assertEqual(set(files), set(names))
+        for name, entry in files.items():
+            with self.subTest(name=name):
+                self.assertEqual(entry, _content(self.temp_dir / name))
 
-                self.assertEqual({p.name: p.read_bytes() for p in root.iterdir()}, originals)
+    def test_records_what_a_step_writes(self):
+        _build(self.temp_dir, {"book.pdf": b"pdf", "book.epub": b"epub"})
+        self.assert_recorded_as_they_are(["book.pdf", "book.epub"])
 
-    def test_main_rejects_an_unusable_record_before_building(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            (Path(temp_dir) / merge_and_build.EXPORT_COPIES_FILE).write_text("{not json", encoding="utf-8")
-            output = io.StringIO()
-            with mock.patch.object(
-                sys, "argv",
-                ["merge_and_build.py", "--temp-dir", temp_dir, "--export-name", "New Title"],
-            ), mock.patch.object(
-                merge_and_build, "merge_markdown_files"
-            ) as merge_mock, contextlib.redirect_stdout(output):
-                with self.assertRaises(SystemExit) as exc:
-                    merge_and_build.main()
+    def test_outputs_a_step_skips_as_up_to_date_are_not_recorded(self):
+        # Files of the user's under output names, which the build takes for its own up-to-date outputs.
+        (self.temp_dir / "output.md").write_text("# One\n", encoding="utf-8")
+        (self.temp_dir / "book_doc.html").write_text("<html><body><p>mine</p></body></html>", encoding="utf-8")
+        (self.temp_dir / "book.pdf").write_bytes(b"mine")
+        os.utime(self.temp_dir / "output.md", (100, 100))
+        for name in ["book_doc.html", "book.pdf"]:
+            os.utime(self.temp_dir / name, (200, 200))
 
-            self.assertEqual(exc.exception.code, 1)
-            self.assertIn(f"{merge_and_build.EXPORT_COPIES_FILE} cannot be used", output.getvalue())
-            self.assertIn("Nothing was built.", output.getvalue())
-            merge_mock.assert_not_called()
+        with mock.patch.object(merge_and_build.subprocess, "run") as run_mock, \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertTrue(merge_and_build.convert_md_to_html(
+                str(self.temp_dir), "Title", merge_and_build.get_lang_config("zh")))
+            self.assertTrue(merge_and_build.generate_format(
+                str(self.temp_dir / "book_doc.html"), str(self.temp_dir), ".pdf", "zh-CN"))
+
+        run_mock.assert_not_called()
+        self.assertIsNone(_recorded(self.temp_dir))
+
+    def test_html_is_recorded_once_it_is_made_and_not_when_the_step_fails(self):
+        (self.temp_dir / "output.md").write_text("# One\n\nText.\n", encoding="utf-8")
+        for sane in [False, True]:
+            with self.subTest(sane=sane), \
+                    mock.patch.object(merge_and_build, "check_pandoc_available", return_value=False), \
+                    mock.patch.object(merge_and_build, "_check_generated_html_sanity", return_value=sane), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                made = merge_and_build.convert_md_to_html(
+                    str(self.temp_dir), "Title", merge_and_build.get_lang_config("zh"))
+
+            self.assertEqual(made, sane)
+            for name in ["output.html", "book_doc.html", "book.html"]:
+                self.assertTrue((self.temp_dir / name).is_file())
+            if sane:
+                self.assert_recorded_as_they_are(["output.html", "book_doc.html", "book.html"])
+            else:
+                self.assertIsNone(_recorded(self.temp_dir))
+                for name in ["output.html", "book_doc.html", "book.html"]:
+                    (self.temp_dir / name).unlink()
+
+    @unittest.skipIf(os.geteuid() == 0, "root writes files whatever their permissions")
+    def test_html_is_not_recorded_when_a_template_cannot_be_written(self):
+        mine = "<html><body><p>mine</p></body></html>"
+        for name in ["book_doc.html", "book.html"]:
+            with self.subTest(name=name):
+                temp_dir = self.root / name.replace(".", "_")
+                temp_dir.mkdir()
+                (temp_dir / "output.md").write_text("# One\n\nText.\n", encoding="utf-8")
+                (temp_dir / name).write_text(mine, encoding="utf-8")
+                os.utime(temp_dir / name, (100, 100))
+                (temp_dir / name).chmod(0o444)
+
+                with mock.patch.object(merge_and_build, "check_pandoc_available", return_value=False), \
+                        contextlib.redirect_stdout(io.StringIO()):
+                    made = merge_and_build.convert_md_to_html(
+                        str(temp_dir), "Title", merge_and_build.get_lang_config("zh"))
+
+                self.assertFalse(made)
+                self.assertEqual((temp_dir / name).read_text(encoding="utf-8"), mine)
+                self.assertIsNone(_recorded(temp_dir))
+
+    def test_html_is_not_recorded_when_the_separator_pass_fails(self):
+        (self.temp_dir / "output.md").write_text("# One\n\nText.\n", encoding="utf-8")
+
+        def disk_full(html_file):
+            Path(html_file).write_text("<html><body><h1>On", encoding="utf-8")
+            return False
+
+        with mock.patch.object(merge_and_build, "check_pandoc_available", return_value=False), \
+                mock.patch.object(merge_and_build, "process_html_separators", side_effect=disk_full), \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertFalse(merge_and_build.convert_md_to_html(
+                str(self.temp_dir), "Title", merge_and_build.get_lang_config("zh")))
+
+        self.assertFalse((self.temp_dir / "book.html").exists())
+        self.assertIsNone(_recorded(self.temp_dir))
+
+    def test_the_toc_step_records_book_html_only_when_it_rewrites_it(self):
+        page = '<html><body><div class="toc-content"></div><h1>One</h1><p>1</p></body></html>'
+        _build(self.temp_dir, {"book.html": page.encode()})
+        built = _recorded(self.temp_dir)
+        (self.temp_dir / "book.html").write_text(page.replace("toc-content", "no-toc"), encoding="utf-8")
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertFalse(merge_and_build.add_toc(str(self.temp_dir)))
+        self.assertEqual(_recorded(self.temp_dir), built)
+
+        (self.temp_dir / "book.html").write_text(page, encoding="utf-8")
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertTrue(merge_and_build.add_toc(str(self.temp_dir)))
+        self.assertIn('href="#', (self.temp_dir / "book.html").read_text(encoding="utf-8"))
+        self.assert_recorded_as_they_are(["book.html"])
+        self.assertNotEqual(_recorded(self.temp_dir), built)
+
+    def test_generate_formats_records_only_the_formats_it_made(self):
+        (self.temp_dir / "book_doc.html").write_text("<html></html>", encoding="utf-8")
+        made = []
+
+        def calibre(cmd, check, capture_output, text):
+            output = Path(cmd[4])
+            made.append(output.name)
+            if output.name == "book.pdf" and made.count("book.pdf") == 1:
+                raise subprocess.CalledProcessError(1, cmd, "", "GPU error")
+            output.write_bytes(b"made from " + cmd[2].encode())
+            if output.name == "book.epub":
+                raise subprocess.CalledProcessError(1, cmd, "", "half written")
+            return SimpleNamespace(stdout="", stderr="")
+
+        with mock.patch.object(merge_and_build.subprocess, "run", side_effect=calibre), \
+                contextlib.redirect_stdout(io.StringIO()):
+            ok = merge_and_build.generate_formats(str(self.temp_dir), "zh-CN")
+
+        self.assertFalse(ok)
+        self.assertEqual(made, ["book.docx", "book.epub", "book.pdf", "book.pdf"])
+        # The EPUB step failed, so what it left is not recorded; the PDF retry succeeded.
+        self.assertTrue((self.temp_dir / "book.epub").is_file())
+        self.assert_recorded_as_they_are(["book.docx", "book.pdf"])
+
+    def test_main_records_every_output_and_export_copy(self):
+        from manifest import create_manifest
+
+        (self.temp_dir / "chunk0001.md").write_text("# One\n\nText.\n", encoding="utf-8")
+        (self.temp_dir / "input.md").write_text("# One\n\nText.\n", encoding="utf-8")
+        with contextlib.redirect_stdout(io.StringIO()):
+            create_manifest(str(self.temp_dir), ["chunk0001.md"], str(self.temp_dir / "input.md"))
+        (self.temp_dir / "output_chunk0001.md").write_text("# 一\n\n正文。\n", encoding="utf-8")
+        (self.temp_dir / "config.txt").write_text("output_lang=zh\noriginal_title=Book\ncreator=A\n",
+                                                  encoding="utf-8")
+        (self.temp_dir / "export_name.txt").write_text("My Book\n", encoding="utf-8")
+
+        def calibre(cmd, check, capture_output, text):
+            Path(cmd[4]).write_bytes(b"made from " + cmd[2].encode())
+            return SimpleNamespace(stdout="", stderr="")
+
+        with mock.patch.object(merge_and_build, "check_pandoc_available", return_value=False), \
+                mock.patch.object(merge_and_build.subprocess, "run", side_effect=calibre), \
+                mock.patch.object(sys, "argv", ["merge_and_build.py", "--temp-dir", str(self.temp_dir)]), \
+                contextlib.redirect_stdout(io.StringIO()):
+            merge_and_build.main()
+
+        copies = ["My Book.html", "My Book_doc.html", "My Book.docx", "My Book.epub", "My Book.pdf"]
+        self.assert_recorded_as_they_are(list(merge_and_build.BUILD_OUTPUTS) + copies)
+
+    def test_symlinks_fifos_and_directories_under_written_names_are_not_recorded(self):
+        target = self.root / "target.pdf"
+        target.write_bytes(b"theirs")
+        os.symlink(target, self.temp_dir / "book.pdf")
+        os.mkfifo(self.temp_dir / "book.epub")
+        (self.temp_dir / "book.docx").mkdir()
+        out = io.StringIO()
+        done = []
+
+        def record():
+            with contextlib.redirect_stdout(out):
+                merge_and_build._record_outputs(str(self.temp_dir), "book.pdf", "book.epub", "book.docx")
+            done.append(True)
+
+        worker = threading.Thread(target=record, daemon=True)
+        worker.start()
+        worker.join(10)
+        if worker.is_alive():
+            os.close(os.open(self.temp_dir / "book.epub", os.O_WRONLY | os.O_NONBLOCK))
+            self.fail("recording waited on a FIFO")
+        self.assertEqual(done, [True])
+        self.assertIsNone(_recorded(self.temp_dir))
+        self.assertIn("Warning: could not record 'book.pdf', 'book.epub', 'book.docx'", out.getvalue())
+
+    def test_hashing_reads_no_more_than_the_recorded_size(self):
+        path = self.temp_dir / "book.pdf"
+        path.write_bytes(b"book.pdf")
+        fd = os.open(path, os.O_RDONLY)
+        self.addCleanup(os.close, fd)
+        real_pread = os.pread
+        reads = []
+
+        def counted(fd_, n, offset):
+            reads.append((n, offset))
+            return real_pread(fd_, n, offset)
+
+        with mock.patch.object(os, "pread", counted):
+            self.assertEqual(merge_and_build._sha256_through(fd, 8), hashlib.sha256(b"book.pdf").hexdigest())
+            self.assertIsNone(merge_and_build._sha256_through(fd, 4))
+        self.assertEqual(reads, [(8, 0), (1, 8), (4, 0), (1, 4)])
+        self.assertIsNone(merge_and_build._sha256_through(fd, 9))
+
+    def test_a_step_keeps_the_entries_of_files_it_did_not_write(self):
+        _build(self.temp_dir, {"book.pdf": b"pdf", "book.epub": b"epub"})
+        before = _recorded(self.temp_dir)
+        (self.temp_dir / "book.pdf").write_bytes(b"changed by someone else")
+
+        _build(self.temp_dir, {"book.docx": b"docx"})
+
+        self.assertEqual(_recorded(self.temp_dir), {**before, "book.docx": _content(self.temp_dir / "book.docx")})
+
+    def test_an_unusable_record_is_left_as_it_is(self):
+        record = self.temp_dir / merge_and_build.OUTPUTS_RECORD
+        record.write_text("{not json", encoding="utf-8")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            _build(self.temp_dir, {"book.pdf": b"pdf"})
+        self.assertEqual(record.read_text(encoding="utf-8"), "{not json")
+        self.assertIn(f"Warning: could not record 'book.pdf' in {merge_and_build.OUTPUTS_RECORD}", out.getvalue())
+        self.assertIn("--delete-outputs will leave it for you to delete", out.getvalue())
+        self.assertEqual([p.name for p in self.temp_dir.iterdir() if p.name.startswith(".")], [])
+
+    def test_a_record_that_cannot_be_written_leaves_no_file_behind(self):
+        _build(self.temp_dir, {"book.pdf": b"pdf"})
+        record = self.temp_dir / merge_and_build.OUTPUTS_RECORD
+        before = record.read_bytes()
+        real_replace = os.replace
+
+        def disk_full(src, dst, *args, **kwargs):
+            if os.path.basename(dst) == merge_and_build.OUTPUTS_RECORD:
+                raise OSError(errno.ENOSPC, "No space left on device")
+            return real_replace(src, dst, *args, **kwargs)
+
+        out = io.StringIO()
+        with mock.patch.object(os, "replace", disk_full), contextlib.redirect_stdout(out):
+            _build(self.temp_dir, {"book.epub": b"epub"})
+
+        self.assertEqual(record.read_bytes(), before)
+        self.assertIn("Warning: could not record 'book.epub'", out.getvalue())
+        self.assertEqual(sorted(p.name for p in self.temp_dir.iterdir()),
+                         sorted(["book.epub", "book.pdf", merge_and_build.OUTPUTS_RECORD]))
+
+    def test_a_file_put_in_place_of_the_record_being_written_is_left(self):
+        theirs = self.root / "theirs"
+        real_replace = os.replace
+
+        def swap_then_fail(src, dst, *args, **kwargs):
+            if os.path.basename(dst) == merge_and_build.OUTPUTS_RECORD:
+                theirs.write_text("theirs", encoding="utf-8")
+                real_replace(theirs, src)
+                raise OSError(errno.EIO, "Input/output error")
+            return real_replace(src, dst, *args, **kwargs)
+
+        out = io.StringIO()
+        with mock.patch.object(os, "replace", swap_then_fail), contextlib.redirect_stdout(out):
+            _build(self.temp_dir, {"book.pdf": b"pdf"})
+
+        [left] = [p for p in self.temp_dir.iterdir() if p.name.startswith(".tmp.")]
+        self.assertEqual(left.read_text(encoding="utf-8"), "theirs")
+        self.assertIn("Warning: could not record 'book.pdf'", out.getvalue())
+        self.assertIsNone(_recorded(self.temp_dir))
+
+    def test_the_record_is_read_strictly(self):
+        _build(self.temp_dir, {"book.pdf": b"pdf"})
+        record = self.temp_dir / merge_and_build.OUTPUTS_RECORD
+        good = json.loads(record.read_text(encoding="utf-8"))
+        entry = good["files"]["book.pdf"]
+        self.assertEqual(merge_and_build._read_outputs_record(str(self.temp_dir)), good["files"])
+
+        def with_entry(**changes):
+            return {"version": 1, "files": {"book.pdf": {**entry, **changes}}}
+
+        bad = ["{not json", "", "[]", "{}", json.dumps({"files": {}}), json.dumps({"version": 1}),
+               json.dumps({"version": 2, "files": {}}), json.dumps({"version": True, "files": {}}),
+               json.dumps({"version": 1.0, "files": {}}), json.dumps({"version": 1, "files": []}),
+               json.dumps({"version": 1, "files": {}, "copies": []}), json.dumps({"copies": ["My Book.pdf"]}),
+               json.dumps({"version": 1, "files": {"book.pdf": [1, 2]}}),
+               json.dumps(with_entry(size=-1)), json.dumps(with_entry(size=True)),
+               json.dumps(with_entry(size="3")), json.dumps(with_entry(sha256=entry["sha256"].upper())),
+               json.dumps(with_entry(sha256=entry["sha256"][:-1])), json.dumps(with_entry(extra=1)),
+               json.dumps({"version": 1, "files": {"book.pdf": {"sha256": entry["sha256"]}}})]
+        bad += [json.dumps({"version": 1, "files": {"book.pdf": {k: v for k, v in entry.items() if k != field}}})
+                for field in entry]
+        names = ["../outside.pdf", str(self.root / "outside.pdf"), "..", ".", "", "nul\x00.pdf", "images/x.pdf",
+                 "back\\slash.pdf", " Padded.pdf", ".html", "chunk0001.md", "glossary.json", "export_name.txt",
+                 "input.html", "INPUT.html", "OUTPUT.html", "BOOK_DOC.html", "build_outputs.json",
+                 "export_copies.json", "\ud800.pdf", "a" * 247 + ".pdf", "书" * 81 + "éé.pdf"]
+        bad += [json.dumps({"version": 1, "files": {name: entry}}) for name in names]
+        for text in bad:
+            with self.subTest(text=text[:80]):
+                record.write_text(text, encoding="utf-8")
+                with self.assertRaises(ValueError):
+                    merge_and_build._read_outputs_record(str(self.temp_dir))
+
+        # A FIFO is in test_an_unusable_record_deletes_nothing, which would not hang on it.
+        elsewhere = self.root / "elsewhere.json"
+        elsewhere.write_text(json.dumps(good), encoding="utf-8")
+        for kind, why in [("directory", "it is a directory"), ("symlink", "it is a symlink"),
+                          ("dangling symlink", "it is a symlink")]:
+            with self.subTest(kind=kind):
+                if record.is_dir() and not record.is_symlink():
+                    record.rmdir()
+                elif os.path.lexists(record):
+                    record.unlink()
+                if kind == "directory":
+                    record.mkdir()
+                else:
+                    record.symlink_to(elsewhere if kind == "symlink" else self.root / "missing.json")
+                with self.assertRaisesRegex(ValueError, why):
+                    merge_and_build._read_outputs_record(str(self.temp_dir))
+
+    def test_main_refuses_to_build_with_an_unusable_record(self):
+        (self.temp_dir / merge_and_build.OUTPUTS_RECORD).write_text("{not json", encoding="utf-8")
+        out = io.StringIO()
+        with mock.patch.object(sys, "argv", ["merge_and_build.py", "--temp-dir", str(self.temp_dir)]), \
+                mock.patch.object(merge_and_build, "merge_markdown_files") as merge_mock, \
+                contextlib.redirect_stdout(out), self.assertRaises(SystemExit) as exc:
+            merge_and_build.main()
+        self.assertEqual(exc.exception.code, 1)
+        self.assertIn(f"{merge_and_build.OUTPUTS_RECORD} cannot be used", out.getvalue())
+        self.assertIn("Nothing was built.", out.getvalue())
+        merge_mock.assert_not_called()
 
 
 class DeleteOutputsTests(unittest.TestCase):
-    OUTPUTS = ["book.html", "book_doc.html", "output.html", "book.docx", "book.epub", "book.pdf"]
+    OUTPUTS = list(merge_and_build.BUILD_OUTPUTS)
     # Everything else the pipeline and the agent leave in a temp dir.
     KEPT = ["input.html", "input.md", "chunk0001.md", "output_chunk0001.md",
             "output_chunk0001.meta.json", "output.md", "manifest.json", "config.txt",
             "source_fingerprint.json", "glossary.json", "run_state.json", "merge_decisions.json",
             "title.txt", "author.txt", "export_name.txt", "images/fig1.png", "figure_text/0a1b.json"]
-    SUFFIXES = [".html", "_doc.html", ".docx", ".epub", ".pdf"]
+    COPIES = ["My Book.html", "My Book_doc.html", "My Book.docx", "My Book.epub", "My Book.pdf"]
+    RECORD = merge_and_build.OUTPUTS_RECORD
 
-    def make_temp_dir(self, parent, export_name="Old Title"):
+    def make_temp_dir(self, parent, export_name="My Book"):
+        """A temp dir after a build: its outputs and export copies recorded, the intermediates around."""
         temp_dir = Path(parent) / "book_temp"
-        for rel in self.OUTPUTS + self.KEPT:
+        for rel in self.KEPT:
             path = temp_dir / rel
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(rel, encoding="utf-8")
-        (temp_dir / "export_name.txt").write_text(export_name + "\n", encoding="utf-8")
+        _build(temp_dir, {name: name.encode("utf-8") for name in self.OUTPUTS})
+        if export_name:
+            merge_and_build.export_named_aliases(str(temp_dir), export_name)
         return temp_dir
 
     def files(self, temp_dir):
@@ -414,11 +774,26 @@ class DeleteOutputsTests(unittest.TestCase):
         return {p.relative_to(temp_dir).as_posix(): os.readlink(p) if p.is_symlink() else p.read_bytes()
                 for p in temp_dir.rglob("*") if p.is_file() or p.is_symlink()}
 
+    def leftovers(self, temp_dir):
+        """Names this run moved files to or wrote the record under, if any is still there."""
+        return [p.name for p in temp_dir.iterdir() if p.name.startswith((".translate-book-", ".tmp."))]
+
     def delete(self, temp_dir):
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             ok = merge_and_build.delete_outputs(str(temp_dir))
         return ok, out.getvalue()
+
+    def delete_without_waiting_on(self, fifo, temp_dir):
+        """delete(temp_dir), failing the test if it waits on the FIFO fifo."""
+        result = []
+        worker = threading.Thread(target=lambda: result.append(self.delete(temp_dir)), daemon=True)
+        worker.start()
+        worker.join(10)
+        if worker.is_alive():
+            os.close(os.open(fifo, os.O_WRONLY | os.O_NONBLOCK))
+            self.fail("--delete-outputs waited on a FIFO")
+        return result[0]
 
     def run_main(self, temp_dir, *args):
         out = io.StringIO()
@@ -430,325 +805,542 @@ class DeleteOutputsTests(unittest.TestCase):
                 return e.code, out.getvalue()
         return 0, out.getvalue()
 
-    def record(self, temp_dir):
-        path = temp_dir / merge_and_build.EXPORT_COPIES_FILE
-        return json.loads(path.read_text(encoding="utf-8"))
+    def left(self, out):
+        """{repr of name: why} for each file --delete-outputs said it left."""
+        lines = out.splitlines()
+        starts = [i for i, line in enumerate(lines) if line.startswith("Left ")]
+        left = {}
+        for line in lines[starts[0] + 1:] if starts else []:
+            if not line.startswith("  "):
+                break
+            name, _, why = line[2:].partition(": ")
+            left[name] = why
+        return left
 
-    def write_record(self, temp_dir, names):
-        (temp_dir / merge_and_build.EXPORT_COPIES_FILE).write_text(
-            json.dumps({"copies": names}), encoding="utf-8")
-
-    def test_deletes_outputs_and_recorded_copies_only(self):
+    def test_deletes_recorded_outputs_and_copies_only(self):
         name = "O'Brien's \"tale\" $(touch pwned) `id` $HOME *?[ab] -rf\nend"
         # An empty name would give .html etc.; a glob or a prefix match would reach the rest.
-        decoys = [".html", "_doc.html", ".pdf", "other.html", name + ".md", "Old Title.pdf.bak"]
+        decoys = [".html", "_doc.html", ".pdf", "other.html", name + ".md", name + ".pdf.bak"]
         with tempfile.TemporaryDirectory() as tmp:
-            temp_dir = self.make_temp_dir(tmp)
+            temp_dir = self.make_temp_dir(tmp, export_name=None)
             for decoy in decoys:
                 (temp_dir / decoy).write_text("decoy", encoding="utf-8")
             self.assertEqual(len(merge_and_build.export_named_aliases(str(temp_dir), name)), 5)
 
-            ok, _ = self.delete(temp_dir)
+            code, out = self.run_main(temp_dir, "--delete-outputs")
 
-            self.assertTrue(ok)
-            self.assertEqual(self.files(temp_dir),
-                             sorted(self.KEPT + decoys + [merge_and_build.EXPORT_COPIES_FILE]))
-            self.assertEqual(self.record(temp_dir), {"copies": []})
+            self.assertEqual(code, 0, out)
+            self.assertEqual(self.files(temp_dir), sorted(self.KEPT + decoys + [self.RECORD]))
+            self.assertEqual(_recorded(temp_dir), {})
             self.assertEqual(list(Path(tmp).glob("pwned*")), [])
+            self.assertIn("Deleted 11 file(s):", out)
+            self.assertIn("Nothing was built; run the build command to rebuild.", out)
+            self.assertEqual(self.leftovers(temp_dir), [])
 
-    def test_finds_copies_after_the_export_name_changed(self):
+    def test_deletes_the_copies_of_every_earlier_export_name(self):
         with tempfile.TemporaryDirectory() as tmp:
-            temp_dir = self.make_temp_dir(tmp)
-            merge_and_build.export_named_aliases(str(temp_dir), "Old Title")
+            temp_dir = self.make_temp_dir(tmp, "Old Title")
             # A rebuild under a new name that skipped the deletion.
             merge_and_build.export_named_aliases(str(temp_dir), "Mid Title")
             (temp_dir / "export_name.txt").write_text("New Title\n", encoding="utf-8")
-            # With a record, export_name.txt names nothing to delete.
+            # Named like a copy of the next export name, but no build wrote it.
             (temp_dir / "New Title.pdf").write_text("not a copy", encoding="utf-8")
 
-            ok, _ = self.delete(temp_dir)
+            ok, out = self.delete(temp_dir)
 
-            self.assertTrue(ok)
-            self.assertEqual(self.files(temp_dir),
-                             sorted(self.KEPT + ["New Title.pdf", merge_and_build.EXPORT_COPIES_FILE]))
+            self.assertTrue(ok, out)
+            self.assertEqual(self.files(temp_dir), sorted(self.KEPT + ["New Title.pdf", self.RECORD]))
+
+    def test_without_a_record_nothing_is_deleted(self):
+        # A temp dir an earlier version built, and a folder of the user's that only has a book.pdf.
+        with tempfile.TemporaryDirectory() as tmp:
+            old = Path(tmp) / "old_temp"
+            mine = Path(tmp) / "mine"
+            for rel in self.KEPT + self.OUTPUTS + self.COPIES:
+                (old / rel).parent.mkdir(parents=True, exist_ok=True)
+                (old / rel).write_text(rel, encoding="utf-8")
+            (old / merge_and_build.EXPORT_COPIES_FILE).write_text(json.dumps({"copies": self.COPIES}),
+                                                                  encoding="utf-8")
+            mine.mkdir()
+            (mine / "book.pdf").write_text("mine", encoding="utf-8")
+            for temp_dir, named in [(old, self.OUTPUTS + self.COPIES), (mine, ["book.pdf"])]:
+                with self.subTest(temp_dir=temp_dir.name):
+                    before = self.contents(temp_dir)
+
+                    code, out = self.run_main(temp_dir, "--delete-outputs")
+
+                    self.assertEqual(code, 1)
+                    self.assertEqual(self.contents(temp_dir), before)
+                    self.assertEqual(set(self.left(out)), set(map(repr, named)))
+                    for name in self.OUTPUTS:
+                        if name in named:
+                            self.assertIn(f"{name!r}: no build recorded it", out)
+                    self.assertIn("No recorded build outputs to delete.", out)
+                    self.assertIn("delete or move them yourself", out)
+                    self.assertFalse((temp_dir / self.RECORD).exists())
+
+    def test_a_made_up_manifest_and_a_blank_export_name_delete_nothing(self):
+        # Both once let --delete-outputs delete by name; neither is read now.
+        from manifest import create_manifest
+
+        with tempfile.TemporaryDirectory() as tmp:
+            temp_dir = Path(tmp) / "notes"
+            temp_dir.mkdir()
+            (temp_dir / "chunk0001.md").write_text("# One\n", encoding="utf-8")
+            (temp_dir / "input.md").write_text("# Book\n", encoding="utf-8")
+            with contextlib.redirect_stdout(io.StringIO()):
+                create_manifest(str(temp_dir), ["chunk0001.md"], str(temp_dir / "input.md"))
+            (temp_dir / "export_name.txt").write_text("", encoding="utf-8")
+            (temp_dir / "book.pdf").write_text("mine", encoding="utf-8")
+            before = self.contents(temp_dir)
+
+            code, out = self.run_main(temp_dir, "--delete-outputs")
+
+            self.assertEqual(code, 1)
+            self.assertEqual(self.contents(temp_dir), before)
+            self.assertEqual(set(self.left(out)), {"'book.pdf'"})
+
+    def test_a_file_put_in_place_of_a_recorded_one_is_left_and_stays_recorded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            temp_dir = self.make_temp_dir(tmp)
+            recorded = _recorded(temp_dir)
+            theirs = ["My Book.pdf", "book.html"]
+            for name in theirs:
+                Path(tmp, "theirs").write_text(f"theirs, not {name}", encoding="utf-8")
+                Path(tmp, "theirs").replace(temp_dir / name)
+
+            code, out = self.run_main(temp_dir, "--delete-outputs")
+
+            self.assertEqual(code, 1)
+            self.assertEqual(set(self.left(out)), set(map(repr, theirs)))
+            for name in theirs:
+                self.assertEqual((temp_dir / name).read_text(encoding="utf-8"), f"theirs, not {name}")
+            self.assertEqual(self.files(temp_dir), sorted(self.KEPT + theirs + [self.RECORD]))
+            self.assertEqual(_recorded(temp_dir), {name: recorded[name] for name in theirs})
+
+            # Run again, it still fails, so the build that follows does not overwrite them.
+            code, out = self.run_main(temp_dir, "--delete-outputs")
+            self.assertEqual(code, 1)
+            self.assertEqual(set(self.left(out)), set(map(repr, theirs)))
+
+            for name in theirs:
+                (temp_dir / name).rename(Path(tmp) / name)
+            code, out = self.run_main(temp_dir, "--delete-outputs")
+            self.assertEqual(code, 0, out)
+            self.assertEqual(_recorded(temp_dir), {})
+
+    def test_a_copy_with_the_same_bytes_in_place_of_an_output_is_deleted(self):
+        # Outputs are told by their size and SHA-256 alone, not by their inode.
+        with tempfile.TemporaryDirectory() as tmp:
+            temp_dir = self.make_temp_dir(tmp)
+            copy = Path(tmp) / "copy.pdf"
+            shutil.copy2(temp_dir / "book.pdf", copy)
+            copy.replace(temp_dir / "book.pdf")
+
+            ok, out = self.delete(temp_dir)
+
+            self.assertTrue(ok, out)
+            self.assertFalse(os.path.lexists(temp_dir / "book.pdf"))
+
+    def test_an_output_changed_since_the_build_is_left(self):
+        changed = "it no longer holds what the build wrote"
+        # Rewritten in place with as many bytes and with more, and replaced by another file.
+        for how, data in [("in place", b"BOOK.PDF"), ("in place", b"book.pdf, annotated"),
+                          ("replaced", b"BOOK.PDF")]:
+            with self.subTest(how=how, data=data), tempfile.TemporaryDirectory() as tmp:
+                temp_dir = self.make_temp_dir(tmp)
+                entry = _recorded(temp_dir)["book.pdf"]
+                if how == "in place":
+                    with open(temp_dir / "book.pdf", "r+b") as f:
+                        f.write(data)
+                else:
+                    Path(tmp, "theirs.pdf").write_bytes(data)
+                    Path(tmp, "theirs.pdf").replace(temp_dir / "book.pdf")
+
+                ok, out = self.delete(temp_dir)
+
+                self.assertFalse(ok)
+                self.assertEqual((temp_dir / "book.pdf").read_bytes(), data)
+                self.assertEqual(self.left(out), {"'book.pdf'": changed})
+                self.assertEqual(_recorded(temp_dir), {"book.pdf": entry})
+                self.assertIn("delete or move them yourself", out)
+                self.assertNotIn("could not be read or deleted", out)
+
+    def test_a_file_that_grows_while_it_is_checked_is_left(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            temp_dir = self.make_temp_dir(tmp)
+            entry = _recorded(temp_dir)["book.pdf"]
+            inode = os.stat(temp_dir / "book.pdf").st_ino
+            real_pread = os.pread
+            grown = []
+
+            def grow_then_read(fd, n, offset):
+                if os.fstat(fd).st_ino == inode and not grown:
+                    grown.append(True)
+                    with open(temp_dir / "book.pdf", "ab") as f:
+                        f.write(b", still being written")
+                return real_pread(fd, n, offset)
+
+            with mock.patch.object(os, "pread", grow_then_read):
+                ok, out = self.delete(temp_dir)
+
+            self.assertFalse(ok)
+            self.assertEqual((temp_dir / "book.pdf").read_bytes(), b"book.pdf, still being written")
+            self.assertEqual(self.left(out), {"'book.pdf'": "it no longer holds what the build wrote"})
+            self.assertEqual(_recorded(temp_dir), {"book.pdf": entry})
+
+    def test_symlinks_fifos_and_directories_under_recorded_names_are_left(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            temp_dir = self.make_temp_dir(tmp)
+            target = Path(tmp) / "target.pdf"
+            target.write_text("keep", encoding="utf-8")
+            for name in ["book.pdf", "My Book.pdf", "book.epub", "book.docx"]:
+                (temp_dir / name).unlink()
+            os.symlink(target, temp_dir / "book.pdf")
+            # A symlink to an output that is recorded too: only that output goes.
+            os.symlink("book_doc.html", temp_dir / "My Book.pdf")
+            os.mkfifo(temp_dir / "book.epub")
+            (temp_dir / "book.docx").mkdir()
+            (temp_dir / "book.docx" / "inner.txt").write_text("keep", encoding="utf-8")
+
+            ok, out = self.delete_without_waiting_on(temp_dir / "book.epub", temp_dir)
+
+            self.assertFalse(ok)
+            why = "and builds write only regular files"
+            self.assertEqual(self.left(out), {"'book.pdf'": f"it is a symlink, {why}",
+                                              "'My Book.pdf'": f"it is a symlink, {why}",
+                                              "'book.epub'": f"it is a FIFO, {why}",
+                                              "'book.docx'": f"it is a directory, {why}"})
+            self.assertEqual(target.read_text(encoding="utf-8"), "keep")
+            self.assertEqual(os.readlink(temp_dir / "book.pdf"), str(target))
+            self.assertTrue(stat.S_ISFIFO(os.lstat(temp_dir / "book.epub").st_mode))
+            self.assertEqual((temp_dir / "book.docx" / "inner.txt").read_text(encoding="utf-8"), "keep")
+            self.assertFalse(os.path.lexists(temp_dir / "book_doc.html"))
+            self.assertEqual(self.leftovers(temp_dir), [])
+
+    def test_a_file_swapped_in_before_it_is_opened_is_left(self):
+        # Between the lstat and the open: another file, one with the same
+        # bytes, which is not the file checked either, and a FIFO, which must
+        # not be read.
+        for kind, data in [("another file", b"theirs"), ("same bytes", b"book.pdf"), ("FIFO", None)]:
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as tmp:
+                temp_dir = self.make_temp_dir(tmp)
+                theirs = Path(tmp) / "theirs.pdf"
+                if data is None:
+                    os.mkfifo(theirs)
+                else:
+                    theirs.write_bytes(data)
+                real_open = os.open
+
+                def swap_then_open(path, flags, *args, **kwargs):
+                    if os.path.basename(path) == "book.pdf" and os.path.lexists(theirs):
+                        theirs.replace(path)
+                    return real_open(path, flags, *args, **kwargs)
+
+                with mock.patch.object(os, "open", swap_then_open):
+                    ok, out = self.delete_without_waiting_on(temp_dir / "book.pdf", temp_dir)
+
+                self.assertFalse(ok)
+                if data is None:
+                    self.assertTrue(stat.S_ISFIFO(os.lstat(temp_dir / "book.pdf").st_mode))
+                else:
+                    self.assertEqual((temp_dir / "book.pdf").read_bytes(), data)
+                self.assertEqual(self.left(out),
+                                 {"'book.pdf'": "another file took its place while it was being checked"})
+                self.assertEqual(self.leftovers(temp_dir), [])
+
+    def test_a_file_swapped_or_rewritten_before_it_is_moved_aside_is_put_back(self):
+        def swap(path, tmp):
+            Path(tmp, "theirs.pdf").write_bytes(b"theirs")
+            Path(tmp, "theirs.pdf").replace(path)
+            return b"theirs"
+
+        def swap_same_bytes(path, tmp):
+            # Not the file checked, though it holds the same bytes.
+            Path(tmp, "theirs.pdf").write_bytes(b"book.pdf")
+            Path(tmp, "theirs.pdf").replace(path)
+            return b"book.pdf"
+
+        def rewrite(path, tmp):
+            with open(path, "r+b") as f:
+                f.write(b"BOOK.PDF")
+            return b"BOOK.PDF"
+
+        for change in [swap, swap_same_bytes, rewrite]:
+            with self.subTest(change=change.__name__), tempfile.TemporaryDirectory() as tmp:
+                temp_dir = self.make_temp_dir(tmp)
+                entry = _recorded(temp_dir)["book.pdf"]
+                real_rename = os.rename
+                changed = []
+
+                def change_then_rename(src, dst, *args, **kwargs):
+                    if os.path.basename(src) == "book.pdf" and not changed:
+                        changed.append(change(src, tmp))
+                    return real_rename(src, dst, *args, **kwargs)
+
+                with mock.patch.object(os, "rename", change_then_rename):
+                    ok, out = self.delete(temp_dir)
+
+                self.assertFalse(ok)
+                self.assertEqual((temp_dir / "book.pdf").read_bytes(), changed[0])
+                self.assertEqual(self.left(out), {"'book.pdf'": "it changed while it was being deleted"})
+                self.assertEqual(_recorded(temp_dir), {"book.pdf": entry})
+                self.assertEqual(self.leftovers(temp_dir), [])
+
+    def test_a_file_that_cannot_be_deleted_once_moved_aside_is_put_back(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            temp_dir = self.make_temp_dir(tmp)
+            entry = _recorded(temp_dir)["book.pdf"]
+            inode = os.stat(temp_dir / "book.pdf").st_ino
+            real_unlink = os.unlink
+            refused = []
+
+            def refuse_once(path, *args, **kwargs):
+                if not refused and os.path.lexists(path) and os.lstat(path).st_ino == inode:
+                    refused.append(path)
+                    raise PermissionError(errno.EPERM, "Operation not permitted")
+                return real_unlink(path, *args, **kwargs)
+
+            with mock.patch.object(os, "unlink", refuse_once):
+                code, out = self.run_main(temp_dir, "--delete-outputs")
+
+            self.assertEqual(code, 1)
+            self.assertTrue(os.path.basename(refused[0]).startswith(".translate-book-"))
+            self.assertEqual(self.left(out), {"'book.pdf'": "it could not be moved aside or deleted; "
+                                                            "check the temp directory's permissions"})
+            self.assertEqual((temp_dir / "book.pdf").read_bytes(), b"book.pdf")
+            self.assertEqual(_recorded(temp_dir), {"book.pdf": entry})
+            self.assertEqual(self.files(temp_dir), sorted(self.KEPT + ["book.pdf", self.RECORD]))
+            self.assertIn("could not be read or deleted", out)
+            self.assertNotIn("delete or move them yourself", out)
+
+    def test_a_file_that_can_be_neither_deleted_nor_put_back_is_named_where_it_is(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            temp_dir = self.make_temp_dir(tmp)
+            entry = _recorded(temp_dir)["book.pdf"]
+            inode = os.stat(temp_dir / "book.pdf").st_ino
+            real_unlink, real_link = os.unlink, os.link
+
+            def refuse(real):
+                def call(path, *args, **kwargs):
+                    if os.path.lexists(path) and os.lstat(path).st_ino == inode:
+                        raise PermissionError(errno.EPERM, "Operation not permitted")
+                    return real(path, *args, **kwargs)
+                return call
+
+            with mock.patch.object(os, "unlink", refuse(real_unlink)), mock.patch.object(os, "link", refuse(real_link)):
+                code, out = self.run_main(temp_dir, "--delete-outputs")
+
+            self.assertEqual(code, 1)
+            [aside] = [p for p in temp_dir.iterdir() if p.name.startswith(".translate-book-")]
+            self.assertEqual(aside.read_bytes(), b"book.pdf")
+            self.assertFalse(os.path.lexists(temp_dir / "book.pdf"))
+            self.assertIn(f"Warning: {temp_dir / 'book.pdf'} could not be removed (Operation not permitted). "
+                          f"What was there is now {aside}", out)
+            self.assertEqual(self.left(out), {"'book.pdf'": "it could not be deleted (Operation not permitted) or "
+                                                            "put back; the warning above says where it is"})
+            self.assertEqual(_recorded(temp_dir), {"book.pdf": entry})
+
+    def test_a_file_that_cannot_be_read_while_it_is_checked_stays_recorded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            temp_dir = self.make_temp_dir(tmp)
+            entry = _recorded(temp_dir)["book.pdf"]
+            inode = os.stat(temp_dir / "book.pdf").st_ino
+            real_pread = os.pread
+
+            def failing_disk(fd, n, offset):
+                if os.fstat(fd).st_ino == inode:
+                    raise OSError(errno.EIO, "Input/output error")
+                return real_pread(fd, n, offset)
+
+            with mock.patch.object(os, "pread", failing_disk):
+                code, out = self.run_main(temp_dir, "--delete-outputs")
+
+            self.assertEqual(code, 1)
+            self.assertEqual(self.left(out), {"'book.pdf'": "it cannot be read to check it (Input/output error)"})
+            self.assertEqual((temp_dir / "book.pdf").read_bytes(), b"book.pdf")
+            self.assertEqual(_recorded(temp_dir), {"book.pdf": entry})
+            self.assertIn("could not be read or deleted", out)
+
+    def test_a_file_that_cannot_be_moved_keeps_its_entry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            temp_dir = self.make_temp_dir(tmp)
+            entry = _recorded(temp_dir)["book.pdf"]
+            real_rename = os.rename
+
+            def refuse(src, dst, *args, **kwargs):
+                if os.path.basename(src) == "book.pdf":
+                    raise PermissionError(errno.EACCES, "Permission denied")
+                return real_rename(src, dst, *args, **kwargs)
+
+            with mock.patch.object(os, "rename", refuse):
+                code, out = self.run_main(temp_dir, "--delete-outputs")
+
+            self.assertEqual(code, 1)
+            self.assertEqual(self.left(out), {"'book.pdf'": "it could not be moved aside or deleted; "
+                                                            "check the temp directory's permissions"})
+            self.assertEqual(_recorded(temp_dir), {"book.pdf": entry})
+            self.assertEqual(self.files(temp_dir), sorted(self.KEPT + ["book.pdf", self.RECORD]))
+
+            ok, out = self.delete(temp_dir)
+
+            self.assertTrue(ok, out)
+            self.assertEqual(self.files(temp_dir), sorted(self.KEPT + [self.RECORD]))
+
+    @unittest.skipIf(os.geteuid() == 0, "root reads and moves files whatever their permissions")
+    def test_files_it_cannot_read_or_move_stay_recorded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            temp_dir = self.make_temp_dir(tmp)
+            recorded = _recorded(temp_dir)
+            os.chmod(temp_dir / "book.pdf", 0)
+            try:
+                ok, out = self.delete(temp_dir)
+            finally:
+                os.chmod(temp_dir / "book.pdf", 0o644)
+            self.assertFalse(ok)
+            self.assertEqual(self.left(out), {"'book.pdf'": "it cannot be read to check it (Permission denied)"})
+            self.assertEqual(_recorded(temp_dir), {"book.pdf": recorded["book.pdf"]})
+
+            temp_dir = self.make_temp_dir(Path(tmp) / "again")
+            os.chmod(temp_dir, 0o500)
+            try:
+                ok, out = self.delete(temp_dir)
+            finally:
+                os.chmod(temp_dir, 0o700)
+            self.assertFalse(ok)
+            self.assertEqual(set(self.left(out)), set(map(repr, self.OUTPUTS + self.COPIES)))
+            self.assertEqual(set(_recorded(temp_dir)), set(self.OUTPUTS + self.COPIES))
+
+            ok, out = self.delete(temp_dir)
+
+            self.assertTrue(ok, out)
+            self.assertEqual(self.files(temp_dir), sorted(self.KEPT + [self.RECORD]))
 
     def test_an_unusable_record_deletes_nothing(self):
         cases = {"corrupt JSON": "{not json", "an empty file": "", "a list": "[]",
-                 "copies not a list": '{"copies": "bad"}', "copies not names": '{"copies": [1]}',
-                 "no copies": "{}", "a directory": None, "a dangling symlink": None}
+                 "another version": json.dumps({"version": 2, "files": {}}),
+                 "the earlier record": json.dumps({"copies": ["My Book.pdf"]}),
+                 "a name no build writes": json.dumps({"version": 1, "files": {"../outside.pdf": {
+                     "size": 4, "sha256": hashlib.sha256(b"keep").hexdigest()}}}),
+                 "an entry with an inode": json.dumps({"version": 1, "files": {"book.pdf": {
+                     "inode": 1, "size": 8, "sha256": hashlib.sha256(b"book.pdf").hexdigest()}}}),
+                 "a directory": None, "a dangling symlink": None, "a symlink to a record": None, "a FIFO": None}
         for case, text in cases.items():
             with self.subTest(case=case), tempfile.TemporaryDirectory() as tmp:
                 temp_dir = self.make_temp_dir(tmp)
-                merge_and_build.export_named_aliases(str(temp_dir), "Old Title")
-                # The next export name is already written, and a file has its copy's name.
-                (temp_dir / "export_name.txt").write_text("New Title\n", encoding="utf-8")
-                (temp_dir / "New Title.pdf").write_text("not a copy", encoding="utf-8")
-                record = temp_dir / merge_and_build.EXPORT_COPIES_FILE
+                (Path(tmp) / "outside.pdf").write_text("keep", encoding="utf-8")
+                record = temp_dir / self.RECORD
+                elsewhere = Path(tmp) / "elsewhere.json"
+                elsewhere.write_bytes(record.read_bytes())
                 record.unlink()
                 if case == "a directory":
                     record.mkdir()
                 elif case == "a dangling symlink":
                     os.symlink(Path(tmp) / "missing.json", record)
+                elif case == "a symlink to a record":
+                    os.symlink(elsewhere, record)
+                elif case == "a FIFO":
+                    os.mkfifo(record)
                 else:
                     record.write_text(text, encoding="utf-8")
                 before = self.contents(temp_dir)
 
-                code, out = self.run_main(temp_dir, "--delete-outputs")
-
-                self.assertEqual(code, 1)
-                self.assertEqual(self.contents(temp_dir), before)
-                self.assertTrue(os.path.lexists(record))
-                self.assertIn(f"{merge_and_build.EXPORT_COPIES_FILE} cannot be used", out)
-                self.assertIn("Nothing was deleted.", out)
-                self.assertNotIn("deleting the copies named after", out)
-
-    def test_a_record_naming_files_no_copy_has_deletes_nothing(self):
-        # Each next to a real copy, which stays too: every name is checked first.
-        entries = ["../outside.pdf", "<tmp>/outside.pdf", "..", ".", "", "nul\x00.pdf",
-                   "images/x.pdf", "back\\slash.pdf", " Padded.pdf", ".html", "chunk0001.md",
-                   "glossary.json", "export_name.txt", "input.html", "INPUT.html", "Input.html",
-                   "OUTPUT.html", "BOOK_DOC.html", "\ud800.pdf", "a" * 247 + ".pdf", "书" * 81 + "éé.pdf"]
-        for entry in entries:
-            with self.subTest(entry=entry), tempfile.TemporaryDirectory() as tmp:
-                entry = entry.replace("<tmp>", tmp)
-                temp_dir = self.make_temp_dir(tmp)
-                (Path(tmp) / "outside.pdf").write_text("keep", encoding="utf-8")
-                for rel in ["images/x.pdf", "back\\slash.pdf", " Padded.pdf", ".html", "Legit.pdf"]:
-                    (temp_dir / rel).write_text("keep", encoding="utf-8")
-                self.write_record(temp_dir, ["Legit.pdf", entry])
-                before = self.contents(temp_dir)
-
-                ok, out = self.delete(temp_dir)
+                ok, out = self.delete_without_waiting_on(record, temp_dir)
 
                 self.assertFalse(ok)
                 self.assertEqual(self.contents(temp_dir), before)
+                self.assertTrue(os.path.lexists(record))
                 self.assertEqual((Path(tmp) / "outside.pdf").read_text(encoding="utf-8"), "keep")
-                self.assertIn(f"no export copy has: {entry!r}", out)
+                self.assertIn(f"{self.RECORD} cannot be used", out)
                 self.assertIn("Nothing was deleted.", out)
 
-    @unittest.skipUnless(hasattr(os, "symlink"), "needs symlinks")
-    def test_symlinks_are_deleted_not_their_targets(self):
+    def test_copies_an_earlier_version_listed_are_named_and_left(self):
         with tempfile.TemporaryDirectory() as tmp:
-            temp_dir = self.make_temp_dir(tmp)
-            target_file = Path(tmp) / "target.pdf"
-            target_file.write_text("keep", encoding="utf-8")
-            target_dir = Path(tmp) / "target_dir"
-            target_dir.mkdir()
-            (target_dir / "inner.txt").write_text("keep", encoding="utf-8")
-            (temp_dir / "book.pdf").unlink()
-            links = {"book.pdf": target_file, "Linked.pdf": target_file,
-                     "Linked.epub": target_dir, "Dangling.docx": Path(tmp) / "missing"}
-            for name, target in links.items():
-                os.symlink(target, temp_dir / name)
-            self.write_record(temp_dir, ["Linked.pdf", "Linked.epub", "Dangling.docx"])
-
-            ok, _ = self.delete(temp_dir)
-
-            self.assertTrue(ok)
-            for name in links:
-                self.assertFalse(os.path.lexists(temp_dir / name), name)
-            self.assertEqual(target_file.read_text(encoding="utf-8"), "keep")
-            self.assertEqual((target_dir / "inner.txt").read_text(encoding="utf-8"), "keep")
-
-    def test_without_a_record_deletes_the_copies_named_in_export_name_txt(self):
-        texts = ["Qui suis-je \n", " Qui suis-je\n", "Qui suis-je\r\n", "\u3000书名\u3000\n",
-                 "-rf --no-preserve-root\n", "A\rB\n", "O'Brien's $(touch pwned) `id`\n", "..\n",
-                 "书" * 82 + "\n"]
-        for text in texts:
-            with self.subTest(text=text), tempfile.TemporaryDirectory() as tmp:
-                temp_dir = self.make_temp_dir(tmp)
-                (temp_dir / "export_name.txt").write_text(text, encoding="utf-8", newline="")
-                # A build from before export_copies.json: --export-name "$(cat export_name.txt)"
-                merge_and_build.export_named_aliases(str(temp_dir), text.rstrip("\n"))
-                (temp_dir / merge_and_build.EXPORT_COPIES_FILE).unlink()
-
-                ok, _ = self.delete(temp_dir)
-
-                self.assertTrue(ok)
-                self.assertEqual(self.files(temp_dir), sorted(self.KEPT))
-                self.assertEqual(list(Path(tmp).glob("pwned*")), [])
-
-    def test_without_a_record_or_export_name_txt_deletes_only_the_outputs(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            temp_dir = self.make_temp_dir(tmp)
-            (temp_dir / "export_name.txt").unlink()
-            # What an empty export name would give.
-            for suffix in self.SUFFIXES:
-                (temp_dir / suffix).write_text("keep", encoding="utf-8")
+            temp_dir = self.make_temp_dir(tmp, export_name=None)
+            old = ["Old Title.html", "Old Title.pdf", "Gone Title.pdf"]
+            for name in old[:2]:
+                (temp_dir / name).write_text("an old copy", encoding="utf-8")
+            legacy = temp_dir / merge_and_build.EXPORT_COPIES_FILE
+            legacy.write_text(json.dumps({"copies": old}), encoding="utf-8")
 
             ok, out = self.delete(temp_dir)
 
-            self.assertTrue(ok)
+            self.assertFalse(ok)
             self.assertEqual(self.files(temp_dir),
-                             sorted([n for n in self.KEPT if n != "export_name.txt"] + self.SUFFIXES))
-            self.assertNotIn("Error", out)
+                             sorted(self.KEPT + old[:2] + [merge_and_build.EXPORT_COPIES_FILE, self.RECORD]))
+            self.assertEqual(set(self.left(out)), {"'Old Title.html'", "'Old Title.pdf'"})
+            self.assertIn("an earlier version recorded only the name of its copy", out)
+            self.assertEqual(json.loads(legacy.read_text(encoding="utf-8")), {"copies": old})
 
-    def test_without_a_record_a_blank_export_name_txt_deletes_only_the_outputs(self):
-        # No build makes copies for a blank name; the suffixes alone are what an
-        # empty name would give.
-        from manifest import create_manifest
-
-        for text in ["", "\n", "  \r\n", "\u3000\n"]:
-            with self.subTest(text=text), tempfile.TemporaryDirectory() as tmp:
+    def test_an_unusable_list_of_earlier_copies_deletes_nothing(self):
+        for case in ["a FIFO", "a symlink", "corrupt JSON"]:
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as tmp:
                 temp_dir = self.make_temp_dir(tmp)
-                with contextlib.redirect_stdout(io.StringIO()):
-                    create_manifest(str(temp_dir), ["chunk0001.md"], str(temp_dir / "input.md"))
-                (temp_dir / "export_name.txt").write_text(text, encoding="utf-8", newline="")
-                for suffix in self.SUFFIXES:
-                    (temp_dir / suffix).write_text("keep", encoding="utf-8")
-
-                ok, out = self.delete(temp_dir)
-
-                self.assertTrue(ok)
-                self.assertEqual(self.files(temp_dir), sorted(self.KEPT + self.SUFFIXES))
-                self.assertNotIn("Error", out)
-
-    def test_a_blank_export_name_txt_without_a_conversion_deletes_nothing(self):
-        # Only a directory that looks like a translate-book temp dir says what an empty
-        # export_name.txt means: it has the manifest.json create_manifest() writes and its chunks.
-        from manifest import create_manifest
-
-        def entry(chunk_id, order):
-            return {"id": chunk_id, "order": order, "source_file": f"{chunk_id}.md", "source_hash": "",
-                    "output_file": f"output_{chunk_id}.md"}
-
-        def made_up(*entries):
-            return {"chunk_count": len(entries), "source_hash": "0" * 64, "chunks": list(entries)}
-
-        # What convert.py leaves passes, past chunk9999 too and after a chunk changes; so does a
-        # made-up manifest of that shape, as no hash is compared with a file.
-        for count in [1, 3, 10000]:
-            with self.subTest(chunks=count), tempfile.TemporaryDirectory() as tmp:
-                names = [f"chunk{n:04d}.md" for n in range(1, count + 1)]
-                for name in names:
-                    (Path(tmp) / name).write_text("# One\n", encoding="utf-8")
-                (Path(tmp) / "input.md").write_text("# Book\n", encoding="utf-8")
-                with contextlib.redirect_stdout(io.StringIO()):
-                    create_manifest(tmp, names, str(Path(tmp) / "input.md"))
-                with open(Path(tmp) / names[-1], "a", encoding="utf-8") as f:
-                    f.write("\nText in a figure\n")
-                self.assertIsNone(merge_and_build._conversion_problem(tmp))
-        full = made_up(entry("chunk0001", 1))
-        with tempfile.TemporaryDirectory() as tmp:
-            (Path(tmp) / "chunk0001.md").write_text("# One\n", encoding="utf-8")
-            (Path(tmp) / "manifest.json").write_text(json.dumps(full), encoding="utf-8")
-            self.assertIsNone(merge_and_build._conversion_problem(tmp))
-        # Each case breaks one thing: (manifest.json, the chunk files, the reason given).
-        one, two = ("chunk0001.md",), ("chunk0001.md", "chunk0002.md")
-        cases = [(None, one, "there is none"),
-                 ("manifest.json", one, "Expecting value"),
-                 ('{"chunks":[]}', one, "it has the fields chunks,"),
-                 (json.dumps({**full, "chunks": [], "chunk_count": 0}), one, "it lists no chunks"),
-                 (json.dumps({"chunks": full["chunks"]}), one, "it has the fields chunks,"),
-                 (json.dumps({**full, "chunk_count": 2}), one, "as its chunk_count says"),
-                 (json.dumps({**full, "chunk_count": True}), one, "as its chunk_count says"),
-                 (json.dumps({**full, "source_hash": ""}), one, "its source_hash is not 64 lowercase hex digits"),
-                 (json.dumps(made_up(entry("chunk0001", 1), entry("chunk0002", 3))), two,
-                  "its orders do not run from 1 without a gap"),
-                 (json.dumps(made_up(entry("chunk0001", 1), entry("chunk0003", 2))), ("chunk0001.md", "chunk0003.md"),
-                  "its entry of order 2 is chunk0003.md, not chunk0002.md"),
-                 (json.dumps(made_up(entry("chunk00001", 1))), ("chunk00001.md",),
-                  "its entry of order 1 is chunk00001.md, not chunk0001.md"),
-                 (json.dumps(made_up(entry("chunk0002", 1), entry("chunk0001", 2))), two,
-                  "its entry of order 1 is chunk0002.md, not chunk0001.md"),
-                 (json.dumps(full), (), "chunk0001.md, which it lists, is not there as a file"),
-                 (json.dumps(full), "symlink", "is not a regular file but a symlink"),
-                 (json.dumps(full), two, "it does not list chunk0002.md, which is there")]
-        for manifest, chunks, reason in cases:
-            with self.subTest(manifest=manifest, chunks=chunks), tempfile.TemporaryDirectory() as tmp:
-                temp_dir = Path(tmp) / "notes"
-                temp_dir.mkdir()
-                (temp_dir / "book.pdf").write_text("mine", encoding="utf-8")
-                (temp_dir / "export_name.txt").write_text("", encoding="utf-8")
-                if chunks == "symlink":
-                    (Path(tmp) / "one.md").write_text("# One\n", encoding="utf-8")
-                    (temp_dir / "chunk0001.md").symlink_to(Path(tmp) / "one.md")
+                (temp_dir / "Old Title.pdf").write_text("an old copy, or a file of the user's", encoding="utf-8")
+                legacy = temp_dir / merge_and_build.EXPORT_COPIES_FILE
+                elsewhere = Path(tmp) / "elsewhere.json"
+                elsewhere.write_text(json.dumps({"copies": ["Old Title.pdf"]}), encoding="utf-8")
+                if case == "a FIFO":
+                    os.mkfifo(legacy)
+                elif case == "a symlink":
+                    os.symlink(elsewhere, legacy)
                 else:
-                    for name in chunks:
-                        (temp_dir / name).write_text("# One\n", encoding="utf-8")
-                if manifest:
-                    (temp_dir / "manifest.json").write_text(manifest, encoding="utf-8")
+                    legacy.write_text('{"copies": ["Old Title.pdf"', encoding="utf-8")
                 before = self.contents(temp_dir)
+                recorded = _recorded(temp_dir)
 
-                code, out = self.run_main(temp_dir, "--delete-outputs")
-
-                self.assertEqual(code, 1)
-                self.assertIn("export_name.txt is empty and", out)
-                self.assertIn(reason, out)
-                self.assertIn("Nothing was deleted.", out)
-                self.assertEqual(self.contents(temp_dir), before)
-
-    def test_without_a_record_an_unusable_export_name_txt_deletes_nothing(self):
-        # The suffixes alone are what an empty name would give.
-        decoys = self.SUFFIXES + ["sub\\bait.pdf"]
-        reasons = {"<directory>": "cannot be read", "<dangling symlink>": "is a symlink to a missing file"}
-        for text in ["../bait\n", "<parent>/bait\n", "sub\\bait\n",
-                     "nul\x00bait\n", "input\n", "BOOK_DOC\n", "a" * 247 + "\n", "<directory>",
-                     "<dangling symlink>"]:
-            with self.subTest(text=text), tempfile.TemporaryDirectory() as tmp:
-                temp_dir = self.make_temp_dir(tmp)
-                bait = [Path(tmp) / f"bait{suffix}" for suffix in self.SUFFIXES]
-                for path in bait + [temp_dir / decoy for decoy in decoys]:
-                    path.write_text("keep", encoding="utf-8")
-                name_file = temp_dir / "export_name.txt"
-                name_file.unlink()
-                if text == "<directory>":
-                    name_file.mkdir()
-                elif text == "<dangling symlink>":
-                    os.symlink(Path(tmp) / "missing.txt", name_file)
-                else:
-                    name_file.write_text(text.replace("<parent>", tmp), encoding="utf-8", newline="")
-                before = self.contents(temp_dir)
-
-                ok, out = self.delete(temp_dir)
+                ok, out = self.delete_without_waiting_on(legacy, temp_dir)
 
                 self.assertFalse(ok)
                 self.assertEqual(self.contents(temp_dir), before)
-                self.assertTrue(os.path.lexists(name_file))
-                for path in bait:
-                    self.assertEqual(path.read_text(encoding="utf-8"), "keep")
-                reason = reasons.get(text, "holds no usable export name")
-                self.assertIn(f"Error: export_name.txt {reason}", out)
+                self.assertEqual(_recorded(temp_dir), recorded)
+                self.assertIn(f"Error: {merge_and_build.EXPORT_COPIES_FILE} cannot be used", out)
                 self.assertIn("Nothing was deleted.", out)
+                if case == "corrupt JSON":
+                    code, _ = self.run_main(temp_dir, "--delete-outputs")
+                    self.assertEqual(code, 1)
+                    self.assertEqual(self.contents(temp_dir), before)
 
-    def test_without_a_record_copies_outside_the_temp_dir_delete_nothing(self):
-        # A valid stem with a drive prefix such as "D:" does this on Windows.
+    def test_a_record_that_cannot_be_updated_fails_the_command(self):
         with tempfile.TemporaryDirectory() as tmp:
             temp_dir = self.make_temp_dir(tmp)
-            before = self.contents(temp_dir)
-            with mock.patch.object(merge_and_build, "_export_copy_path", return_value=None):
-                ok, out = self.delete(temp_dir)
+            real_replace = os.replace
 
-            self.assertFalse(ok)
-            self.assertEqual(self.contents(temp_dir), before)
-            self.assertIn("export_name.txt names copies outside the temp dir", out)
+            def disk_full(src, dst, *args, **kwargs):
+                if os.path.basename(dst) == self.RECORD:
+                    raise OSError(errno.ENOSPC, "No space left on device")
+                return real_replace(src, dst, *args, **kwargs)
 
-    def test_main_exits_nonzero_when_something_could_not_be_deleted(self):
+            with mock.patch.object(os, "replace", disk_full):
+                code, out = self.run_main(temp_dir, "--delete-outputs")
+
+            self.assertEqual(code, 1)
+            self.assertEqual(self.files(temp_dir), sorted(self.KEPT + [self.RECORD]))
+            self.assertIn(f"Error: could not update {self.RECORD}", out)
+            self.assertIn("the record could not be updated", out)
+            self.assertNotIn("delete or move them yourself", out)
+            self.assertEqual(self.leftovers(temp_dir), [])
+
+            ok, out = self.delete(temp_dir)
+
+            self.assertTrue(ok, out)
+            self.assertEqual(_recorded(temp_dir), {})
+
+    def test_recorded_files_that_are_gone_are_dropped(self):
         with tempfile.TemporaryDirectory() as tmp:
             temp_dir = self.make_temp_dir(tmp)
-            (temp_dir / "book.pdf").unlink()
-            for name in ["book.pdf", "Stuck.pdf"]:
-                (temp_dir / name).mkdir()
-                (temp_dir / name / "inner.txt").write_text("keep", encoding="utf-8")
-            self.write_record(temp_dir, ["Stuck.pdf"])
-            output = io.StringIO()
-            with mock.patch.object(
-                sys, "argv", ["merge_and_build.py", "--temp-dir", str(temp_dir), "--delete-outputs"],
-            ), contextlib.redirect_stdout(output):
-                with self.assertRaises(SystemExit) as exc:
-                    merge_and_build.main()
+            for name in self.OUTPUTS + self.COPIES:
+                (temp_dir / name).unlink()
 
-            self.assertEqual(exc.exception.code, 1)
-            self.assertIn("could not delete 'book.pdf'", output.getvalue())
-            self.assertEqual(self.files(temp_dir),
-                             sorted(self.KEPT + ["book.pdf/inner.txt", "Stuck.pdf/inner.txt",
-                                                 merge_and_build.EXPORT_COPIES_FILE]))
-            self.assertEqual(self.record(temp_dir), {"copies": ["Stuck.pdf"]})
+            ok, out = self.delete(temp_dir)
+
+            self.assertTrue(ok, out)
+            self.assertIn("No recorded build outputs to delete.", out)
+            self.assertEqual(_recorded(temp_dir), {})
 
     def test_main_deletes_and_builds_nothing(self):
         with tempfile.TemporaryDirectory() as tmp:
             temp_dir = self.make_temp_dir(tmp)
-            merge_and_build.export_named_aliases(str(temp_dir), "Old Title")
             output = io.StringIO()
             with mock.patch.object(
                 sys, "argv", ["merge_and_build.py", "--temp-dir", str(temp_dir), "--delete-outputs"],
@@ -761,8 +1353,7 @@ class DeleteOutputsTests(unittest.TestCase):
 
             merge_mock.assert_not_called()
             formats_mock.assert_not_called()
-            self.assertEqual(self.files(temp_dir),
-                             sorted(self.KEPT + [merge_and_build.EXPORT_COPIES_FILE]))
+            self.assertEqual(self.files(temp_dir), sorted(self.KEPT + [self.RECORD]))
             self.assertIn("Nothing was built", output.getvalue())
 
     def test_delete_outputs_does_not_combine_with_headings(self):

@@ -587,10 +587,15 @@ metadata stays inside the files even though the file names change:
 python3 "{baseDir}/scripts/merge_and_build.py" --temp-dir "<temp_dir>" --delete-outputs
 ```
 
-It deletes `book.html`, `book_doc.html`, `output.html`, `book.docx`,
-`book.epub`, `book.pdf` and the export copies of earlier builds, builds
-nothing, and keeps the chunks, translations and other intermediate files. If
-it reports an error, fix what it names and run it again before going on.
+It deletes the outputs (`book.html`, `book_doc.html`, `output.html`,
+`book.docx`, `book.epub`, `book.pdf`) and export copies that earlier builds
+recorded in `<temp_dir>/build_outputs.json`, if they are unchanged since. It
+builds nothing, and keeps the chunks, translations and other intermediate
+files. Any other file under those names, such as an output of a version that
+kept no record or one edited since, it leaves and lists with the reason, and
+it exits with an error. Then tell the user which files were left and why, and
+go on only once they have deleted or moved those files and the command runs
+without an error. For any other error, fix what it names and run it again.
 
 After that, or straight away on a first build, write these files with your
 file-writing tool. The build script reads them itself, so no book text

@@ -215,5 +215,106 @@ class ConvertHtmlWithCalibreTests(unittest.TestCase):
                     self.assertEqual(cmd[cmd.index("--title") + 1], TITLE)
 
 
+class WorkingDirectoryTests(unittest.TestCase):
+    """Calibre reads from a directory of the run's own, which goes afterwards; nothing else is touched."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+        self.book = self.root / "book_doc.html"
+        self.assertTrue(_write_book_doc(self.book))
+        (self.root / "images").mkdir()
+        (self.root / "images" / "fig1.png").write_bytes(b"png")
+        # The HTML each Calibre run read, and what was beside it then.
+        self.seen = []
+
+    def convert(self, calibre=None):
+        def run(cmd, capture_output, text, timeout):
+            work = Path(cmd[1]).parent
+            self.seen.append((Path(cmd[1]), sorted(p.relative_to(work).as_posix() for p in work.rglob("*"))))
+            if calibre:
+                return calibre(cmd)
+            Path(cmd[2]).write_text("x", encoding="utf-8")
+            return mock.Mock(returncode=0, stderr="")
+
+        out = io.StringIO()
+        argv = ["calibre_html_publish.py", str(self.book), "-o", str(self.root / "book.docx")]
+        with mock.patch.object(sys, "argv", argv), mock.patch.object(
+            calibre_html_publish, "find_calibre_convert", return_value="ebook-convert"
+        ), mock.patch.object(calibre_html_publish.subprocess, "run", side_effect=run), \
+                contextlib.redirect_stdout(out):
+            try:
+                calibre_html_publish.main()
+            except SystemExit as e:
+                return e.code, out.getvalue()
+        return 0, out.getvalue()
+
+    def tree(self):
+        return sorted(p.relative_to(self.root).as_posix() for p in self.root.rglob("*"))
+
+    def test_a_directory_with_the_old_fixed_name_is_left_alone(self):
+        # Earlier versions worked in <base>_conversion_temp, made with exist_ok
+        # and removed with rmtree whatever was in it.
+        old = self.root / "book_doc_conversion_temp"
+        old.mkdir()
+        (old / "keep.txt").write_text("keep", encoding="utf-8")
+        before = self.tree()
+
+        code, _ = self.convert()
+
+        self.assertEqual(code, 0)
+        self.assertEqual(self.tree(), sorted(before + ["book.docx"]))
+        self.assertEqual((old / "keep.txt").read_text(encoding="utf-8"), "keep")
+        html, beside = self.seen[0]
+        self.assertEqual(html.parent.parent, self.root)
+        self.assertTrue(html.parent.name.startswith("book_doc_conversion_"))
+        self.assertNotEqual(html.parent, old)
+        self.assertEqual(beside, ["images", "images/fig1.png", "work.html"])
+
+    def test_each_run_works_in_a_new_directory_that_goes_afterwards(self):
+        before = self.tree()
+        for _ in range(2):
+            self.assertEqual(self.convert()[0], 0)
+        first, second = (html.parent for html, _ in self.seen)
+        self.assertNotEqual(first, second)
+        self.assertEqual(self.tree(), sorted(before + ["book.docx"]))
+
+    def test_the_working_directory_goes_when_the_conversion_fails(self):
+        def fails(cmd):
+            return mock.Mock(returncode=1, stderr="Calibre failed")
+
+        def crashes(cmd):
+            raise OSError("ebook-convert crashed")
+
+        def is_interrupted(cmd):
+            raise KeyboardInterrupt
+
+        before = self.tree()
+        for calibre in [fails, crashes, is_interrupted]:
+            with self.subTest(calibre=calibre.__name__):
+                code, _ = self.convert(calibre)
+                self.assertEqual(code, 1)
+                self.assertEqual(self.tree(), before)
+
+    def test_a_directory_put_in_place_of_the_working_directory_is_left(self):
+        def swap(cmd):
+            work = Path(cmd[1]).parent
+            work.rename(self.root / "moved")
+            work.mkdir()
+            (work / "theirs.txt").write_text("theirs", encoding="utf-8")
+            Path(cmd[2]).write_text("x", encoding="utf-8")
+            return mock.Mock(returncode=0, stderr="")
+
+        code, out = self.convert(swap)
+
+        self.assertEqual(code, 0)
+        work = self.seen[0][0].parent
+        self.assertEqual((work / "theirs.txt").read_text(encoding="utf-8"), "theirs")
+        self.assertIn(f"Warning: {work} was left as it is", out)
+        # The run's own directory, emptied through the descriptor it held.
+        self.assertEqual(list((self.root / "moved").iterdir()), [])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -16,14 +16,16 @@ import stat
 import subprocess
 import tempfile
 import argparse
+import hashlib
 import html as _html_lib
 from collections import Counter
 from html.parser import HTMLParser
 from pathlib import Path
 
-from manifest import (chunk_file_name, chunk_id_from_file_name, list_chunk_files, load_manifest,
-                      nth_chunk_id, read_output_text, validate_for_merge)
-from convert import _fenced_code_line_indices, check_cover_file, load_stored_request
+from manifest import (chunk_id_from_file_name, list_chunk_files, load_manifest,
+                      read_output_text, validate_for_merge)
+from convert import (Own, _fenced_code_line_indices, _remove_own_file, _write_atomically,
+                     check_cover_file, load_stored_request)
 
 if os.name == "nt":
     sys.exit("translate-book runs on macOS and Linux only. "
@@ -864,8 +866,10 @@ def process_html_separators(html_file):
 
         with open(html_file, 'w', encoding='utf-8') as f:
             f.write(content)
+        return True
     except Exception as e:
         print(f"Error processing separators: {e}")
+        return False
 
 
 def convert_md_to_html(temp_dir, title, lang_cfg, author=None):
@@ -907,7 +911,8 @@ def convert_md_to_html(temp_dir, title, lang_cfg, author=None):
         print("Error: All markdown-to-HTML converters failed")
         return False
 
-    process_html_separators(temp_html_file)
+    if not process_html_separators(temp_html_file):
+        return False
 
     # Extract body content
     try:
@@ -923,18 +928,21 @@ def convert_md_to_html(temp_dir, title, lang_cfg, author=None):
     # Generate book_doc.html with ebook template
     template_ebook = os.path.join(SCRIPT_DIR, 'template_ebook.html')
     book_doc_file = os.path.join(temp_dir, 'book_doc.html')
-    apply_template_to_html(body_content, template_ebook, book_doc_file, title, lang_cfg, author)
+    if not apply_template_to_html(body_content, template_ebook, book_doc_file, title, lang_cfg, author):
+        return False
 
     # Generate book.html with web template
     template_web = os.path.join(SCRIPT_DIR, 'template.html')
     book_file = os.path.join(temp_dir, 'book.html')
-    apply_template_to_html(body_content, template_web, book_file, title, lang_cfg, author)
+    if not apply_template_to_html(body_content, template_web, book_file, title, lang_cfg, author):
+        return False
 
     if not _check_generated_html_sanity(book_doc_file):
         return False
     if not _check_generated_html_sanity(book_file):
         return False
 
+    _record_outputs(temp_dir, "output.html", "book_doc.html", "book.html")
     print(f"Generated: output.html, book_doc.html, book.html")
     return True
 
@@ -1107,10 +1115,10 @@ def add_toc(temp_dir):
         print("Warning: book.html not found, skipping TOC")
         return False
 
-    if BS4_AVAILABLE:
-        return insert_toc_with_bs4(book_file)
-    else:
-        return insert_toc_with_regex(book_file)
+    written = insert_toc_with_bs4(book_file) if BS4_AVAILABLE else insert_toc_with_regex(book_file)
+    if written:
+        _record_outputs(temp_dir, "book.html")
+    return written
 
 
 # =============================================================================
@@ -1169,6 +1177,7 @@ def generate_format(html_file, temp_dir, output_ext, lang_attr, cover=None):
         result = subprocess.run(cmd, check=True, capture_output=True, text=True)
 
         if os.path.exists(output_file):
+            _record_outputs(temp_dir, f"book{output_ext}")
             file_size = os.path.getsize(output_file)
             return output_file
         else:
@@ -1248,10 +1257,15 @@ _RESERVED_EXPORT_STEMS = {
     "output": "output.html",
 }
 
-# What --delete-outputs removes besides the export copies; the next build
-# regenerates all of them.
+# What a build writes besides the export copies; the next build regenerates
+# all of them.
 BUILD_OUTPUTS = ("book.html", "book_doc.html", "output.html", "book.docx", "book.epub", "book.pdf")
 
+# Where builds record each output and export copy they write, so that
+# --delete-outputs can tell those files from others under the same names.
+OUTPUTS_RECORD = "build_outputs.json"
+
+# Builds before OUTPUTS_RECORD listed only the names of their export copies here.
 EXPORT_COPIES_FILE = "export_copies.json"
 
 # The usual file name limit (NAME_MAX), in bytes.
@@ -1269,8 +1283,8 @@ def _validate_export_name(name, label='--export-name'):
         size = len(os.fsencode(stem))
     except UnicodeError:
         raise ValueError(f"{label} contains characters a file name cannot hold") from None
-    # Each copy name must fit in a file name. Fail here, before the build records the
-    # copies: a copy that fails halfway leaves a name --delete-outputs cannot delete.
+    # Each copy name must fit in a file name. Fail here, before anything is built,
+    # not at the copies once every format is done.
     longest_suffix = max(_export_copy_names("").values(), key=len)
     room = _MAX_FILE_NAME_BYTES - len(longest_suffix)
     if size > room:
@@ -1316,21 +1330,17 @@ def _export_copy_path(temp_dir, name):
 
 
 def _read_export_copies(temp_dir):
-    """Return the names listed in export_copies.json, or None if temp_dir has no such file.
+    """Return the names an earlier version listed in EXPORT_COPIES_FILE, or None if there is none.
 
-    Raises ValueError if the file is there but unusable: unreadable, not the
-    JSON the build writes, or listing a name that no export copy in temp_dir has.
+    Raises ValueError if the file is there but unusable: not a regular file,
+    not the JSON those builds wrote, or listing a name that no export copy in
+    temp_dir has. A symlink or FIFO in its place is neither followed nor
+    waited on.
     """
-    path = os.path.join(temp_dir, EXPORT_COPIES_FILE)
     try:
-        with open(path, encoding='utf-8', errors='surrogateescape') as f:
-            data = json.load(f)
+        data = _read_json_file(os.path.join(temp_dir, EXPORT_COPIES_FILE))
     except FileNotFoundError:
-        if os.path.lexists(path):
-            raise ValueError("it is a symlink to a missing file") from None
         return None
-    except (OSError, ValueError) as e:
-        raise ValueError(str(e)) from None
     names = data.get("copies") if isinstance(data, dict) else None
     if not isinstance(names, list) or not all(isinstance(name, str) for name in names):
         raise ValueError('"copies" is not a list of file names')
@@ -1340,27 +1350,163 @@ def _read_export_copies(temp_dir):
     return names
 
 
-def _unusable_record(reason):
-    """Explain an export_copies.json that _read_export_copies() rejected."""
-    return (f"{EXPORT_COPIES_FILE} cannot be used ({reason}). It lists the export copies of "
-            f"earlier builds; repair it, or delete it so that --delete-outputs deletes the "
-            f"copies named after export_name.txt instead.")
+# Opens a file without following a symlink or waiting on a FIFO put in its place.
+_NO_FOLLOW_OR_WAIT = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
 
 
-def _write_export_copies(temp_dir, names):
-    path = os.path.join(temp_dir, EXPORT_COPIES_FILE)
-    fd, tmp_path = tempfile.mkstemp(prefix='.export_copies.', suffix='.json', dir=temp_dir)
+def _sha256_through(fd, size):
+    """The SHA-256 of the file open as fd if it holds exactly size bytes, else None.
+
+    It reads no more than size bytes, and a file that is longer, or grows
+    while it is read, counts as holding something else.
+    """
+    digest, offset = hashlib.sha256(), 0
+    while offset < size:
+        chunk = os.pread(fd, min(1 << 20, size - offset), offset)
+        if not chunk:
+            return None
+        digest.update(chunk)
+        offset += len(chunk)
+    return None if os.pread(fd, 1, size) else digest.hexdigest()
+
+
+def _identity(fd):
+    """What OUTPUTS_RECORD holds of the file open as fd: its size and SHA-256.
+
+    --delete-outputs deletes a recorded file only while it still has both.
+    None if the file changed size while it was read.
+    """
+    size = os.fstat(fd).st_size
+    sha256 = _sha256_through(fd, size)
+    return None if sha256 is None else {"size": size, "sha256": sha256}
+
+
+class _RecordedFile(Own):
+    """A file found under a recorded name, held open; unchanged() compares it with the record."""
+
+    def __init__(self, fd, entry):
+        super().__init__(fd)
+        self.entry = entry
+
+    def unchanged(self):
+        return (self.fileno() is not None
+                and _sha256_through(self.fileno(), self.entry["size"]) == self.entry["sha256"])
+
+
+def _kind(mode):
+    """What a file with this st_mode is, for messages."""
+    kinds = [(stat.S_ISREG, "a regular file"), (stat.S_ISLNK, "a symlink"), (stat.S_ISDIR, "a directory"),
+             (stat.S_ISFIFO, "a FIFO"), (stat.S_ISSOCK, "a socket")]
+    return next((kind for is_kind, kind in kinds if is_kind(mode)), "a device")
+
+
+def _is_identity(entry):
+    return (isinstance(entry, dict) and set(entry) == {"size", "sha256"}
+            and type(entry["size"]) is int and entry["size"] >= 0
+            and isinstance(entry["sha256"], str) and re.fullmatch(r"[0-9a-f]{64}", entry["sha256"]) is not None)
+
+
+def _read_json_file(path):
+    """Return the JSON in the regular file at path.
+
+    Raises FileNotFoundError if nothing is there, and ValueError if what is
+    there is not a regular file, cannot be read or holds no JSON. A symlink or
+    FIFO in its place is neither followed nor waited on.
+    """
     try:
-        with os.fdopen(fd, 'w', encoding='utf-8', errors='surrogateescape') as f:
-            json.dump({"copies": names}, f, ensure_ascii=False, indent=2)
-            f.write('\n')
-        os.replace(tmp_path, path)
-    except Exception:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
+        fd = os.open(path, _NO_FOLLOW_OR_WAIT)
+    except FileNotFoundError:
         raise
+    except OSError as e:
+        try:
+            mode = os.lstat(path).st_mode
+        except OSError:
+            mode = stat.S_IFREG
+        raise ValueError(e.strerror if stat.S_ISREG(mode) else f"it is {_kind(mode)}") from None
+    try:
+        found = os.fstat(fd)
+        if not stat.S_ISREG(found.st_mode):
+            raise ValueError(f"it is {_kind(found.st_mode)}")
+        with open(fd, encoding='utf-8', errors='surrogateescape', closefd=False) as f:
+            return json.load(f)
+    except (OSError, ValueError) as e:
+        raise ValueError(str(e)) from None
+    finally:
+        os.close(fd)
+
+
+def _read_outputs_record(temp_dir):
+    """Return {name: identity} from OUTPUTS_RECORD, or {} if temp_dir has none.
+
+    Raises ValueError if it is there but unusable: not a regular file, not the
+    JSON a build writes, or naming a file no build writes in temp_dir. A symlink
+    or FIFO in its place is neither followed nor waited on.
+    """
+    try:
+        data = _read_json_file(os.path.join(temp_dir, OUTPUTS_RECORD))
+    except FileNotFoundError:
+        return {}
+    if not (isinstance(data, dict) and set(data) == {"version", "files"} and type(data["version"]) is int
+            and data["version"] == 1 and isinstance(data["files"], dict)):
+        raise ValueError('it is not {"version": 1, "files": {...}} as a build writes it')
+    for name, entry in data["files"].items():
+        if name not in BUILD_OUTPUTS and not _export_copy_path(temp_dir, name):
+            raise ValueError(f"it names {name!r}, which is not a file a build writes")
+        if not _is_identity(entry):
+            raise ValueError(f"its entry for {name!r} is not what a build records")
+    return data["files"]
+
+
+def _unusable_record(reason):
+    """Explain an OUTPUTS_RECORD that _read_outputs_record() rejected."""
+    return (f"{OUTPUTS_RECORD} cannot be used ({reason}). It records the files earlier builds "
+            f"wrote, so that --delete-outputs deletes those and nothing else. Repair it, or "
+            f"delete it; --delete-outputs then leaves the outputs of earlier builds for you to "
+            f"delete.")
+
+
+def _write_outputs_record(temp_dir, files):
+    data = json.dumps({"version": 1, "files": files}, ensure_ascii=False, indent=2, sort_keys=True) + '\n'
+    _write_atomically(os.path.join(temp_dir, OUTPUTS_RECORD), data.encode('utf-8', 'surrogateescape'))
+
+
+def _identity_at(path):
+    """The identity of the regular file at path, or None if there is none or it changes while read."""
+    try:
+        fd = os.open(path, _NO_FOLLOW_OR_WAIT)
+    except OSError:
+        return None
+    try:
+        return _identity(fd) if stat.S_ISREG(os.fstat(fd).st_mode) else None
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+
+
+def _record_outputs(temp_dir, *names):
+    """Record in OUTPUTS_RECORD the files in temp_dir named names, which the caller has just written.
+
+    Call it only once a write has succeeded, and never for a file a step
+    skipped: --delete-outputs deletes what is recorded while it is unchanged.
+    A step that fails records nothing, so --delete-outputs leaves what it
+    half-wrote. The entries of other files stay as they were.
+    """
+    written = {name: _identity_at(os.path.join(temp_dir, name)) for name in names}
+    found = {name: identity for name, identity in written.items() if identity is not None}
+    why = "it is not a regular file, or it changed while it was read"
+    if found:
+        try:
+            files = _read_outputs_record(temp_dir)
+            files.update(found)
+            _write_outputs_record(temp_dir, files)
+        except (OSError, ValueError) as e:
+            found, why = {}, str(e)
+    missed = [name for name in names if name not in found]
+    if missed:
+        print(f"Warning: could not record {', '.join(map(repr, missed))} in {OUTPUTS_RECORD} "
+              f"({why}); --delete-outputs will leave {'it' if len(missed) == 1 else 'them'} "
+              f"for you to delete.")
 
 
 def export_named_aliases(temp_dir, export_name):
@@ -1368,10 +1514,12 @@ def export_named_aliases(temp_dir, export_name):
 
     Canonical artifacts remain untouched. The alias names use export_name as a
     filename stem, with book_doc.html receiving a _doc suffix to avoid colliding
-    with the web HTML alias. Their names are added to export_copies.json before
-    the files are written, so --delete-outputs still finds the copies of an
-    earlier export name after it changes. If that file is there but unusable,
-    raises ValueError and writes nothing.
+    with the web HTML alias. Each copy is made in a new file in temp_dir and
+    renamed over its name once complete, so a copy that fails leaves that name
+    as it was. Each copy is recorded in OUTPUTS_RECORD once renamed, also when a
+    later one fails, so --delete-outputs deletes it later, also after the export
+    name changes. An interrupt between a rename and the recording leaves that
+    copy complete under its name but unrecorded.
     """
     stem = _validate_export_name(export_name)
     pending = []
@@ -1383,177 +1531,151 @@ def export_named_aliases(temp_dir, export_name):
         if os.path.exists(dst) and os.path.samefile(src, dst):
             continue
         pending.append((src, dst, dst_name))
-    if pending:
-        recorded = [name for name in _read_export_copies(temp_dir) or []
-                    if os.path.lexists(os.path.join(temp_dir, name))]
-        _write_export_copies(temp_dir, list(dict.fromkeys(recorded + [name for _, _, name in pending])))
     copied = []
-    for src, dst, dst_name in pending:
-        shutil.copy2(src, dst)
-        copied.append(dst_name)
+    try:
+        for src, dst, dst_name in pending:
+            fd, tmp = tempfile.mkstemp(dir=temp_dir, prefix='.tmp.', suffix='.part')
+            made = Own(fd)
+            try:
+                shutil.copy2(src, tmp)
+                os.replace(tmp, dst)
+            except BaseException:
+                _remove_own_file(tmp, made, same_bytes=False)
+                raise
+            finally:
+                made.close()
+            copied.append(dst_name)
+    finally:
+        _record_outputs(temp_dir, *copied)
     return copied
 
 
-def _copies_named_in_export_name_file(temp_dir):
-    """Copy names for a temp dir built before export_copies.json existed.
+def _delete_recorded(path, entry):
+    """Delete path if it still holds what a build recorded as entry.
 
-    Those builds took the stem from `--export-name "$(cat export_name.txt)"`,
-    which _validate_export_name() strips, so the file is read the same way:
-    newline='' keeps a carriage return inside the name. Returns [] if there is
-    no export_name.txt and None if it is blank, as no build makes copies then;
-    raises ValueError if it is there but names no copies.
+    Returns (outcome, why). outcome is 'deleted'; 'gone' if nothing is there;
+    'left' if what is there now holds something else; or 'stuck' if it may
+    still be the build's file but could not be read or deleted. Nothing at
+    path is followed or waited on. The file checked is held open and moved to
+    a name of this run's own before the last check, so the file deleted is the
+    file checked (see _remove_own_file).
     """
-    path = os.path.join(temp_dir, 'export_name.txt')
     try:
-        with open(path, encoding='utf-8', errors='surrogateescape', newline='') as f:
-            text = f.read()
+        found = os.lstat(path)
     except FileNotFoundError:
-        if os.path.lexists(path):
-            raise ValueError("export_name.txt is a symlink to a missing file") from None
-        return []
+        return "gone", None
     except OSError as e:
-        raise ValueError(f"export_name.txt cannot be read ({e})") from None
-    if not text.strip():
-        return None
+        return "stuck", f"it cannot be checked ({e.strerror})"
+    if not stat.S_ISREG(found.st_mode):
+        return "left", f"it is {_kind(found.st_mode)}, and builds write only regular files"
+    changed = "it no longer holds what the build wrote"
+    if found.st_size != entry["size"]:
+        return "left", changed
     try:
-        stem = _validate_export_name(text)
-    except ValueError as e:
-        raise ValueError(f"export_name.txt holds no usable export name ({e})") from None
-    names = list(_export_copy_names(stem).values())
-    # Only a drive prefix such as "D:" on Windows leads a valid stem out of temp_dir.
-    if not all(_export_copy_path(temp_dir, name) for name in names):
-        raise ValueError("export_name.txt names copies outside the temp dir")
-    print(f"No {EXPORT_COPIES_FILE}; deleting the copies named after export_name.txt")
-    return names
-
-
-def _delete_file(path):
-    """Delete path if it is a regular file or a symlink, never a symlink's target.
-
-    Returns False when nothing is there. Raises OSError for anything else.
-    """
+        fd = os.open(path, _NO_FOLLOW_OR_WAIT)
+    except OSError as e:
+        return "stuck", f"it cannot be read to check it ({e.strerror})"
+    own = _RecordedFile(fd, entry)
     try:
-        mode = os.lstat(path).st_mode
-    except FileNotFoundError:
-        return False
-    if not (stat.S_ISREG(mode) or stat.S_ISLNK(mode)):
-        raise OSError("not a regular file")
-    os.unlink(path)
-    return True
-
-
-def _conversion_problem(temp_dir):
-    """Why temp_dir does not look like a temp dir convert.py split a book into, or None.
-
-    Checks the shape of the manifest.json that create_manifest() writes and
-    nothing more: its three fields, at least one chunk and as many as
-    chunk_count says, a source_hash of 64 lowercase hex digits, orders 1 to
-    N, the entry of order n naming convert.py's n-th chunk file, and exactly
-    those chunk files in temp_dir, as regular files. No hash is compared with
-    a file, as chunks may change after the conversion, so a made-up manifest
-    of that shape passes.
-    """
-    try:
-        manifest = load_manifest(temp_dir)
-    except (OSError, ValueError) as e:
-        return str(e)
-    if manifest is None:
-        return "there is none"
-    if set(manifest) != {"chunk_count", "source_hash", "chunks"}:
-        return f"it has the fields {', '.join(sorted(manifest))}, not chunk_count, chunks and source_hash"
-    chunks = manifest["chunks"]
-    if not chunks or type(manifest["chunk_count"]) is not int or manifest["chunk_count"] != len(chunks):
-        return "it lists no chunks, or not as many as its chunk_count says"
-    if not isinstance(manifest["source_hash"], str) or not re.fullmatch(r"[0-9a-f]{64}", manifest["source_hash"]):
-        return "its source_hash is not 64 lowercase hex digits"
-    if sorted(chunk["order"] for chunk in chunks) != list(range(1, len(chunks) + 1)):
-        return "its orders do not run from 1 without a gap"
-    listed = []
-    for n, chunk in enumerate(sorted(chunks, key=lambda chunk: chunk["order"]), 1):
-        name = chunk_file_name(nth_chunk_id(n))
-        if chunk["source_file"] != name:
-            return f"its entry of order {n} is {chunk['source_file']}, not {name}"
-        listed.append(name)
-    try:
-        on_disk = list_chunk_files(temp_dir)
-    except (OSError, ValueError) as e:
-        return str(e)
-    on_disk_names, listed_names = set(on_disk), set(listed)
-    missing = [name for name in listed if name not in on_disk_names]
-    if missing:
-        return f"{missing[0]}, which it lists, is not there as a file"
-    unlisted = [name for name in on_disk if name not in listed_names]
-    if unlisted:
-        return f"it does not list {unlisted[0]}, which is there"
-    return None
+        if not own.is_this(found):
+            return "left", "another file took its place while it was being checked"
+        if not own.unchanged():
+            return "left", changed
+        try:
+            if _remove_own_file(path, own):
+                return "deleted", None
+        except OSError as e:
+            return "stuck", (f"it could not be deleted ({e.strerror}) or put back; the warning above "
+                             f"says where it is")
+        # Nothing was moved, or what was moved is back.
+        try:
+            back = own.is_this(os.lstat(path))
+        except FileNotFoundError:
+            back = False
+        if back and own.unchanged():
+            return "stuck", "it could not be moved aside or deleted; check the temp directory's permissions"
+        return "left", "it changed while it was being deleted"
+    except OSError as e:
+        return "stuck", f"it cannot be read to check it ({e.strerror})"
+    finally:
+        own.close()
 
 
 def delete_outputs(temp_dir):
-    """Delete the outputs and export copies of earlier builds, so a rebuild regenerates them.
+    """Delete the files earlier builds wrote and recorded, so a rebuild regenerates them.
 
-    Deletes BUILD_OUTPUTS and the copies listed in export_copies.json, or for
-    an older temp dir without that record, the copies named after
-    export_name.txt. Only regular files and symlinks directly inside temp_dir
-    go; chunks, translations and the other intermediates stay. Every name is
-    checked before the first file goes, and if the record or export_name.txt
-    is there but unusable, nothing is deleted. Returns False then, or if a
-    file could not be deleted.
+    A file listed in OUTPUTS_RECORD goes only while it still holds what was
+    recorded there (see _delete_recorded); the entry of any file left stays.
+    Anything else under its name is left and named, and so are files under
+    BUILD_OUTPUTS names that no build recorded, such as those of versions
+    before the record or of a step that failed, and the copies that an
+    EXPORT_COPIES_FILE of an earlier version lists. Chunks, translations and
+    the other intermediates stay. Returns False if the record or
+    EXPORT_COPIES_FILE is unusable, in which case nothing is deleted, if any
+    file was left, or if the record could not be updated.
     """
     print("=== Deleting build outputs ===")
     try:
-        recorded = _read_export_copies(temp_dir)
+        recorded = _read_outputs_record(temp_dir)
     except ValueError as e:
         print(f"Error: {_unusable_record(e)} Nothing was deleted.")
         return False
-    if recorded is None:
-        try:
-            copies = _copies_named_in_export_name_file(temp_dir)
-        except ValueError as e:
-            print(f"Error: {e}. Without {EXPORT_COPIES_FILE}, that file is how the export copies "
-                  f"of earlier builds are found: write the export name they were made with to "
-                  f"export_name.txt, or leave export_name.txt empty if there are none. "
-                  f"Nothing was deleted.")
-            return False
-        if copies is None:
-            # An empty export_name.txt means no copies only in what looks like a translate-book temp dir.
-            problem = _conversion_problem(temp_dir)
-            if problem:
-                print(f"Error: export_name.txt is empty and {temp_dir} holds no usable manifest.json "
-                      f"({problem}), so it is not known to be a translate-book temp directory. "
-                      f"Nothing was deleted.")
-                return False
-            copies = []
-    else:
-        copies = recorded
+    try:
+        legacy = _read_export_copies(temp_dir) or []
+    except ValueError as e:
+        print(f"Error: {EXPORT_COPIES_FILE} cannot be used ({e}). Versions before {OUTPUTS_RECORD} "
+              f"listed their export copies there, so that --delete-outputs can name them. Repair "
+              f"it, or delete it once you have checked for those copies yourself. Nothing was "
+              f"deleted.")
+        return False
 
-    deleted, left = [], []
-    for name in list(BUILD_OUTPUTS) + [n for n in dict.fromkeys(copies) if n not in BUILD_OUTPUTS]:
-        try:
-            if _delete_file(os.path.join(temp_dir, name)):
-                deleted.append(name)
-        except OSError as e:
-            print(f"Error: could not delete {name!r}: {e}")
-            left.append(name)
+    deleted, left, stuck, kept = [], [], [], {}
+    for name, entry in recorded.items():
+        outcome, why = _delete_recorded(os.path.join(temp_dir, name), entry)
+        if outcome == "deleted":
+            deleted.append(name)
+        elif outcome != "gone":
+            (stuck if outcome == "stuck" else left).append((name, why))
+            kept[name] = entry
+    for name in BUILD_OUTPUTS:
+        if name not in recorded and os.path.lexists(os.path.join(temp_dir, name)):
+            left.append((name, "no build recorded it: a step that failed, or a version that did not "
+                               "record its outputs, made it, or it is not a build output"))
+    for name in dict.fromkeys(legacy):
+        if (name not in recorded and name not in BUILD_OUTPUTS
+                and os.path.lexists(os.path.join(temp_dir, name))):
+            left.append((name, "an earlier version recorded only the name of its copy, which does "
+                               "not tell that copy from a file of yours"))
 
     if deleted:
         print(f"Deleted {len(deleted)} file(s):")
         for name in deleted:
             print(f"  {name!r}")
     else:
-        print("No build outputs to delete.")
+        print("No recorded build outputs to delete.")
+    if left or stuck:
+        print(f"Left {len(left) + len(stuck)} file(s) as they are:")
+        for name, why in left + stuck:
+            print(f"  {name!r}: {why}")
 
-    ok = not left
-    if recorded is not None:
+    updated = True
+    if kept != recorded:
         try:
-            _write_export_copies(temp_dir, [name for name in left if name not in BUILD_OUTPUTS])
+            _write_outputs_record(temp_dir, kept)
         except OSError as e:
-            print(f"Error: could not update {EXPORT_COPIES_FILE}: {e}")
-            ok = False
-    if ok:
+            print(f"Error: could not update {OUTPUTS_RECORD}: {e}")
+            updated = False
+    if not (left or stuck) and updated:
         print("Nothing was built; run the build command to rebuild.")
-    else:
-        print("Nothing was built. Fix the errors above and run --delete-outputs again first.")
-    return ok
+        return True
+    print("Nothing was built.")
+    if left:
+        print("Files that do not hold what a build recorded writing there were left: if you no "
+              "longer need them, delete or move them yourself, then run --delete-outputs again.")
+    if stuck or not updated:
+        print("Some files could not be read or deleted, or the record could not be updated: fix "
+              "what the messages above name, such as permissions, then run --delete-outputs again.")
+    return False
 
 
 # =============================================================================
@@ -1573,8 +1695,9 @@ def main():
     mode.add_argument('--headings', action='store_true',
                       help='List the headings of output_chunk*.md, skipping fenced code, and exit without building')
     mode.add_argument('--delete-outputs', action='store_true',
-                      help='Delete book.html, book_doc.html, output.html, book.docx, book.epub, book.pdf and '
-                           'the export copies, keeping chunks and translations, and exit without building')
+                      help='Delete the outputs and export copies that earlier builds recorded in '
+                           f'{OUTPUTS_RECORD}, if unchanged since, keeping chunks and translations, '
+                           'and exit without building')
 
     args = parser.parse_args()
     temp_dir = args.temp_dir
@@ -1624,11 +1747,11 @@ def main():
         except ValueError as e:
             print(f"Error: {e}")
             sys.exit(1)
-        try:
-            _read_export_copies(temp_dir)
-        except ValueError as e:
-            print(f"Error: {_unusable_record(e)} Nothing was built.")
-            sys.exit(1)
+    try:
+        _read_outputs_record(temp_dir)
+    except ValueError as e:
+        print(f"Error: {_unusable_record(e)} Nothing was built.")
+        sys.exit(1)
 
     # Load config as base, CLI args override
     config = load_config(temp_dir)
