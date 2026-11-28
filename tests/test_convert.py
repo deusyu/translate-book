@@ -2962,5 +2962,372 @@ class ConfigValueTests(unittest.TestCase):
             self.assertNotIn("ouput_lang", values)
 
 
+class SplitResumeTests(unittest.TestCase):
+    """However a split stops, or the disk loses chunk files, a rerun ends with every chunk or an error."""
+
+    CHUNK_SIZE = 1000
+    LEFT_BY_A_KILL = r"\.(chunk[0-9]{4,}\.md|manifest\.json)\.[0-9a-f]{16}\.part"
+
+    class Killed(BaseException):
+        pass
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+        self.book = "".join(
+            f"# Chapter {n}\n\n" + "".join(f"Paragraph {n}.{p}: " + "words " * 25 + "\n\n" for p in range(3))
+            for n in range(1, 9)
+        )
+        reference = self.book_dir("reference")
+        self.run_split(reference)
+        self.expected = self.chunks(reference)
+        self.assertGreater(len(self.expected), 5)
+        self.temp = self.book_dir("book_temp")
+
+    def book_dir(self, name):
+        d = self.root / name
+        d.mkdir()
+        (d / "input.md").write_text(self.book, encoding="utf-8")
+        return d
+
+    def run_split(self, d):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            count = convert._do_split_and_manifest(str(d), str(d / "input.md"), self.CHUNK_SIZE)
+        return count, out.getvalue()
+
+    @staticmethod
+    def chunks(d):
+        return {p.name: p.read_bytes() for p in sorted(d.glob("chunk*.md"))}
+
+    @staticmethod
+    def snapshot(d):
+        return {p.name: (os.readlink(p) if p.is_symlink() else p.read_bytes() if p.is_file() else None,
+                         p.lstat().st_ino)
+                for p in sorted(d.iterdir())}
+
+    def finished_split(self):
+        """self.temp as a split that finished leaves it, with a translation and a file of the user's."""
+        self.run_split(self.temp)
+        (self.temp / "output_chunk0001.md").write_text("译文\n", encoding="utf-8")
+        (self.temp / "notes.txt").write_text("mine\n", encoding="utf-8")
+
+    def assert_complete(self, d, count, killed=False, expected=None):
+        import hashlib
+        import re
+        expected = self.expected if expected is None else expected
+        self.assertEqual(count, len(expected))
+        self.assertEqual(self.chunks(d), expected)
+        manifest = json.loads((d / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual({c["source_file"]: c["source_hash"] for c in manifest["chunks"]},
+                         {name: hashlib.sha256(data).hexdigest() for name, data in expected.items()})
+        for p in d.iterdir():
+            if p.name.startswith("."):
+                self.assertTrue(killed and re.fullmatch(self.LEFT_BY_A_KILL, p.name), p.name)
+
+    def assert_refused(self, why):
+        before = self.snapshot(self.temp)
+        with self.assertRaises(ValueError) as cm:
+            self.run_split(self.temp)
+        self.assertIn(why, str(cm.exception))
+        self.assertIn("Nothing was changed", str(cm.exception))
+        self.assertEqual(self.snapshot(self.temp), before)
+
+    @contextlib.contextmanager
+    def stop_at(self, k, copy_to, exception):
+        """Raise exception at the k-th change the split makes on disk: a write
+        to a file (before it, and after half of it), or a link, rename, replace
+        or unlink. Just before, copy the temp dir to copy_to: that copy is what
+        a SIGKILL there leaves, since no cleanup of the run has touched it."""
+        seen = [0]
+        temp = str(self.temp)
+
+        def change(half=None):
+            seen[0] += 1
+            if seen[0] == k:
+                if half:
+                    half()
+                shutil.copytree(temp, copy_to, symlinks=True)
+                raise exception
+
+        class Watched:
+            def __init__(self, f):
+                self.f = f
+
+            def write(self, data):
+                change()
+                change(lambda: (self.f.write(data[:len(data) // 2]), self.f.flush()))
+                return self.f.write(data)
+
+            def __getattr__(self, name):
+                return getattr(self.f, name)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                self.f.close()
+
+        def watched_open(file, mode="r", *args, **kwargs):
+            f = open(file, mode, *args, **kwargs)
+            return Watched(f) if any(c in mode for c in "wxa+") else f
+
+        def watched(real):
+            def call(*args, **kwargs):
+                if any(str(a).startswith(temp) for a in args[:2]):
+                    change()
+                return real(*args, **kwargs)
+            return call
+
+        import manifest
+        with contextlib.ExitStack() as stack:
+            for module in (convert, manifest):
+                stack.enter_context(mock.patch.object(module, "open", watched_open, create=True))
+            for name, real in (("link", os.link), ("rename", os.rename), ("replace", os.replace),
+                               ("unlink", os.unlink)):
+                stack.enter_context(mock.patch.object(os, name, watched(real)))
+            yield seen
+
+    def stop_everywhere(self, prepare, check):
+        """For each change a run makes on disk and three ways to stop there, prepare
+        a new self.temp, run the split, stop it, and call check(the temp dir a
+        rerun has to complete, whether a kill left it). A SIGKILL leaves the copy
+        that stop_at() takes; after Ctrl-C or a full disk the run has cleaned up.
+        Returns the number of stops."""
+        import errno
+        k = stops = 0
+        while True:
+            k += 1
+            for exception in (self.Killed(), KeyboardInterrupt(), OSError(errno.ENOSPC, "No space left on device")):
+                with self.subTest(change=k, exception=type(exception).__name__):
+                    shutil.rmtree(self.temp)
+                    self.temp = self.book_dir("book_temp")
+                    prepare()
+                    killed = self.root / "killed"
+                    shutil.rmtree(killed, ignore_errors=True)
+                    try:
+                        with self.stop_at(k, killed, exception) as seen:
+                            self.run_split(self.temp)
+                    except type(exception):
+                        pass
+                    else:
+                        # The run made fewer than k changes: every point has been tried.
+                        self.assertGreater(k, 3)
+                        return stops
+                    stops += 1
+                    if isinstance(exception, self.Killed):
+                        check(killed, True)
+                    else:
+                        check(self.temp, False)
+
+    def test_a_rerun_completes_a_split_stopped_at_any_point(self):
+        def prepare():
+            (self.temp / "output_chunk0001.md").write_text("译文\n", encoding="utf-8")
+            (self.temp / "notes.txt").write_text("mine\n", encoding="utf-8")
+
+        def check(d, killed):
+            count, _ = self.run_split(d)
+            self.assert_complete(d, count, killed)
+            self.assertEqual((d / "output_chunk0001.md").read_text(encoding="utf-8"), "译文\n")
+            self.assertEqual((d / "notes.txt").read_text(encoding="utf-8"), "mine\n")
+
+        self.assertGreater(self.stop_everywhere(prepare, check), 3 * 4 * len(self.expected))
+
+    def test_a_rerun_that_writes_a_lost_chunk_and_new_hashes_can_be_stopped_too(self):
+        # Step 9 of SKILL.md reruns Step 2 after a source chunk was edited.
+        edited = dict(self.expected, **{"chunk0002.md": "edited by hand\n".encode()})
+
+        def prepare():
+            self.finished_split()
+            (self.temp / "chunk0002.md").write_bytes(edited["chunk0002.md"])
+            (self.temp / "chunk0005.md").unlink()
+
+        def check(d, killed):
+            count, _ = self.run_split(d)
+            self.assert_complete(d, count, killed, expected=edited)
+
+        self.stop_everywhere(prepare, check)
+
+    # The state table of handoff.md: what manifest.json there is, and the state of one chunk
+    # file, chunk0003.md (chunk0099.md for "outside"). The outcome is "written", "kept",
+    # or the words of the error the rerun stops with, changing nothing.
+    STATE_TABLE = [
+        ("none", "missing", "written"),
+        ("none", "empty", "written"),
+        ("none", "all NUL", "written"),
+        ("none", "matching", "kept"),
+        ("none", "differing", "chunk0003.md in {temp}/ is not the chunk of that name that this run splits off"),
+        ("none", "outside, empty", "chunk0099.md in {temp}/ is not a chunk of {temp}/input.md: this run splits it into {n} chunks, none named chunk0099.md, and there is no readable manifest.json"),
+        ("none", "outside, with text", "chunk0099.md in {temp}/ is not a chunk of {temp}/input.md: this run splits it into {n} chunks, none named chunk0099.md, and there is no readable manifest.json"),
+        ("listed", "missing", "written"),
+        ("listed", "empty", "written"),
+        ("listed", "all NUL", "written"),
+        ("listed", "matching", "kept"),
+        ("listed", "differing", "kept"),
+        ("listed", "outside, empty", "chunk0099.md in {temp}/ is not listed in manifest.json"),
+        ("listed", "outside, with text", "chunk0099.md in {temp}/ is not listed in manifest.json"),
+        ("records an edit", "missing", "chunk0003.md in {temp}/ is missing, and the chunk of that name that this run splits off {temp}/input.md does not have the hash manifest.json records for it"),
+        ("records an edit", "empty", "chunk0003.md in {temp}/ is empty, and the chunk"),
+        ("records an edit", "all NUL", "chunk0003.md in {temp}/ is all NUL bytes, and the chunk"),
+        ("records an edit", "differing", "kept"),
+    ]
+    EDIT = "edited by hand\n".encode()
+
+    def set_state(self, state):
+        chunk = self.temp / "chunk0003.md"
+        if state == "missing":
+            chunk.unlink()
+        elif state == "empty":
+            chunk.write_bytes(b"")
+        elif state == "all NUL":
+            chunk.write_bytes(b"\0" * len(self.expected["chunk0003.md"]))
+        elif state == "differing":
+            chunk.write_bytes(self.EDIT)
+        elif state.startswith("outside"):
+            (self.temp / "chunk0099.md").write_bytes(b"" if state == "outside, empty" else b"not of the split\n")
+
+    def test_each_state_of_a_chunk_with_and_without_a_manifest(self):
+        for manifest, state, outcome in self.STATE_TABLE:
+            with self.subTest(manifest=manifest, chunk=state):
+                shutil.rmtree(self.temp)
+                self.temp = self.book_dir("book_temp")
+                self.finished_split()
+                if manifest == "none":
+                    (self.temp / "manifest.json").unlink()
+                elif manifest == "records an edit":
+                    (self.temp / "chunk0003.md").write_bytes(self.EDIT)
+                    self.run_split(self.temp)
+                self.set_state(state)
+                if outcome not in ("written", "kept"):
+                    self.assert_refused(outcome.format(temp=self.temp, n=len(self.expected)))
+                    continue
+                kept = {p.name: p.stat().st_ino for p in self.temp.iterdir()
+                        if p.name not in ("chunk0003.md", "manifest.json")}
+
+                count, out = self.run_split(self.temp)
+
+                expected = dict(self.expected, **{"chunk0003.md": self.EDIT}) if state == "differing" else None
+                self.assert_complete(self.temp, count, expected=expected)
+                self.assertEqual({name: (self.temp / name).stat().st_ino for name in kept}, kept)
+                if outcome == "written":
+                    self.assertIn("wrote the 1 missing or with no content: chunk0003.md", out)
+                else:
+                    self.assertIn(f"Skipping markdown splitting - found {len(self.expected)} existing chunk files", out)
+
+    def test_a_finished_split_that_lost_every_chunk(self):
+        self.finished_split()
+        for p in self.temp.glob("chunk*.md"):
+            p.unlink()
+
+        count, out = self.run_split(self.temp)
+
+        self.assert_complete(self.temp, count)
+        self.assertIn(f"Found 0 existing chunk files; wrote the {len(self.expected)} missing", out)
+        # manifest.json records an edit of chunk0003.md: no chunk is written and the record stays.
+        (self.temp / "chunk0003.md").write_bytes(self.EDIT)
+        self.run_split(self.temp)
+        for p in self.temp.glob("chunk*.md"):
+            p.unlink()
+        self.assert_refused("chunk0003.md in")
+
+    def test_a_manifest_that_is_not_a_regular_file_stops_the_run_before_it_writes(self):
+        import signal
+
+        def fifo(path):
+            os.mkfifo(path)
+
+        def symlink(path):
+            path.symlink_to(self.root / "elsewhere.json")
+
+        def directory(path):
+            path.mkdir()
+
+        def hung(signum, frame):
+            raise AssertionError("the split waited on manifest.json")
+
+        for make in (fifo, symlink, directory):
+            for with_chunks in (True, False):
+                with self.subTest(make.__name__, chunks=with_chunks):
+                    shutil.rmtree(self.temp)
+                    self.temp = self.book_dir("book_temp")
+                    if with_chunks:
+                        self.finished_split()
+                        (self.temp / "manifest.json").unlink()
+                    make(self.temp / "manifest.json")
+                    # Opening a FIFO waits for the other end; the alarm makes that a failure, not a hang.
+                    previous = signal.signal(signal.SIGALRM, hung)
+                    signal.alarm(10)
+                    try:
+                        self.assert_refused("manifest.json is not a regular file")
+                    finally:
+                        signal.alarm(0)
+                        signal.signal(signal.SIGALRM, previous)
+
+    def test_a_manifest_that_lists_no_chunks_stops_the_run(self):
+        for with_chunks in (True, False):
+            with self.subTest(chunks=with_chunks):
+                shutil.rmtree(self.temp)
+                self.temp = self.book_dir("book_temp")
+                if with_chunks:
+                    self.finished_split()
+                (self.temp / "manifest.json").write_text('{"chunk_count": 0, "source_hash": "", "chunks": []}')
+                self.assert_refused("manifest.json lists no chunks")
+
+    def test_an_unreadable_or_deleted_manifest_is_written_again_for_chunks_of_the_split(self):
+        for damage in ("remove", "truncate"):
+            with self.subTest(damage):
+                shutil.rmtree(self.temp)
+                self.temp = self.book_dir("book_temp")
+                self.finished_split()
+                manifest = self.temp / "manifest.json"
+                if damage == "remove":
+                    manifest.unlink()
+                else:
+                    manifest.write_bytes(manifest.read_bytes()[:50])
+                kept = {k: v for k, v in self.snapshot(self.temp).items() if k != "manifest.json"}
+
+                count, _ = self.run_split(self.temp)
+
+                self.assert_complete(self.temp, count)
+                self.assertEqual({k: v for k, v in self.snapshot(self.temp).items() if k != "manifest.json"}, kept)
+
+    def test_a_chunk_is_never_written_over_a_file_that_is_there(self):
+        import errno
+        target = self.temp / "chunk0001.md"
+        for link_error in (None, errno.EPERM, errno.ENOTSUP, errno.EOPNOTSUPP, errno.ENOSYS):
+            with self.subTest(link_error=link_error and errno.errorcode[link_error]):
+                no_links = mock.patch.object(os, "link", side_effect=OSError(link_error, "no hard links"))
+                target.write_text("someone else's\n", encoding="utf-8")
+                with no_links if link_error else contextlib.nullcontext():
+                    with self.assertRaises(FileExistsError):
+                        convert._write_chunk(str(target), b"chunk\n")
+                self.assertEqual(target.read_text(encoding="utf-8"), "someone else's\n")
+                self.assertEqual(sorted(p.name for p in self.temp.iterdir()), ["chunk0001.md", "input.md"])
+                target.unlink()
+                with no_links if link_error else contextlib.nullcontext():
+                    convert._write_chunk(str(target), b"chunk\n")
+                self.assertEqual(target.read_bytes(), b"chunk\n")
+                self.assertEqual(sorted(p.name for p in self.temp.iterdir()), ["chunk0001.md", "input.md"])
+                target.unlink()
+        with mock.patch.object(os, "link", side_effect=OSError(errno.EIO, "I/O error")):
+            with self.assertRaises(OSError) as cm:
+                convert._write_chunk(str(target), b"chunk\n")
+        self.assertEqual(cm.exception.errno, errno.EIO)
+        self.assertEqual(sorted(p.name for p in self.temp.iterdir()), ["input.md"])
+
+    def test_save_manifest_keeps_the_error_that_stopped_it(self):
+        import manifest
+        real_replace = os.replace
+
+        def replace_then_stop(src, dst):
+            real_replace(src, dst)
+            raise KeyboardInterrupt
+
+        with mock.patch.object(os, "replace", replace_then_stop):
+            with self.assertRaises(KeyboardInterrupt):
+                manifest.save_manifest(str(self.temp), {"chunk_count": 0, "source_hash": "", "chunks": []})
+        self.assertEqual(sorted(p.name for p in self.temp.iterdir()), ["input.md", "manifest.json"])
+
 if __name__ == "__main__":
     unittest.main()

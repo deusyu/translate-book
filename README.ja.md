@@ -244,7 +244,7 @@ pull request は推奨される貢献方法ではなく、issue に切り替え�
 python3 scripts/convert.py /path/to/book.pdf --olang zh
 ```
 
-Calibre が入力を HTMLZ に変換し、それを展開して Markdown に変換したうえで、チャンク（1 つあたり約 6000 文字）に分割します。`manifest.json` には各ソースチャンクの SHA-256 ハッシュが記録され、後の検証に使われます。`source_fingerprint.json` は一時ディレクトリを、それを生成した元ファイルのバイト列、パーサーの設定、翻訳先の言語に結び付けます。元ファイル、パーサーの設定、言語のいずれかを変えて再実行すると、古いチャンクを黙って再利用するのではなく中断します。`source_fingerprint.json` が読めない場合も中断します。フィンガープリント導入以前に作られた一時ディレクトリは、その `config.txt` が同じ名前のファイルと同じ翻訳先の言語を記録していて、今回の実行がパーサーを使わない場合に限り、最初の再実行時に警告付きで引き継がれます。
+Calibre が入力を HTMLZ に変換し、それを展開して Markdown に変換したうえで、チャンク（1 つあたり約 6000 文字）に分割します。`manifest.json` には各ソースチャンクの SHA-256 ハッシュが記録され、後の検証に使われます。`source_fingerprint.json` は一時ディレクトリを、それを生成した元ファイルのバイト列、パーサーの設定、翻訳先の言語に結び付けます。元ファイル、パーサーの設定、言語のいずれかを変えて再実行すると、古いチャンクを黙って再利用するのではなく中断します。`source_fingerprint.json` が読めない場合も中断します。フィンガープリント導入以前に作られた一時ディレクトリは、その `config.txt` が同じ名前のファイルと同じ翻訳先の言語を記録していて、今回の実行がパーサーを使わない場合に限り、最初の再実行時に警告付きで引き継がれます。チャンクファイルの名前の下には完全なチャンクしか現れず、`manifest.json` は最後のチャンクの後に書かれます。そのため `manifest.json` があれば、その分割は完了しています。実行のたびにチャンクをこれと照合し、ない場合（変換が途中で止まった場合：中断、kill、ディスクの空き不足）は `input.md` をメモリ上で分割し直した結果と照合します。欠けている、空である、または NUL バイトだけのチャンクには誰の作業も含まれないので、分割し直した結果が `manifest.json` の記録どおりのチャンクであれば（`manifest.json` がなければ常に）書き直し、そうでなければ止まります。`manifest.json` がない場合、分割し直した結果と異なるチャンクがあれば止まります。ある場合、チャンクは手での編集も含めてそのまま使われます。`manifest.json` に載っていない `chunk*.md`、または `manifest.json` がないときに分割し直しても得られない `chunk*.md` があっても止まります。それは本の一部にならないからです。止まるときは理由を示し、何も変更しません。kill された実行は `.chunkNNNN.md.<ランダム文字列>.part` というファイルを残すことがありますが、どの処理も読まないので削除してかまいません。停電やシステムクラッシュの後は、新しい一時ディレクトリで変換し直してください。内容の一部だけを失ったチャンクや `input.md` は検出できません。
 
 HTML → Markdown の段階では、Calibre のマークアップも構造的に整理します。EPUB の脚注（本文中の `<a href="#n1"><sup>1</sup></a>` のようなマーカーリンクと、そこへ戻るリンクで始まる注釈段落の組み合わせ）は Pandoc の脚注（本文に `[^1]`、段落の直後に `[^1]: …`）に変換されます。番号は書籍全体で通しになるため、章ごとの番号がマージ後に衝突することはありません。書籍内リンクはテキストだけが残り、`{lang="…"}` のような span 属性、空のページアンカー、見出しの id は削除されます。ダッシュや引用符は `---` やエスケープされた ASCII 引用符にならず、Unicode のまま残ります。戻りリンクのない注釈（EPUB 3 の `<aside>` 脚注など）は通常の段落のままです。
 
@@ -387,7 +387,12 @@ python3 scripts/merge_and_build.py --temp-dir book_temp --title "translated titl
 | `display formula(s) but no inline math` | パーサーがインライン数式をプレーンテキストにしています（docling の標準パイプラインはそうなります）— MinerU か Marker で抽出し直し、一時ディレクトリを削除してから `convert.py` を再実行してください。文書にもともとインライン数式がなければ無視してかまいません |
 | `pandoc left N formula(s) as raw TeX` | pandoc がその LaTeX を解析できず、数式が `$$...$$` のまま表示されます — 警告に表示された断片を含む `output_chunk*.md` を修正し、`merge_and_build.py` を再実行してください |
 | `Blank output` / `Empty output` | サブエージェントが空白のみ、または空のチャンクを書き出しました — スキルを再実行して再翻訳してください |
-| `Missing source chunk` | ソースファイルが削除されています — `convert.py` を再実行して再生成してください |
+| `Missing source chunk` | ソースファイルが削除されています — `convert.py` を再実行してください。分割後に編集されていないチャンクなら書き直されます |
+| `chunkNNNN.md ... is not the chunk of that name that this run splits off ...` | `manifest.json` がなく、そのチャンクが `input.md` を分割し直した結果と異なります（編集された、途中で切れている、別のチャンクサイズで分割された）。自分のファイルでなければ一時ディレクトリの外へ移して `convert.py` を再実行し、そうでなければ別の `--temp-root` で変換してください |
+| `chunkNNNN.md ... is not a chunk of ... input.md: this run splits it into N chunks` | `manifest.json` がなく、`input.md` を分割し直した結果にその名前のチャンクがありません。ファイルを一時ディレクトリの外へ移して `convert.py` を再実行してください。この本の以前の分割で作られたものなら、別の `--temp-root` で変換してください |
+| `chunkNNNN.md ... is not listed in manifest.json` | 完了した分割はそのチャンクを書いておらず、`merge_and_build.py` は `manifest.json` に載っているチャンクだけをマージするので、本には含まれません。一時ディレクトリの外へ移して `convert.py` を再実行してください |
+| `chunkNNNN.md ... cannot be written again` | `manifest.json` に載っているチャンクが欠けている、空である、または NUL バイトだけで、分割後に編集されていたため、分割し直しても元に戻せません。ファイルを戻すか、別の `--temp-root` で変換してください |
+| `manifest.json is not a regular file` / `manifest.json lists no chunks` | このような `manifest.json` を書く分割はありません。一時ディレクトリの外へ移して `convert.py` を再実行してください |
 | 翻訳が途中で終わっている | スキルを再実行してください — 止まったところから再開します |
 | ビルド後に数か所だけ直したい | `output.md` ではなく該当する `output_chunkNNNN.md` を直し、`merge_and_build.py` を再実行してください（[ステップ 3](#ステップ-3マージとビルド) を参照） |
 | タイトル、テンプレート、アセットを変えたのに出力が更新されない | `python3 scripts/merge_and_build.py --temp-dir book_temp --delete-outputs` を実行してから、`merge_and_build.py` を再実行してください |

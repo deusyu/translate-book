@@ -244,7 +244,7 @@ Bug 和功能需求请按上一节的要求提 [GitHub issue](https://github.com
 python3 scripts/convert.py /path/to/book.pdf --olang zh
 ```
 
-Calibre 将输入文件转为 HTMLZ，解压后转为 Markdown，再拆分为 chunk（每个约 6000 字符）。`manifest.json` 记录每个源 chunk 的 SHA-256 hash，用于后续校验；`source_fingerprint.json` 则把 temp 目录与生成它的源文件字节、解析器设置和目标语言绑定 — 换了源文件、解析器设置或目标语言后重跑，会直接报错中止，而不是静默复用过时的 chunk。`source_fingerprint.json` 读不出来时同样中止。指纹机制之前创建的 temp 目录，只有在其 `config.txt` 记录的文件名和目标语言都与本次相同、且本次不用解析器时，才会在首次重跑时打印警告并被接管。
+Calibre 将输入文件转为 HTMLZ，解压后转为 Markdown，再拆分为 chunk（每个约 6000 字符）。`manifest.json` 记录每个源 chunk 的 SHA-256 hash，用于后续校验；`source_fingerprint.json` 则把 temp 目录与生成它的源文件字节、解析器设置和目标语言绑定 — 换了源文件、解析器设置或目标语言后重跑，会直接报错中止，而不是静默复用过时的 chunk。`source_fingerprint.json` 读不出来时同样中止。指纹机制之前创建的 temp 目录，只有在其 `config.txt` 记录的文件名和目标语言都与本次相同、且本次不用解析器时，才会在首次重跑时打印警告并被接管。chunk 文件名下只会出现完整的 chunk，`manifest.json` 在最后一个 chunk 之后才写，所以只要有 `manifest.json`，就说明那次拆分已经完成。每次运行都拿 chunk 和它比对；没有它时（转换中途停下：被打断、被 kill、磁盘满），就和在内存里重新拆分 `input.md` 的结果比对。丢失、为空或全是 NUL 字节的 chunk 里没有任何人的工作，只要重新拆分得到的正是 `manifest.json` 记录的那个 chunk（没有 `manifest.json` 时一律如此），就重新写出，否则报错停下。没有 `manifest.json` 时，和重新拆分结果不同的 chunk 会让运行停下；有它时，chunk 按原样保留（包括手工修改）。`manifest.json` 没列出的 `chunk*.md`，或没有它时重新拆分得不到的 `chunk*.md`，也会让运行停下：它不会成为书的一部分。停下时会说明原因，什么都不改。被 kill 的运行可能留下 `.chunkNNNN.md.<随机串>.part` 文件，没有任何步骤读它，可以删掉。断电或系统崩溃后，请换一个新的 temp 目录重新转换：只丢了部分内容的 chunk 或 `input.md` 检测不出来。
 
 HTML → Markdown 这一步还会按结构清理 Calibre 的标记。EPUB 脚注（正文里的标记链接如 `<a href="#n1"><sup>1</sup></a>`，配上开头带回链指向它的注释段落）会转成 Pandoc 脚注（正文 `[^1]`，定义 `[^1]: …` 紧跟在该段之后），编号全书连续，合并后不会因每章从 1 重新编号而撞号。书内链接只保留文字，`{lang="…"}` 之类的 span 属性、空的页码锚点和标题 id 会被去掉，弯引号和破折号保持 Unicode 原样，而不是变成 `---` 或转义的 ASCII 引号。没有回链的注释（例如 EPUB 3 的 `<aside>` 脚注）仍保持普通段落。
 
@@ -387,7 +387,12 @@ Skill 不在命令行上传这些值，因为书名和文件名都属于书中�
 | `display formula(s) but no inline math` | 解析器把行内公式压成了普通文字（docling 的标准流程就会这样）— 改用 MinerU 或 Marker 重新提取，删除 temp 目录，再运行 `convert.py`。如果文档本来就没有行内公式，忽略即可 |
 | `pandoc left N formula(s) as raw TeX` | pandoc 解析不了这段 LaTeX，公式会以 `$$...$$` 原文显示 — 用警告打印的片段找到对应的 `output_chunk*.md` 改正，再运行 `merge_and_build.py` |
 | `Blank output` / `Empty output` | 某个 subagent 写出了空白或空的 chunk — 重新运行 skill 让它重译 |
-| `Missing source chunk` | 源文件被删除 — 重新运行 `convert.py` 重新生成 |
+| `Missing source chunk` | 源文件被删除 — 重新运行 `convert.py`：只要这个 chunk 拆分后没被修改过，就会重新写出 |
+| `chunkNNNN.md ... is not the chunk of that name that this run splits off ...` | 没有 `manifest.json`，而这个 chunk 和 `input.md` 重新拆分的结果不同（被修改过、被截断，或用别的 chunk 大小拆的）。文件不是你的，就把它移出 temp 目录再运行 `convert.py`；否则换一个 `--temp-root` 转换 |
+| `chunkNNNN.md ... is not a chunk of ... input.md: this run splits it into N chunks` | 没有 `manifest.json`，而 `input.md` 重新拆分的结果里没有这个名字的 chunk。把文件移出 temp 目录再运行 `convert.py`；如果它来自这本书更早的一次拆分，换一个 `--temp-root` 转换 |
+| `chunkNNNN.md ... is not listed in manifest.json` | 已完成的拆分没有写过这个 chunk，而 `merge_and_build.py` 只合并 `manifest.json` 列出的 chunk，它不会进入书里。把它移出 temp 目录再运行 `convert.py` |
+| `chunkNNNN.md ... cannot be written again` | `manifest.json` 列出的某个 chunk 丢失、为空或全是 NUL 字节，而它在拆分后被修改过，重新拆分给不回来。把它放回去，或换一个 `--temp-root` 转换 |
+| `manifest.json is not a regular file` / `manifest.json lists no chunks` | 没有哪次拆分会写出这样的 `manifest.json`。把它移出 temp 目录再运行 `convert.py` |
 | 翻译不完整 | 重新运行 Skill，会从中断处继续 |
 | 构建后发现少量译文需要修改 | 改对应的 `output_chunkNNNN.md` 而不是 `output.md`，再重跑 `merge_and_build.py`（见[第三步](#第三步合并与构建)） |
 | 修改标题、模板或图片后输出未更新 | 先运行 `python3 scripts/merge_and_build.py --temp-dir book_temp --delete-outputs`，再重跑 `merge_and_build.py` |

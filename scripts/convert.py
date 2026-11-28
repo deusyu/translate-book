@@ -19,6 +19,7 @@ import argparse
 import base64
 import binascii
 import bisect
+import errno
 import glob
 import hashlib
 import json
@@ -2145,36 +2146,55 @@ def _force_split_block(text, target_size):
     return chunks
 
 
-def split_markdown_structured(md_file, temp_dir, target_size=6000):
-    """Split markdown into structural chunks.
+def split_markdown_structured(md_file, target_size=6000):
+    """Split markdown into structural chunks, in memory.
 
-    Returns list of chunk filenames (e.g. ['chunk0001.md', ...]).
+    Returns {chunk file name: UTF-8 bytes} in chunk order (e.g. {'chunk0001.md': b'...', ...}).
+    The same input and target_size always give the same chunks.
     """
+    with open(md_file, 'r', encoding='utf-8') as f:
+        content = f.read()
+    blocks = parse_structural_blocks(content)
+    chunk_texts = merge_blocks_to_chunks(blocks, target_size)
+    return {chunk_file_name(nth_chunk_id(i)): chunk_text.encode('utf-8')
+            for i, chunk_text in enumerate(chunk_texts, 1)}
+
+
+def _write_chunk(path, data, replace=False):
+    """Write data to path so that path never holds only part of it.
+
+    data goes to a new file first, which is then linked to path, so a file
+    that appeared at path meanwhile is not replaced; with replace, it is
+    renamed over the file at path. A run killed in between can leave that
+    file, named .<chunk file name>.<random>.part: it is not a chunk file,
+    and nothing reads it.
+    """
+    part = os.path.join(os.path.dirname(path), f".{os.path.basename(path)}.{os.urandom(8).hex()}.part")
+    written = Own(os.open(part, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, 'O_NOFOLLOW', 0), 0o666))
     try:
-        with open(md_file, 'r', encoding='utf-8') as f:
-            content = f.read()
-
-        blocks = parse_structural_blocks(content)
-        chunk_texts = merge_blocks_to_chunks(blocks, target_size)
-
-        chunk_files = []
-        for i, chunk_text in enumerate(chunk_texts, 1):
-            filename = chunk_file_name(nth_chunk_id(i))
-            chunk_file = os.path.join(temp_dir, filename)
-            with open(chunk_file, 'w', encoding='utf-8') as f:
-                f.write(chunk_text)
-            chunk_files.append(filename)
-
-        print(f"Split into {len(chunk_files)} chunks")
-        for filename in chunk_files:
-            filepath = os.path.join(temp_dir, filename)
-            size = os.path.getsize(filepath)
-            print(f"  {filename}: {size} characters")
-
-        return chunk_files
-    except Exception as e:
-        print(f"Error splitting markdown: {e}")
-        return []
+        with open(written.fileno(), 'wb', closefd=False) as f:
+            f.write(data)
+        if replace:
+            os.replace(part, path)
+            return
+        try:
+            os.link(part, path)
+        except FileExistsError:
+            raise FileExistsError(f"{path} appeared while this run wrote it") from None
+        except OSError as e:
+            if e.errno not in (errno.EPERM, errno.ENOTSUP, errno.EOPNOTSUPP, errno.ENOSYS):
+                raise
+            # The file system has no hard links (exFAT, some network shares and FUSE mounts).
+            if os.path.lexists(path):
+                raise FileExistsError(f"{path} appeared while this run wrote it") from None
+            os.rename(part, path)
+            return
+        os.unlink(part)
+    except BaseException:
+        _remove_own_file(part, written, same_bytes=False)
+        raise
+    finally:
+        written.close()
 
 
 def _find_existing_chunk_files(temp_dir):
@@ -2226,16 +2246,121 @@ conversion_method={conversion_method}
         return False
 
 
-def _do_split_and_manifest(temp_dir, input_md, chunk_size):
-    """Split markdown and create manifest. Returns chunk count or 0 on failure."""
-    existing = _find_existing_chunk_files(temp_dir)
-    if existing:
-        print(f"Skipping markdown splitting - found {len(existing)} existing chunk files")
-        # Create/update manifest for existing files
-        create_manifest(temp_dir, existing, input_md)
-        return len(existing)
+def _chunk_state(path, exists):
+    """'missing', 'empty' or 'all NUL bytes' for a chunk file with no content, else None."""
+    if not exists:
+        return 'missing'
+    with open(path, 'rb') as f:
+        data = f.read()
+    if not data:
+        return 'empty'
+    return None if data.strip(b'\0') else 'all NUL bytes'
 
-    chunk_files = split_markdown_structured(input_md, temp_dir, chunk_size)
+
+def _do_split_and_manifest(temp_dir, input_md, chunk_size):
+    """Write the chunks of input_md that temp_dir lacks, then manifest.json. Returns chunk count or 0 on failure.
+
+    A chunk file name only ever holds a whole chunk, and manifest.json is
+    written last, so a manifest.json that exists lists a split that finished,
+    and a split that stopped part way left none. The chunks are checked
+    against a reference: the chunks manifest.json lists, with their hashes,
+    or without a readable manifest.json, the chunks of input_md split again.
+
+    - A chunk missing, empty or all NUL bytes holds no one's work, so it is
+      written from the new split, but only when that gives the hash the
+      reference holds for it.
+    - A chunk that matches the reference is kept.
+    - A chunk that differs is kept and its hash written again when
+      manifest.json lists it (SKILL.md Step 9: a source chunk edited by hand);
+      without manifest.json nothing tells whether a split wrote it.
+    - A chunk*.md the reference does not name is not part of the book.
+
+    Anything that cannot be kept or written raises ValueError before the first
+    write, so nothing is changed.
+    """
+    from manifest import load_manifest
+
+    manifest_path = os.path.join(temp_dir, "manifest.json")
+    if os.path.lexists(manifest_path) and not stat.S_ISREG(os.lstat(manifest_path).st_mode):
+        raise ValueError(f"{manifest_path} is not a regular file, so this run does not read it. "
+                         f"Nothing was changed. Move it out of {temp_dir}/ and run again.")
+    existing = _find_existing_chunk_files(temp_dir)
+    try:
+        manifest = load_manifest(temp_dir)
+    except (OSError, ValueError) as e:
+        print(f"Warning: {temp_dir}/manifest.json cannot be read ({e}); "
+              f"checking the chunks against a new split of {input_md}")
+        manifest = None
+    if manifest is not None and not manifest["chunks"]:
+        raise ValueError(f"{manifest_path} lists no chunks, and no split writes such a manifest. "
+                         f"Nothing was changed. Move it out of {temp_dir}/ and run again.")
+    split = None if manifest is not None else split_markdown_structured(input_md, chunk_size)
+    if manifest is None:
+        reference = {name: hashlib.sha256(data).hexdigest() for name, data in split.items()}
+    else:
+        reference = {entry["source_file"]: entry["source_hash"]
+                     for entry in sorted(manifest["chunks"], key=lambda entry: entry["order"])}
+
+    for name in existing:
+        if name in reference:
+            continue
+        if manifest is not None:
+            raise ValueError(
+                f"{name} in {temp_dir}/ is not listed in manifest.json, so it is not a chunk of the "
+                f"split that finished there, and merge_and_build.py, which merges only the chunks "
+                f"manifest.json lists, would leave it out of the book. Nothing was changed. Move {name} "
+                f"out of {temp_dir}/ and run again."
+            )
+        raise ValueError(
+            f"{name} in {temp_dir}/ is not a chunk of {input_md}: this run splits it into "
+            f"{len(split)} chunks, none named {name}, and there is no readable manifest.json. "
+            f"Nothing was changed. Move {name} out of {temp_dir}/ and run again; if it is from an "
+            f"earlier split of this book, set temp_root to another directory to convert it there."
+        )
+
+    to_write = []
+    for name, recorded_hash in reference.items():
+        path = os.path.join(temp_dir, name)
+        state = _chunk_state(path, name in existing)
+        if state is None:
+            if manifest is None:
+                with open(path, 'rb') as f:
+                    if f.read() != split[name]:
+                        raise ValueError(
+                            f"{name} in {temp_dir}/ is not the chunk of that name that this run splits "
+                            f"off {input_md}, and there is no readable manifest.json, so this run cannot "
+                            f"tell whether a split wrote it. Nothing was changed. If {name} is not yours, "
+                            f"move it out of {temp_dir}/ and run again; otherwise set temp_root to "
+                            f"another directory to convert this book there."
+                        )
+            continue
+        if split is None:
+            split = split_markdown_structured(input_md, chunk_size)
+        data = split.get(name)
+        if data is None or hashlib.sha256(data).hexdigest() != recorded_hash:
+            given = (f"this run splits {input_md} into {len(split)} chunks, none named {name}"
+                     if data is None else
+                     f"the chunk of that name that this run splits off {input_md} does not have the "
+                     f"hash manifest.json records for it")
+            raise ValueError(
+                f"{name} in {temp_dir}/ is {state}, and {given}, so it cannot be written again. "
+                f"Nothing was changed. Put {name} back, or set temp_root to another directory to "
+                f"convert this book there."
+            )
+        to_write.append((name, data, name in existing))
+
+    for name, data, replace in to_write:
+        _write_chunk(os.path.join(temp_dir, name), data, replace)
+    chunk_files = _find_existing_chunk_files(temp_dir)
+    if not existing and manifest is None:
+        print(f"Split into {len(chunk_files)} chunks")
+        for filename in chunk_files:
+            print(f"  {filename}: {os.path.getsize(os.path.join(temp_dir, filename))} characters")
+    elif to_write:
+        print(f"Found {len(existing)} existing chunk files; wrote the {len(to_write)} missing or "
+              f"with no content: {', '.join(name for name, _, _ in to_write)}")
+    else:
+        print(f"Skipping markdown splitting - found {len(existing)} existing chunk files")
     if not chunk_files:
         return 0
     create_manifest(temp_dir, chunk_files, input_md)

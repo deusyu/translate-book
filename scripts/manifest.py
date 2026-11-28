@@ -146,10 +146,23 @@ def create_manifest(temp_dir, chunk_files, source_md_path):
 
 
 def save_manifest(temp_dir, manifest):
-    """Write manifest.json into temp_dir."""
+    """Write manifest.json into temp_dir, whole or not at all.
+
+    convert.py writes it last, after every chunk, so a manifest.json that
+    exists lists a split that finished."""
     manifest_path = os.path.join(temp_dir, "manifest.json")
-    with open(manifest_path, 'w', encoding='utf-8') as f:
-        json.dump(manifest, f, indent=2, ensure_ascii=False)
+    part = os.path.join(temp_dir, f".manifest.json.{os.urandom(8).hex()}.part")
+    fd = os.open(part, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, 'O_NOFOLLOW', 0), 0o666)
+    try:
+        with open(fd, 'w', encoding='utf-8') as f:
+            json.dump(manifest, f, indent=2, ensure_ascii=False)
+        os.replace(part, manifest_path)
+    except BaseException:
+        try:
+            os.unlink(part)
+        except OSError:
+            pass
+        raise
 
 
 def load_manifest(temp_dir):
