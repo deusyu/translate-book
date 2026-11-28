@@ -9,32 +9,89 @@ on:
 permissions:
   contents: read
 
+# A new push to a pull request cancels that pull request's older run. Every other run gets a group of
+# its own: in a shared group a pending run is cancelled by the next one even without cancel-in-progress,
+# and no push to main should go untested.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: true
+
 jobs:
   test:
-    name: Python Checks
-    # Pinned, not ubuntu-latest: apt on this image installs Pandoc 3.1.3 and zsh 5.9,
-    # and a newer image would change the Pandoc the tests run against.
-    runs-on: ubuntu-24.04
+    name: ${{ matrix.name }}
+    # Runner labels are pinned, not *-latest: a new image changes the system tools the tests run
+    # against (Pandoc from apt on Linux; bash, zsh and the OS itself on macOS).
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The oldest supported Python, standard library only.
+          - name: Linux, Python 3.12
+            os: ubuntu-24.04
+            python: "3.12"
+            python-markdown: false
+          # Python 3.15 reaches the guard's checks that 3.12 does not (the built-in _interpreters module
+          # since 3.13, concurrent.interpreters since 3.14) and multiprocessing's forkserver default.
+          # python-markdown is installed here so that its fallback renderer is tested.
+          - name: Linux, Python 3.15, python-markdown
+            os: ubuntu-24.04
+            python: "3.15"
+            python-markdown: true
+          # macOS: CoreFoundation's environment variable, spawn, the system's bash 3.2 and zsh.
+          # Standard library only.
+          - name: macOS, Python 3.15
+            os: macos-26
+            python: "3.15"
+            python-markdown: false
     env:
       PYTHONPYCACHEPREFIX: .pycache
       # Tests that need one of these fail, instead of skipping, when it is missing.
-      TRANSLATE_BOOK_REQUIRED_TOOLS: pandoc zsh
+      TRANSLATE_BOOK_REQUIRED_TOOLS: ${{ matrix.python-markdown && 'pandoc zsh python-markdown' || 'pandoc zsh' }}
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python }}
 
+      # apt on ubuntu-24.04 installs Pandoc 3.1.3 and zsh 5.9.
       - name: Install Pandoc and zsh
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends pandoc zsh
+
+      # The same upstream Pandoc version as Ubuntu's package on Linux (a different build of it), so the
+      # jobs do not differ by Pandoc release. Homebrew would install whatever version it has that day,
+      # and is slower. zsh comes with macOS.
+      - name: Install Pandoc
+        if: runner.os == 'macOS'
+        env:
+          PANDOC_VERSION: 3.1.3
+          PANDOC_SHA256: dd33afe7445cf5fb95add881bd11b9dea8e586d6fb30fc3274617b313207f87e
+        run: |
+          zip="$RUNNER_TEMP/pandoc.zip"
+          curl --fail --silent --show-error --location --retry 3 --output "$zip" \
+            "https://github.com/jgm/pandoc/releases/download/$PANDOC_VERSION/pandoc-$PANDOC_VERSION-arm64-macOS.zip"
+          echo "$PANDOC_SHA256  $zip" | shasum -a 256 -c -
+          unzip -q "$zip" -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/pandoc-$PANDOC_VERSION-arm64/bin" >> "$GITHUB_PATH"
+
+      - name: Show Pandoc and zsh
+        run: |
           pandoc --version
           zsh --version
+
+      - name: Install python-markdown
+        if: matrix.python-markdown
+        run: |
+          python -m pip install --disable-pip-version-check markdown==3.11.4
+          python -c 'import markdown; print("python-markdown", markdown.__version__)'
 
       - name: Verify Python sources compile
         run: python -m compileall scripts tests
