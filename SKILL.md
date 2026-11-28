@@ -199,6 +199,14 @@ earlier version wrote, without the target language, is used only when its
 `config.txt` names the same target language and the request names no parser.
 Otherwise `convert.py` stops the same way.
 
+If `convert.py` stops on a chunk file or on `manifest.json` (a chunk that
+`manifest.json` does not list or that is not a chunk of `input.md`, a missing,
+empty or all-NUL chunk that cannot be written again, a `manifest.json` that
+is not a regular file or lists no chunks), it names the file and changes
+nothing. Tell the user what it printed: a file that is not theirs can be
+moved out of the temp dir, after which Step 2 runs again; otherwise set
+`temp_root` in the request to another directory.
+
 ### 3. Discover Source Chunks
 
 List the source chunks `chunk0001.md`, `chunk0002.md`, ... in `<temp_dir>`
