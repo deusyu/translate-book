@@ -28,8 +28,8 @@ same thread, and refuses otherwise. Making a built-in module raises no audit
 event either, and some Python builds have _interpreters built in, so this
 module replaces _imp.create_builtin as well with a function that refuses the
 modules above. Importing this module fails if one of them is loaded already;
-Python 3.14's concurrent.futures imports _interpreters when it can, so this
-module imports concurrent.futures first, while it cannot.
+From Python 3.14 on, concurrent.futures imports _interpreters when it can, so
+this module imports concurrent.futures first, while it cannot.
 
 A refused attempt raises ProcessGuardError, a BaseException, so `except
 Exception` in the code under test does not swallow it and the test errors. It
@@ -56,7 +56,7 @@ working directory of every process it lets through.
 
 Tests that run pandoc or zsh use needs() or installed(): without the program
 they skip, unless TRANSLATE_BOOK_REQUIRED_TOOLS names it, as CI does; then
-they fail.
+they fail. The python-markdown test reads the same list for the package.
 
 translate-book runs on macOS and Linux only: on native Windows importing
 this module says so, points to WSL and exits, as the scripts do.
@@ -337,7 +337,8 @@ def installed(program):
     """Whether program is on the PATH the test process started with.
 
     When TRANSLATE_BOOK_REQUIRED_TOOLS (a space-separated list; CI sets
-    "pandoc zsh") names a program that is not, raises AssertionError instead,
+    "pandoc zsh", and python-markdown in the job that installs it) names a
+    program that is not, raises AssertionError instead,
     so the test that asked fails rather than skips.
     """
     if shutil.which(program, path=PATH):

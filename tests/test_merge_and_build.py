@@ -900,8 +900,13 @@ class FootnoteValidationTests(unittest.TestCase):
             self.assertFalse((temp_dir / "output.md").exists())
             self.assertIn("Footnote validation failed", buf.getvalue())
 
-    @unittest.skipUnless(merge_and_build.MARKDOWN_AVAILABLE, "python-markdown is not installed")
     def test_python_markdown_fallback_renders_footnotes(self):
+        if not merge_and_build.MARKDOWN_AVAILABLE:
+            # Like installed() for programs: the CI job that installs python-markdown names it, so that
+            # a failed install fails here instead of quietly leaving the fallback untested.
+            if "python-markdown" in process_guard.REQUIRED_TOOLS:
+                self.fail("python-markdown is not installed, and TRANSLATE_BOOK_REQUIRED_TOOLS requires it")
+            self.skipTest("python-markdown is not installed")
         with tempfile.TemporaryDirectory() as tmp:
             md = Path(tmp) / "output.md"
             html = Path(tmp) / "output.html"
