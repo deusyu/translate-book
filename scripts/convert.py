@@ -27,6 +27,7 @@ import stat
 import unicodedata
 import urllib.parse
 from collections import namedtuple
+from html.parser import HTMLParser
 
 from manifest import chunk_file_name, create_manifest, file_hash, list_chunk_files, nth_chunk_id
 
@@ -1123,6 +1124,10 @@ def _note_body(block, refs):
     if block.get("t") not in ("Para", "Plain"):
         return None
     inlines = block["c"]
+    while len(inlines) == 1 and inlines[0].get("t") == "Span":
+        # Pandoc keeps the id of an element around all of a paragraph's
+        # text, such as <li id="n1"> with inline content, on a span.
+        inlines = inlines[0]["c"][1]
     i = 0
     while i < len(inlines) and _is_filler(inlines[i]):
         i += 1
@@ -1142,47 +1147,147 @@ def _note_body(block, refs):
     return (ref, body) if body else None
 
 
-def _collect_notes(blocks, refs, found):
-    """Append (ref, container, block, note blocks) for note paragraphs in body/div block lists."""
+def _solid_blocks(blocks):
+    """The blocks that are not empty or anchor-only paragraphs."""
+    return [b for b in blocks if not (
+        b.get("t") in ("Para", "Plain") and all(_is_filler(x) for x in b["c"])
+    )]
+
+
+def _item_blocks(blocks):
+    """The solid blocks of a list item, with the divs that open it opened up.
+
+    Pandoc reads <li id="n1"><p>...</p></li> as an item holding a div with
+    that id around the paragraphs (it drops an id on a <p>), and keeps a
+    <div> written in the <li>.
+    """
+    solid = _solid_blocks(blocks)
+    while solid and solid[0].get("t") == "Div":
+        solid = _solid_blocks(solid[0]["c"][1]) + solid[1:]
+    return solid
+
+
+def _walk(node):
+    """Every element of a pandoc JSON AST inside node, at any depth, node included."""
+    if isinstance(node, dict):
+        yield node
+        node = node.get("c")
+    if isinstance(node, list):
+        for x in node:
+            yield from _walk(x)
+
+
+def _item_groups(block):
+    """The lists of items in block: a list's items, and each definition list term's definitions."""
+    t = block.get("t")
+    if t == "BulletList":
+        return [block["c"]]
+    if t == "OrderedList":
+        return [block["c"][1]]
+    if t == "DefinitionList":
+        return [definitions for _term, definitions in block["c"]]
+    return []
+
+
+def _block_lists(block):
+    """Every block list directly inside block, in order.
+
+    These are its items and definitions, the body of a div or block quote, a
+    figure's caption and body, and a table's caption and cells.
+    """
+    t, c = block.get("t"), block.get("c")
+    if t == "BlockQuote":
+        return [c]
+    if t == "Div":
+        return [c[1]]
+    if t == "Figure":
+        return [c[1][1], c[2]]
+    if t == "Table":
+        _attr, caption, _widths, head, bodies, foot = c
+        rows = head[1] + [row for body in bodies for row in body[2] + body[3]] + foot[1]
+        return [caption[1]] + [cell[4] for row in rows for cell in row[1]]
+    return [item for group in _item_groups(block) for item in group]
+
+
+def _notes_in(node, refs):
+    """The references of the notes anywhere in node, in tables and figures too."""
+    return [hit[0] for x in _walk(node) if (hit := _note_body(x, refs))]
+
+
+# A table row or figure caption that links back to the text is as likely a
+# cross-reference as a note, so notes there are not paired; _notes_in still
+# sees them, so they keep any note around them from taking them in.
+_UNPAIRED = ("Table", "Figure")
+
+
+def _carried_ids(block, refs, owner):
+    """The ids a note carries: its nearest ancestor's with one, and those on it up to its back-link, that included."""
+    ids = {owner}
+    for x in _walk(block):
+        if x.get("t") in ("Div", "Span", "Link"):
+            ids.add(x["c"][0][0])
+        if x.get("t") == "Link" and x["c"][2][0][:1] == "#" and x["c"][2][0][1:] in refs:
+            break
+    return ids
+
+
+def _collect_notes(blocks, refs, found, owner=""):
+    """Append (ref, container, block, note blocks, carried ids) for the notes in blocks.
+
+    A note is a paragraph that opens with a back-link to a known reference
+    (_note_body); nothing else counts as one. A list item or definition
+    (EPUB endnotes are often an <ol> of <li> notes), or a div the reference
+    points at, that opens with note K and holds no note but K at any depth
+    is that note as a whole, later blocks included; otherwise each note
+    inside it is a note on its own. Notes in tables and figures are left.
+    owner is the id of the nearest div around blocks that has one.
+    """
     for block in blocks:
-        if block.get("t") == "Div":
-            attr, inner = block["c"]
-            solid = [b for b in inner if not (
-                b.get("t") in ("Para", "Plain") and all(_is_filler(x) for x in b["c"])
-            )]
-            hit = _note_body(solid[0], refs) if solid else None
-            # A div is the whole note only when the reference points at the div itself.
-            if hit and attr[0] and hit[0]["c"][2][0] == "#" + attr[0]:
-                found.append((hit[0], blocks, block, [{"t": "Para", "c": hit[1]}] + solid[1:]))
-                continue
-            _collect_notes(inner, refs, found)
-            continue
         hit = _note_body(block, refs)
         if hit:
-            found.append((hit[0], blocks, block, [{"t": "Para", "c": hit[1]}]))
+            found.append((hit[0], blocks, block, [{"t": "Para", "c": hit[1]}], _carried_ids(block, refs, owner)))
+        elif _item_groups(block):
+            for items in _item_groups(block):
+                for item in items:
+                    _collect_whole(items, item, item, _item_blocks(item), None, owner, refs, found)
+        elif block.get("t") == "Div":
+            attr, inner = block["c"]
+            _collect_whole(blocks, block, inner, _solid_blocks(inner), attr[0], owner, refs, found)
+        elif block.get("t") not in _UNPAIRED:
+            for inner in _block_lists(block):
+                _collect_notes(inner, refs, found, owner)
+
+
+def _collect_whole(container, block, inner, solid, target, owner, refs, found):
+    """Collect block (an item, or a div) as one note, or else the notes inside it.
+
+    target is the div's id, which the reference must point at (a div is the
+    whole note only then), or None for an item.
+    """
+    inside = []
+    _collect_notes(inner, refs, inside, target or owner)
+    hit = _note_body(solid[0], refs) if solid else None
+    if (hit and (target is None or hit[0]["c"][2][0] == "#" + target)
+            and all(ref is hit[0] for ref in _notes_in(inner, refs))):
+        found.append((hit[0], container, block, [{"t": "Para", "c": hit[1]}] + solid[1:],
+                      _carried_ids(block, refs, owner)))
+    else:
+        found.extend(inside)
 
 
 def _pandoc_notes(node):
     """Return the block lists of the Note elements found anywhere in node."""
-    found = []
-    if isinstance(node, dict):
-        if node.get("t") == "Note":
-            found.append(node["c"])
-        if isinstance(node.get("c"), list):
-            found.extend(_pandoc_notes(node["c"]))
-    elif isinstance(node, list):
-        for item in node:
-            found.extend(_pandoc_notes(item))
-    return found
+    return [x["c"] for x in _walk(node) if x.get("t") == "Note"]
 
 
 def convert_footnotes(blocks):
     """Turn EPUB-style footnotes into pandoc notes. Returns the number converted.
 
     A reference is a short marker link in running text (`<a href="#n1"><sup>1</sup></a>`,
-    `<sup><a>1</a></sup>`, `[1]`); its note is the paragraph (or the div the
-    reference points at) that opens with a back-link to that reference with the
-    same marker. Calibre renames ids and classes, so pairing relies only on this
+    `<sup><a>1</a></sup>`, `[1]`); its note is the paragraph, list item or
+    definition (or the div the reference points at), outside tables and
+    figures, that opens with a back-link to that reference with the same
+    marker. Calibre renames ids and classes, so pairing relies only on this
     two-way link structure. Pandoc's Markdown writer then numbers the notes
     across the whole book, so labels stay unique when per-chapter numbering
     restarts.
@@ -1193,9 +1298,14 @@ def convert_footnotes(blocks):
     candidates = []
     _collect_notes(blocks, refs, candidates)
 
-    notes = {}
-    for ref, container, block, content in candidates:
-        notes.setdefault(id(ref), (container, block, content))
+    # A paragraph inside one note can open like another note. When a
+    # reference has several notes, the first that carries the id the
+    # reference points at wins; failing that, the first.
+    notes, carried = {}, {}
+    for ref, container, block, content, ids in candidates:
+        key, target = id(ref), ref["c"][2][0][1:]
+        if key not in notes or (target in ids and target not in carried[key]):
+            notes[key], carried[key] = (container, block, content), ids
     # Pandoc before 3.13 drops a note written inside another note, so nothing
     # that would end up nested is converted: a reference inside a note (one
     # pandoc already read, e.g. a DPUB-ARIA note, or one converted here) stays
@@ -1225,13 +1335,61 @@ def convert_footnotes(blocks):
 
     _map_inline_lists(blocks, replace, top_down=True)
 
+    emptied = set()
     for key in used:
         container, block, _content = notes[key]
         for i, candidate in enumerate(container):
             if candidate is block:
                 del container[i]
+                emptied.add(id(container))
                 break
+    _drop_emptied_items(blocks, emptied)
     return len(used)
+
+
+def _empty_blocks(blocks):
+    """True when blocks show nothing: empty or anchor-only paragraphs, lists without items, divs and quotes of them."""
+    return all(
+        (b.get("t") in ("Para", "Plain") and all(_is_filler(x) for x in b["c"]))
+        or (b.get("t") in ("Div", "BlockQuote") and all(_empty_blocks(x) for x in _block_lists(b)))
+        or (b.get("t") in ("OrderedList", "BulletList") and not _block_lists(b))
+        for b in blocks
+    )
+
+
+def _drop_emptied_items(blocks, emptied):
+    """Drop the items, definitions, divs, block quotes and lists a pairing emptied.
+
+    A pairing empties a container when it takes at least one block out of
+    it, at any depth, and what is left shows nothing (_empty_blocks); what
+    is left goes with it, empty lists and divs included. emptied holds the
+    ids of the block and item lists a note was taken from. Returns whether
+    blocks lost anything, at any depth. Whatever lost nothing stays as it
+    is, empty or not, and a definition list keeps the term of a definition
+    that goes.
+    """
+    lost = id(blocks) in emptied
+    kept = []
+    for block in blocks:
+        block_lost = False
+        groups = _item_groups(block)
+        for items in groups:
+            left = []
+            for item in items:
+                item_lost = _drop_emptied_items(item, emptied)
+                block_lost = block_lost or item_lost
+                if not (item_lost and _empty_blocks(item)):
+                    left.append(item)
+            block_lost = block_lost or id(items) in emptied
+            items[:] = left
+        if not groups:
+            for inner in _block_lists(block):
+                block_lost = _drop_emptied_items(inner, emptied) or block_lost
+        lost = lost or block_lost
+        if not (block_lost and _empty_blocks([block])):
+            kept.append(block)
+    blocks[:] = kept
+    return lost
 
 
 _URL_SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
@@ -1315,8 +1473,150 @@ def clean_calibre_ast(doc):
     return footnotes
 
 
-def _pandoc_html_to_json(html_file):
-    """Read an HTML file into a pandoc JSON AST string.
+# Navigation that an EPUB's nav document holds; Calibre keeps it as body text
+# when the nav document is in the spine. Values of type (epub:type) or role.
+_NAV_KINDS = frozenset({"toc", "doc-toc", "page-list", "doc-pagelist", "landmarks"})
+_VOID_TAGS = frozenset({
+    "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta",
+    "param", "source", "track", "wbr",
+})
+
+
+def _attr_tokens(attrs, *names):
+    return {token.lower() for name, value in attrs if name in names
+            for token in (value or "").split()}
+
+
+class _CalibreHtmlScan(HTMLParser):
+    """Find the nav blocks and note references prepare_calibre_html() rewrites.
+
+    Offsets are character offsets into the scanned text.
+    """
+
+    def __init__(self, text):
+        super().__init__(convert_charrefs=False)
+        self._text = text
+        self._line_starts = [0] + [m.end() for m in re.finditer("\n", text)]
+        self._stack = []        # (tag, role attribute or None)
+        self._nav = None        # [start, nav depth] of the nav block being dropped
+        self.navs = []          # (start, end)
+        self.noterefs = []      # (start, start tag text, target id)
+        self.endnote_ids = set()
+
+    def _offset(self):
+        line, column = self.getpos()
+        return self._line_starts[line - 1] + column
+
+    def _pandoc_fills_note(self):
+        """True when pandoc 3.6+ fills a note from an <li id> opened here.
+
+        It does for an <li> whose nearest list is an <ol> below an element whose
+        role is exactly "doc-endnotes" (that role on the <ol> itself does not
+        count). Pandoc 3.6+ takes every <ol> inside such an element out of the
+        text as a note list, so an <li> nested in another <ol> there, which 3.6
+        still fills and 3.14 leaves empty, loses its text on 3.14 whether the
+        reference keeps its role or not; it counts as filled.
+        """
+        lists = [i for i, (tag, _role) in enumerate(self._stack) if tag in ("ol", "ul")]
+        if not lists or self._stack[lists[-1]][0] != "ol":
+            return False
+        return any(role == "doc-endnotes" for _tag, role in self._stack[:lists[-1]])
+
+    def _close_nav(self, end):
+        self._nav[1] -= 1
+        if not self._nav[1]:
+            self.navs.append((self._nav[0], end))
+            self._nav = None
+
+    def handle_starttag(self, tag, attrs):
+        start = self._offset()
+        values = dict(attrs)
+        if tag == "nav":
+            if self._nav is not None:
+                self._nav[1] += 1
+            elif _attr_tokens(attrs, "type", "epub:type", "role") & _NAV_KINDS:
+                self._nav = [start, 1]
+        elif self._nav is not None:
+            pass
+        elif tag == "a" and values.get("role") == "doc-noteref":
+            # Pandoc reads a link as a note only when role is exactly this.
+            href = values.get("href") or ""
+            if href.startswith("#"):
+                self.noterefs.append((start, self.get_starttag_text(), href[1:]))
+        elif tag == "li" and values.get("id") and self._pandoc_fills_note():
+            self.endnote_ids.add(values["id"])
+        if tag not in _VOID_TAGS:
+            self._stack.append((tag, values.get("role")))
+
+    def handle_startendtag(self, tag, attrs):
+        start = self._offset()
+        self.handle_starttag(tag, attrs)
+        if tag not in _VOID_TAGS:
+            self._stack.pop()
+        if tag == "nav" and self._nav is not None:
+            self._close_nav(start + len(self.get_starttag_text()))
+
+    def handle_endtag(self, tag):
+        if tag == "nav" and self._nav is not None:
+            end = self._text.find(">", self._offset())
+            self._close_nav(len(self._text) if end < 0 else end + 1)
+        for i in range(len(self._stack) - 1, -1, -1):
+            if self._stack[i][0] == tag:
+                del self._stack[i:]
+                break
+
+
+_TAG_NAME = re.compile(r"<[^\s/>]+")
+_ATTRIBUTE = re.compile(r"""\s*([^\s"'/>=][^\s/>=]*)(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]*))?""")
+
+
+def _without_role(tag):
+    """Return start tag text without its role attribute."""
+    pos = _TAG_NAME.match(tag).end()
+    while True:
+        m = _ATTRIBUTE.match(tag, pos)
+        if not m:
+            return tag
+        if m.group(1).lower() == "role":
+            rest = tag[m.end():]
+            # Keep what followed apart from what preceded: <a role="x"href="#n1">.
+            gap = "" if rest[:1] in ("", ">", "/") or rest[:1].isspace() else " "
+            return tag[:m.start()] + gap + rest
+        pos = m.end()
+
+
+def prepare_calibre_html(html):
+    """Take out of Calibre's HTML what pandoc would turn into the wrong Markdown.
+
+    - The table of contents, page list and landmarks of an EPUB's nav document
+      (<nav> with that type or role) are removed: they are navigation, not
+      text to translate, and the built book gets a TOC from its headings.
+    - role="doc-noteref" is removed from a note reference unless pandoc 3.6+
+      fills the note from its target (see _CalibreHtmlScan._pandoc_fills_note).
+      Pandoc turns a reference to any other target into an empty note and
+      drops the link, so convert_footnotes() could no longer pair it; without
+      the role it stays a link, as older pandoc reads it.
+
+    Returns the text unchanged when there is nothing to take out.
+    """
+    scan = _CalibreHtmlScan(html)
+    scan.feed(html)
+    scan.close()
+    edits = [(start, end, "") for start, end in scan.navs]
+    for start, tag, target in scan.noterefs:
+        if target not in scan.endnote_ids and html.startswith(tag, start):
+            edits.append((start, start + len(tag), _without_role(tag)))
+    out, pos = [], 0
+    for start, end, replacement in sorted(edits):
+        out.append(html[pos:start])
+        out.append(replacement)
+        pos = end
+    out.append(html[pos:])
+    return "".join(out)
+
+
+def _pandoc_html_to_json(html):
+    """Read HTML text into a pandoc JSON AST string.
 
     Uses pypandoc when it is installed and falls back to the pandoc binary, so
     a machine with pandoc but without the Python wrapper still converts.
@@ -1326,10 +1626,10 @@ def _pandoc_html_to_json(html_file):
     except ImportError:
         pypandoc = None
     if pypandoc is not None:
-        return pypandoc.convert_file(html_file, 'json')
+        return pypandoc.convert_text(html, 'json', format='html')
     result = subprocess.run(
-        ['pandoc', html_file, '-f', 'html', '-t', 'json'],
-        capture_output=True, text=True, check=True,
+        ['pandoc', '-f', 'html', '-t', 'json'],
+        input=html, capture_output=True, text=True, check=True,
     )
     return result.stdout
 
@@ -1355,7 +1655,13 @@ def _pandoc_json_to_markdown(json_text, md_file, extra_args):
 def convert_html_to_markdown(html_file, md_file, strip_page_numbers=False, detect_page_numbers=True):
     """Convert HTML to Markdown using pandoc (pypandoc, or the pandoc binary)"""
     try:
-        doc = json.loads(_pandoc_html_to_json(html_file))
+        with open(html_file, encoding='utf-8') as f:
+            html = f.read()
+    except (OSError, UnicodeDecodeError) as e:
+        print(f"Cannot read {html_file}: {e}")
+        return False
+    try:
+        doc = json.loads(_pandoc_html_to_json(prepare_calibre_html(html)))
         footnotes = clean_calibre_ast(doc)
         if footnotes:
             print(f"Converted {footnotes} footnote(s) to Markdown footnotes")
